@@ -1,0 +1,14 @@
+.git
+.gitignore
+.vscode
+docs
+src
+test
+scripts
+node_modules
+package-lock.json
+*.ts
+tsconfig.json
+**/*.map
+dist/test/**
+resources/icon-256.png

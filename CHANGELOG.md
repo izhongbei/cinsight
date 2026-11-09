@@ -1,0 +1,16 @@
+# Changelog
+
+## 0.1.0
+
+初版，参考 Source Insight 的核心代码浏览体验：
+
+- 函数符号索引：自研 C 词法/定义识别，worker 多线程并行，二进制快照持久化，mtime+size 增量更新。
+- 跳转定义（F12 / Ctrl+Click），无定义时回退到头文件原型声明。
+- 函数搜索：Ctrl+T（Workspace Symbol）+ `Source Insight: 搜索函数` QuickPick。
+- 查找所有引用（Shift+F12），支持取消与进度。
+- 调用关系：原生 Call Hierarchy（调用者 / 被调用者）+ QuickPick 两种入口。
+- 左侧 Activity Bar「Source Insight」符号树：目录 → 文件 → 函数（签名摘要），懒加载。
+- 悬停签名与定义/声明位置；文档大纲（Ctrl+Shift+O）。
+- 状态栏索引状态与符号数量；命令：配置索引目录、重建索引、清除索引缓存。
+- 默认不索引任何目录，由用户显式配置；默认排除 `.git`/`build`/`tmp`/`node_modules`。
+- 中英双语（VS Code l10n）。

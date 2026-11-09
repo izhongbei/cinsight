@@ -1,0 +1,222 @@
+{
+  "name": "source-insight-c",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "c",
+    "cpp",
+    "symbol",
+    "navigate",
+    "index",
+    "code navigation",
+    "source insight"
+  ],
+  "icon": "resources/icon.png",
+  "main": "./dist/src/vscode/extension.js",
+  "activationEvents": [
+    "onLanguage:c",
+    "onLanguage:cpp"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "si.configureRoots",
+        "title": "%command.configureRoots.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.rebuildIndex",
+        "title": "%command.rebuildIndex.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.searchSymbol",
+        "title": "%command.searchSymbol.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.gotoDefinition",
+        "title": "%command.gotoDefinition.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.findReferences",
+        "title": "%command.findReferences.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.showCallers",
+        "title": "%command.showCallers.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.showCallees",
+        "title": "%command.showCallees.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.clearCache",
+        "title": "%command.clearCache.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.openSymbolAt",
+        "title": "%command.openSymbolAt.title%",
+        "category": "%command.category%"
+      }
+    ],
+    "configuration": {
+      "title": "%config.title%",
+      "properties": {
+        "sourceInsight.indexRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "%config.indexRoots%"
+        },
+        "sourceInsight.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/.git/**",
+            "**/build/**",
+            "**/tmp/**",
+            "**/node_modules/**"
+          ],
+          "markdownDescription": "%config.exclude%"
+        },
+        "sourceInsight.maxFileSizeKB": {
+          "type": "number",
+          "default": 4096,
+          "markdownDescription": "%config.maxFileSizeKB%"
+        },
+        "sourceInsight.concurrency": {
+          "type": "number",
+          "default": 4,
+          "markdownDescription": "%config.concurrency%"
+        },
+        "sourceInsight.searchLimit": {
+          "type": "number",
+          "default": 200,
+          "markdownDescription": "%config.searchLimit%"
+        },
+        "sourceInsight.autoReindexOnSave": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.autoReindexOnSave%"
+        },
+        "sourceInsight.enableCallHierarchy": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.enableCallHierarchy%"
+        },
+        "sourceInsight.followSymlinks": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%config.followSymlinks%"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sourceInsight",
+          "title": "%viewContainer.title%",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sourceInsight": [
+        {
+          "id": "si.symbols",
+          "name": "%view.symbols.name%",
+          "icon": "resources/icon.svg",
+          "contextualTitle": "%viewContainer.title%"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "si.symbols",
+        "contents": "%viewWelcome%"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "si.searchSymbol",
+          "when": "view == si.symbols",
+          "group": "navigation@1"
+        },
+        {
+          "command": "si.rebuildIndex",
+          "when": "view == si.symbols",
+          "group": "navigation@2"
+        },
+        {
+          "command": "si.configureRoots",
+          "when": "view == si.symbols",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "si.gotoDefinition",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@10"
+        },
+        {
+          "command": "si.findReferences",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@11"
+        },
+        {
+          "command": "si.showCallers",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@12"
+        },
+        {
+          "command": "si.showCallees",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@13"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "si.openSymbolAt",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "npm run compile && node --test dist/test/*.test.js",
+    "smoke": "npm run compile && node test/smoke-activate.js",
+    "perf": "npm run compile && node scripts/perf-build.js",
+    "package": "npm run compile && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.9.3"
+  }
+}
