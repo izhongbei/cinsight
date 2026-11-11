@@ -12,3 +12,4 @@ tsconfig.json
 **/*.map
 dist/test/**
 resources/icon-256.png
+PUBLISHING.md

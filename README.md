@@ -138,6 +138,17 @@ cursor --install-extension source-insight-c-0.1.0.vsix
 9. 修改并保存一个 `.c` 文件，等 1 秒 → 新函数随即能被 `Ctrl+T` 搜到（增量索引）。
 10. 命令"清除索引缓存" → 状态栏回到未配置/索引为空。
 
+## 发布
+
+三条渠道（VSIX 内网分发 / Open VSX / VS Code Marketplace）的完整步骤、一键脚本与 CI 示例见 `PUBLISHING.md`。
+
+```bash
+npm run release                                   # 只打包 vsix
+npm run release -- 0.1.1                          # 升版本 + 测试 + 打包
+OVSX_PAT=xxx npm run publish:ovsx                 # 发布到 Open VSX（Cursor 用户可搜索安装）
+VSCE_PAT=xxx npm run publish:vsce                 # 发布到 VS Code Marketplace
+```
+
 ## 开发
 
 ```bash

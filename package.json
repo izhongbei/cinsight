@@ -211,7 +211,10 @@
     "test": "npm run compile && node --test dist/test/*.test.js",
     "smoke": "npm run compile && node test/smoke-activate.js",
     "perf": "npm run compile && node scripts/perf-build.js",
-    "package": "npm run compile && vsce package --no-dependencies"
+    "package": "npm run compile && vsce package --no-dependencies",
+    "release": "bash scripts/release.sh",
+    "publish:ovsx": "bash scripts/release.sh --channel=ovsx",
+    "publish:vsce": "bash scripts/release.sh --channel=vsce"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
