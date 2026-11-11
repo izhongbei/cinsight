@@ -19,25 +19,33 @@
 
 ## 安装
 
-本仓库已构建好 `code-insight-0.1.0.vsix`：
+从 **Open VSX** 安装（VS Code、Cursor、VSCodium 等均适用）：
 
 ```bash
-# VS Code
-code --install-extension code-insight-0.1.0.vsix
-# Cursor（基于 VS Code 1.128，已验证可安装）
-cursor --install-extension code-insight-0.1.0.vsix
+code   --install-extension cinsight.code-insight
+cursor --install-extension cinsight.code-insight
 ```
 
-或在编辑器里 `Ctrl+Shift+P` → `Extensions: Install from VSIX...` 选择该文件。要求宿主 **VS Code ≥ 1.90**（Cursor 3.x 满足）。
+或在扩展面板搜索 **Code Insight** 后点击安装。
+
+离线安装：下载 `code-insight-0.1.0.vsix` 后
+
+```bash
+code   --install-extension code-insight-0.1.0.vsix
+cursor --install-extension code-insight-0.1.0.vsix
+# 或 Ctrl+Shift+P → Extensions: Install from VSIX...
+```
+
+要求宿主 **VS Code ≥ 1.90**（Cursor 3.x 满足）。
 
 ## 首次使用
 
 1. 打开你的 C 工程目录（`File → Open Folder`）。
 2. 命令面板执行 **`Code Insight: 配置索引目录`**，勾选要索引的目录（例如 `component`、`plat`、`plugin`）。
-3. 选择后确认重建，右下角状态栏显示进度；完成后显示 `$(symbol-function) SI: <符号数> 函数`。
+3. 选择后确认重建，右下角状态栏显示进度；完成后状态栏显示 `$(symbol-function) <符号数> 个函数`。
 4. 打开任意 `.c` 文件，把光标放到函数调用上按 `F12`。
 
-> 默认**不索引任何目录**——由你显式选择，避免误索引 `datapath/kernel`（Linux 内核副本，1.3 GB）这类无关代码。默认排除 `.git`、`build`、`tmp`、`node_modules`。
+> 默认**不索引任何目录**——由你显式选择，避免误索引内核副本、第三方库、构建产物这类无关代码。默认排除 `.git`、`build`、`tmp`、`node_modules`。
 
 ## 命令
 
@@ -86,7 +94,7 @@ cursor --install-extension code-insight-0.1.0.vsix
 - 引用与调用关系按需扫描磁盘：先按文件内容 `indexOf` 预筛，再按词边界精确匹配；`callers` 用命中行反推所在函数，`callees` 只解析目标函数的行区间。
 - 无第三方运行时依赖；离线可用。
 
-## 性能（本仓库实测，2026-11-09）
+## 性能（2026-11 实测）
 
 `npm run perf` 在 `plat` + `plugin` 两个模块（6,838 文件 / 75 MB）上的真实数据：
 
@@ -108,7 +116,7 @@ cursor --install-extension code-insight-0.1.0.vsix
 |---|---|
 | 仅 `plat`（5,573 文件 / 57.5 MB） | 74,194 符号；4 worker 热缓存 **0.8–1.2 s**，不变增量重建 0.5 s，快照 3.06 MB / 加载 18 ms |
 | 全量工程（121,606 文件 / 2.6 GB）原型扫描 | 单线程 157 s（40–60 s 可并行化）；建议按模块配置 `indexRoots` |
-| 本机文件系统吞吐 | 约 **22 MB/s**（`/mnt/data` 慢速挂载，`rg` 全扫同量数据 14 s）——引用扫描受此限制 |
+| 测试机文件系统吞吐 | 约 **22 MB/s**（慢速挂载，`rg` 全扫同量数据 14 s）——引用扫描受此限制 |
 
 > 引用扫描/调用者是**按需全文扫描**（先用 `indexOf` 预筛，只对候选文件做词法剥离），
 > 在慢速网络盘上的大根目录首次会较慢，但带进度、可取消、结果有 LRU 缓存。
@@ -123,7 +131,17 @@ cursor --install-extension code-insight-0.1.0.vsix
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。
 - 快照约 41 B/符号（100 万符号 ≈ 41 MB），略高于设计目标 30 MB。
 - 依赖 C/C++ 语言标识（`.c`/`.h` 需以 `c`/`cpp` languageId 打开；VS Code/Cursor 内置 C/C++ 语法高亮即满足，无需 cpptools）。
-- 本机无 `code` CLI，界面交互需在你的 VS Code 安装后人工验收（见下）。
+
+## 隐私与安全
+
+- **纯本地运行**：不联网、不上报数据、不收集遥测。
+- 只读取你在 `sourceInsight.indexRoots` 中配置的 C/C++ 源码；符号快照写入扩展自己的存储目录（`globalStorageUri`）。
+- 不执行被索引的代码，不调用外部工具（不依赖 ctags / clangd / compile_commands.json）。
+- 不修改工作区文件：扩展只读源码、只写自己的快照。
+
+## 反馈
+
+问题与建议请提交到扩展仓库的 Issues（地址见 `package.json` 的 `repository` 字段）。
 
 ## 安装后自测清单
 
@@ -152,11 +170,11 @@ VSCE_PAT=xxx npm run publish:vsce                 # 发布到 VS Code Marketplac
 ## 开发
 
 ```bash
-npm install          # 安装构建依赖（本机用 --cache 规避只读 ~/.npm）
+npm install          # 安装构建依赖
 npm run compile      # tsc -> dist/
 npm test             # 编译 + node:test 单元测试
 npm run smoke        # mock vscode 激活冒烟（无需真实 VS Code）
-npm run perf          # 对真实仓库建索引并测查询耗时
+npm run perf -- plat  # 对指定目录建索引并测查询耗时
 npm run package      # 生成 code-insight-0.1.0.vsix
 ```
 
