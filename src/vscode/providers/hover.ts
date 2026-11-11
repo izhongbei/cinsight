@@ -53,7 +53,7 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
       const markdown = new vscode.MarkdownString(sections.join('\n\n'))
       return new vscode.Hover(markdown, hit.range)
     } catch (error) {
-      console.error('[source-insight-c] hover provider failed', error)
+      console.error('[rcios-insight] hover provider failed', error)
       return undefined
     }
   }
@@ -84,7 +84,7 @@ export function registerHoverProvider(service: SymbolService): vscode.Disposable
       new SourceInsightHoverProvider(service),
     )
   } catch (error) {
-    console.error('[source-insight-c] cannot register hover provider', error)
+    console.error('[rcios-insight] cannot register hover provider', error)
     return noopDisposable()
   }
 }

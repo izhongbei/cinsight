@@ -34,7 +34,7 @@ class SourceInsightDefinitionProvider implements vscode.DefinitionProvider {
       }
       return entries.map((entry) => entryLocation(this.service, entry))
     } catch (error) {
-      console.error('[source-insight-c] definition provider failed', error)
+      console.error('[rcios-insight] definition provider failed', error)
       return undefined
     }
   }
@@ -50,7 +50,7 @@ export function registerDefinitionProvider(service: SymbolService): vscode.Dispo
       new SourceInsightDefinitionProvider(service),
     )
   } catch (error) {
-    console.error('[source-insight-c] cannot register definition provider', error)
+    console.error('[rcios-insight] cannot register definition provider', error)
     return noopDisposable()
   }
 }

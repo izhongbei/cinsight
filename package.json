@@ -1,9 +1,9 @@
 {
-  "name": "source-insight-c",
+  "name": "rcios-insight",
   "displayName": "%displayName%",
   "description": "%description%",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "rcios",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
@@ -19,7 +19,10 @@
     "navigate",
     "index",
     "code navigation",
-    "source insight"
+    "source insight",
+    "rcios",
+    "forwarding",
+    "c code navigation"
   ],
   "icon": "resources/icon.png",
   "main": "./dist/src/vscode/extension.js",
@@ -221,5 +224,6 @@
     "@types/vscode": "1.90.0",
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.9.3"
-  }
+  },
+  "l10n": "./l10n"
 }

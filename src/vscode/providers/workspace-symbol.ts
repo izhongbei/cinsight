@@ -32,7 +32,7 @@ class SourceInsightWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProv
           ),
       )
     } catch (error) {
-      console.error('[source-insight-c] workspace symbol provider failed', error)
+      console.error('[rcios-insight] workspace symbol provider failed', error)
       return []
     }
   }
@@ -47,7 +47,7 @@ export function registerWorkspaceSymbolProvider(service: SymbolService): vscode.
       new SourceInsightWorkspaceSymbolProvider(service),
     )
   } catch (error) {
-    console.error('[source-insight-c] cannot register workspace symbol provider', error)
+    console.error('[rcios-insight] cannot register workspace symbol provider', error)
     return noopDisposable()
   }
 }

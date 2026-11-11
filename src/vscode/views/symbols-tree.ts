@@ -1,5 +1,5 @@
 /**
- * 侧边栏符号树：Activity Bar「Source Insight」容器里的 `si.symbols` 视图。
+ * 侧边栏符号树：Activity Bar「RCIOS Insight」容器里的 `si.symbols` 视图。
  *
  * 结构：已配置的索引根目录 -> 目录（懒加载）-> 文件 -> 文件内函数（签名摘要/悬停）。
  * 未配置索引时 getChildren() 返回空数组，VS Code 自动显示 package.json 里的 viewsWelcome 引导。
@@ -97,7 +97,7 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
           return new vscode.TreeItem('')
       }
     } catch (error) {
-      console.error('[source-insight-c] getTreeItem failed', error)
+      console.error('[rcios-insight] getTreeItem failed', error)
       return new vscode.TreeItem(String((element as { rel?: string } | undefined)?.rel ?? ''))
     }
   }
@@ -115,7 +115,7 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
       }
       return []
     } catch (error) {
-      console.error('[source-insight-c] getChildren failed', error)
+      console.error('[rcios-insight] getChildren failed', error)
       return []
     }
   }
@@ -134,7 +134,7 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
         item.tooltip = signature
       }
     } catch (error) {
-      console.error('[source-insight-c] resolveTreeItem failed', error)
+      console.error('[rcios-insight] resolveTreeItem failed', error)
     }
     return item
   }
@@ -195,7 +195,7 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
     try {
       item.resourceUri = vscode.Uri.file(this.service.toAbsolute(node.rel))
     } catch (error) {
-      console.error('[source-insight-c] cannot set file resourceUri', error)
+      console.error('[rcios-insight] cannot set file resourceUri', error)
     }
     return item
   }
@@ -236,7 +236,7 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
     try {
       entries = await fs.promises.readdir(absolute, { withFileTypes: true })
     } catch (error) {
-      console.error(`[source-insight-c] cannot list ${absolute}`, error)
+      console.error(`[rcios-insight] cannot list ${absolute}`, error)
       return []
     }
     const directories: SiTreeNode[] = []

@@ -402,8 +402,8 @@ export class SymbolService implements vscode.Disposable {
 
     const generation = this.generation
     const title = forced
-      ? vscode.l10n.t('Rebuilding Source Insight index…')
-      : vscode.l10n.t('Building Source Insight index…')
+      ? vscode.l10n.t('Rebuilding RCIOS Insight index…')
+      : vscode.l10n.t('Building RCIOS Insight index…')
 
     let summary: BuildSummary | undefined
     try {
@@ -954,7 +954,7 @@ function resolveWorkspaceRoot(): string | undefined {
       }
     }
   } catch (error) {
-    console.error('[source-insight-c] cannot read workspace folders', error)
+    console.error('[rcios-insight] cannot read workspace folders', error)
   }
   try {
     const legacyRootPath = (vscode.workspace as unknown as { rootPath?: unknown }).rootPath
@@ -977,7 +977,7 @@ function resolveSnapshotPath(context: vscode.ExtensionContext | undefined): stri
     }
     return path.join(fsPath, SNAPSHOT_FILE_NAME)
   } catch (error) {
-    console.error('[source-insight-c] cannot resolve storage URI', error)
+    console.error('[rcios-insight] cannot resolve storage URI', error)
     return undefined
   }
 }

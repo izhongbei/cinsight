@@ -1,4 +1,4 @@
-# 发布 Source Insight C
+# 发布 RCIOS Insight
 
 三种渠道，按用途选一个或多个：
 
@@ -21,7 +21,7 @@ cd tools/vscode-source-insight
 1. **`publisher` 不能是 `local`**。改成你的组织/个人 ID（Open VSX 的 namespace 必须与它完全一致）：
    ```jsonc
    // package.json
-   "publisher": "your-org",
+   "publisher": "rcios",
    "repository": { "type": "git", "url": "https://git.example.com/tools/vscode-source-insight" },
    "homepage": "https://git.example.com/tools/vscode-source-insight",
    "bugs": { "url": "https://git.example.com/tools/vscode-source-insight/issues" }
@@ -38,7 +38,7 @@ cd tools/vscode-source-insight
    npx vsce ls                                          # 确认打包文件清单（应为 39 个文件、~90KB）
    ```
 
-4. **商标提醒**：`Source Insight` 是 Source Dynamics 的产品名。内部使用无妨；**公开发布建议改 displayName**（例如 "SI C Navigator"），避免商标纠纷。改动只涉及 `package.json` 的 `displayName%` 和 `package.nls*.json`。
+4. **商标**：displayName 已定为中性的 **RCIOS Insight**，不冒用 Source Dynamics 的产品名；README/描述里的 "Source Insight-style / 参考 Source Insight" 属于描述性引用（nominative use），公开发布时可以保留，也可以改成 "Source-Insight-like"。
 
 5. 图标/许可已就绪：`resources/icon.png`（128×128）、`LICENSE`（MIT）、中英双语 `package.nls*.json`。
 
@@ -48,7 +48,7 @@ cd tools/vscode-source-insight
 
 ```bash
 npm run package
-# 产物：source-insight-c-<version>.vsix
+# 产物：rcios-insight-<version>.vsix
 ```
 
 **分发**（任选其一）：
@@ -57,29 +57,29 @@ npm run package
 - GitLab Generic Package Registry：
   ```bash
   curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-       --upload-file source-insight-c-0.1.0.vsix \
-       "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/source-insight-c/0.1.0/source-insight-c-0.1.0.vsix"
+       --upload-file rcios-insight-0.1.0.vsix \
+       "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/rcios-insight/0.1.0/rcios-insight-0.1.0.vsix"
   ```
 - Nexus / Artifactory 的 raw/通用仓库：
   ```bash
-  curl -u "$NEXUS_USER:$NEXUS_PASS" --upload-file source-insight-c-0.1.0.vsix \
-       "https://nexus.example.com/repository/raw-releases/source-insight-c/0.1.0/"
+  curl -u "$NEXUS_USER:$NEXUS_PASS" --upload-file rcios-insight-0.1.0.vsix \
+       "https://nexus.example.com/repository/raw-releases/rcios-insight/0.1.0/"
   ```
 
 **安装**（分发给同事时给这条命令）：
 
 ```bash
 # VS Code
-code   --install-extension source-insight-c-0.1.0.vsix --force
+code   --install-extension rcios-insight-0.1.0.vsix --force
 # Cursor
-cursor --install-extension source-insight-c-0.1.0.vsix --force
+cursor --install-extension rcios-insight-0.1.0.vsix --force
 # 或 GUI：Ctrl+Shift+P → Extensions: Install from VSIX...
 ```
 
 **升级**：sideload 的扩展**不会自动更新**（不走 gallery），需要发新版 vsix 并重跑安装命令。可以给团队一个更新脚本：
 
 ```bash
-curl -fsSL http://intranet/tools/source-insight-c-latest.vsix -o /tmp/si.vsix && \
+curl -fsSL http://intranet/tools/rcios-insight-latest.vsix -o /tmp/si.vsix && \
   (command -v cursor >/dev/null && cursor --install-extension /tmp/si.vsix --force || \
    code --install-extension /tmp/si.vsix --force)
 ```
@@ -93,13 +93,13 @@ curl -fsSL http://intranet/tools/source-insight-c-latest.vsix -o /tmp/si.vsix &&
 1. 用 GitHub 账号登录 <https://open-vsx.org>。
 2. 创建 namespace（等于 `package.json` 的 `publisher`）：
    ```bash
-   npx ovsx create-namespace your-org -p <token>
+   npx ovsx create-namespace rcios -p <token>
    # 首次发布时也可以直接在网站上认领 namespace
    ```
 3. 生成访问令牌：<https://open-vsx.org/user-settings/tokens> → 新建 token。
 4. 校验 token 与 namespace 匹配：
    ```bash
-   npx ovsx verify-pat your-org -p "$OVSX_PAT"
+   npx ovsx verify-pat rcios -p "$OVSX_PAT"
    ```
 5. 发布（脚本会先跑测试+打包）：
    ```bash
@@ -107,18 +107,18 @@ curl -fsSL http://intranet/tools/source-insight-c-latest.vsix -o /tmp/si.vsix &&
    npm run publish:ovsx
    # 等价于：
    # npx vsce package --no-dependencies
-   # npx ovsx publish source-insight-c-0.1.0.vsix -p "$OVSX_PAT" --skip-duplicate
+   # npx ovsx publish rcios-insight-0.1.0.vsix -p "$OVSX_PAT" --skip-duplicate
    ```
 6. 验证：
    ```bash
-   npx ovsx show your-org.source-insight-c
-   # 页面：https://open-vsx.org/extension/your-org/source-insight-c
+   npx ovsx show rcios.rcios-insight
+   # 页面：https://open-vsx.org/extension/rcios/rcios-insight
    ```
    Cursor 侧：Open VSX 收录后，经由 Cursor 代理分析（通常几分钟到数小时）才出现在 Cursor 的扩展搜索里；期间可用 VSIX 安装。
 7. 升级：改 `version` + `CHANGELOG`，重跑第 5 步；`--skip-duplicate` 让 CI 重跑不会因版本已存在而失败。
 8. 撤版：
    ```bash
-   npx ovsx unpublish your-org.source-insight-c@0.1.0 -p "$OVSX_PAT"
+   npx ovsx unpublish rcios.rcios-insight@0.1.0 -p "$OVSX_PAT"
    ```
 
 > Open VSX 上架的扩展由 Open VSX 签名；Cursor 企业版若开启 *Require Extension Signature Verification*，从 Open VSX 安装的版本才能通过校验（手工 sideload 的 vsix 不满足）。
@@ -131,14 +131,14 @@ curl -fsSL http://intranet/tools/source-insight-c-latest.vsix -o /tmp/si.vsix &&
 2. 打开 <https://marketplace.visualstudio.com/manage>，创建 publisher，ID 与 `package.json` 的 `publisher` 一致。
 3. 登录并发布：
    ```bash
-   npx vsce login your-org          # 交互式粘贴 PAT
+   npx vsce login rcios          # 交互式粘贴 PAT
    # 或直接：
    export VSCE_PAT=<pat>
    npm run publish:vsce
-   # 等价于：npx vsce publish --packagePath source-insight-c-0.1.0.vsix -p "$VSCE_PAT"
+   # 等价于：npx vsce publish --packagePath rcios-insight-0.1.0.vsix -p "$VSCE_PAT"
    ```
-4. 验证：`https://marketplace.visualstudio.com/items?itemName=your-org.source-insight-c`；首次发布可能被扫描/挂起一段时间。
-5. `vsce publish minor|patch` / `--packagePath` 均可；撤版用 `npx vsce unpublish your-org.source-insight-c`。
+4. 验证：`https://marketplace.visualstudio.com/items?itemName=rcios.rcios-insight`；首次发布可能被扫描/挂起一段时间。
+5. `vsce publish minor|patch` / `--packagePath` 均可；撤版用 `npx vsce unpublish rcios.rcios-insight`。
 
 > 注意：发给 Cursor 用户无效——Cursor 只认 Open VSX / VSIX。
 
@@ -211,8 +211,8 @@ release:
     - npx vsce package --no-dependencies --allow-missing-repository
     - |
       curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-           --upload-file "source-insight-c-$(node -p "require('./package.json').version").vsix" \
-           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/source-insight-c/$(node -p "require('./package.json').version")/"
+           --upload-file "rcios-insight-$(node -p "require('./package.json').version").vsix" \
+           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/rcios-insight/$(node -p "require('./package.json').version")/"
   rules:
     - if: $CI_COMMIT_TAG
 ```
