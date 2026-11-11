@@ -34,7 +34,7 @@ cd tools/vscode-source-insight
    ```bash
    npm run compile && node --test dist/test/*.test.js   # 104/104
    node test/smoke-activate.js                          # SMOKE OK
-   npm run perf                                         # 记录性能（可选）
+   npm run perf -- plat                                  # 记录性能（可选，须传目录）
    npx vsce ls                                          # 确认打包文件清单（应为 39 个文件、~90KB）
    ```
 
@@ -222,7 +222,39 @@ release:
 ## 发布后自检
 
 1. 干净环境安装：`cursor --install-extension <vsix>`（或从市场搜索）→ 重启 → 左侧出现「Source Insight」图标。
-2. 按 [README 自测清单](README.md#安装后自测清单) 过一遍 10 项（配置索引目录 → F12 → Ctrl+T → Shift+F12 → 调用层次 → 树 → 悬停 → 大纲 → 增量 → 清缓存）。
+2. 按下面「发布后自测清单」过一遍 10 项。
 3. 检查 i18n：中文系统显示中文命令名，英文系统显示英文。
 4. 检查 `marketplace` 页面 README 渲染、图标、许可证、仓库链接。
 5. 记录体积/启动开销：vsix 约 90KB，激活后才建索引（未配置 roots 时零索引、零后台任务）。
+
+---
+
+## 本地开发
+
+```bash
+npm install              # 安装构建/测试依赖
+npm run compile          # tsc -> dist/
+npm test                 # 编译 + 104 个 node:test 单元测试
+npm run smoke            # mock vscode 激活冒烟（无需真实编辑器）
+npm run perf -- plat     # 对指定目录建索引并测查询耗时（必填相对 workspace 的目录）
+npm run package          # 生成 code-insight-<version>.vsix
+```
+
+目录结构、设计文档与实施计划在 `docs/superpowers/` 下；核心逻辑（`src/core/`）不依赖 vscode API，可直接用 node 测试。
+
+> README 是面向使用者的市场页，**不要把发布/开发/CI 这类内容写回 README**；它们属于本文件。
+
+## 发布后自测清单
+
+在干净环境（未装过本扩展）安装后逐项验证：
+
+1. 首次打开 C 工程 → 左侧出现「Code Insight」图标，视图显示引导页。
+2. 执行"配置索引目录"，只勾一个中等目录 → 状态栏出现进度，结束后显示函数数量。
+3. 打开该目录下任意 `.c`，光标放在跨文件调用的函数名上按 `F12` → 跳到定义文件对应行。
+4. `Ctrl+T` 输入函数名片段 → 结果列表含文件与行，回车跳转。
+5. 在函数调用处 `Shift+F12` → 找到调用点列表。
+6. 命令"显示调用者 / 显示被调用者" → 列出对应函数。
+7. 悬停函数名 → 出现签名与 `定义: 路径:行`。
+8. 左侧符号树展开目录/文件 → 显示函数，点击跳转。
+9. 修改并保存一个 `.c` 文件，等 1 秒 → 新函数能被 `Ctrl+T` 搜到（增量索引）。
+10. 命令"清除索引缓存" → 状态栏回到未配置/索引为空。
