@@ -1,5 +1,8 @@
 # Open VSX namespace 认领申请（cinsight）
 
+> **状态：已提交** — `EclipseFdn/open-vsx.org` issue **#15538**（Claiming namespace cinsight）。
+> 审核通过后即可用 `cinsight.code-insight` 发布；`package.json` 的 `publisher` 已固定为 `cinsight`。
+
 > 用途：在 https://github.com/EclipseFdn/open-vsx.org/issues/new?template=claim-namespace-ownership.yml
 > 提交 issues 时按模板字段填写。尖括号 `<...>` 是待你替换的部分。
 

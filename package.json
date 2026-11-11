@@ -225,5 +225,13 @@
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.9.3"
   },
-  "l10n": "./l10n"
+  "l10n": "./l10n",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/izhongbei/cinsight.git"
+  },
+  "homepage": "https://github.com/izhongbei/cinsight#readme",
+  "bugs": {
+    "url": "https://github.com/izhongbei/cinsight/issues"
+  }
 }
