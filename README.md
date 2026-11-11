@@ -1,8 +1,8 @@
 # Code Insight
 
-> RCIOS 基础转发组出品。参考 Source Insight 的 VS Code 代码导航扩展（Code Insight）：为大型 C/C++ 工程建立**独立、持久、可增量更新**的函数符号索引，不依赖编译数据库、clangd 或任何外部工具。
+> 参考 Source Insight 的 VS Code 代码导航扩展（Code Insight）：为大型 C/C++ 工程建立**独立、持久、可增量更新**的函数符号索引，不依赖编译数据库、clangd 或任何外部工具。
 
-面向的场景：像 `rcios/` 这样的嵌入式固件仓库（实测 **121,606 个 C/H 文件、2.6 GB、108 万个函数定义**），编译配置复杂、工程庞大，靠 IntelliSense 建索引慢且经常不完整。Code Insight 自己解析源码并维护符号库，跳转/搜索/引用都走本地索引，毫秒级响应。
+面向的场景：十几万文件级的嵌入式固件仓库（实测 **121,606 个 C/H 文件、2.6 GB、108 万个函数定义**），编译配置复杂、工程庞大，靠 IntelliSense 建索引慢且经常不完整。Code Insight 自己解析源码并维护符号库，跳转/搜索/引用都走本地索引，毫秒级响应。
 
 ## 功能
 
@@ -33,7 +33,7 @@ cursor --install-extension code-insight-0.1.0.vsix
 ## 首次使用
 
 1. 打开你的 C 工程目录（`File → Open Folder`）。
-2. 命令面板执行 **`Code Insight: 配置索引目录`**，勾选要索引的目录（例如 `rcios/component`、`rcios/plat`、`rcios/plugin`）。
+2. 命令面板执行 **`Code Insight: 配置索引目录`**，勾选要索引的目录（例如 `component`、`plat`、`plugin`）。
 3. 选择后确认重建，右下角状态栏显示进度；完成后显示 `$(symbol-function) SI: <符号数> 函数`。
 4. 打开任意 `.c` 文件，把光标放到函数调用上按 `F12`。
 
@@ -88,11 +88,11 @@ cursor --install-extension code-insight-0.1.0.vsix
 
 ## 性能（本仓库实测，2026-11-09）
 
-`npm run perf` 在 `rcios/plat` + `rcios/plugin`（6,838 文件 / 75 MB）上的真实数据：
+`npm run perf` 在 `plat` + `plugin` 两个模块（6,838 文件 / 75 MB）上的真实数据：
 
 | 指标 | 实测 |
 |---|---|
-| 符号总数 | **98,930**（function 31,776 / declaration 33,523 / macro 8,895 的比例由 `rcios/plat` 单库测得） |
+| 符号总数 | **98,930**（function 31,776 / declaration 33,523 / macro 8,895 的比例由 `plat` 单库测得） |
 | 建索引（4 worker，含冷盘读） | **6.5 s** |
 | 快照体积 / 加载 | **3.87 MB** / **28 ms** |
 | 符号搜索（`searchSymbols`，limit 50） | **11 ms** |
@@ -106,8 +106,8 @@ cursor --install-extension code-insight-0.1.0.vsix
 
 | 场景 | 数据 |
 |---|---|
-| 仅 `rcios/plat`（5,573 文件 / 57.5 MB） | 74,194 符号；4 worker 热缓存 **0.8–1.2 s**，不变增量重建 0.5 s，快照 3.06 MB / 加载 18 ms |
-| 全量 `rcios/`（121,606 文件 / 2.6 GB）原型扫描 | 单线程 157 s（40–60 s 可并行化）；建议按模块配置 `indexRoots` |
+| 仅 `plat`（5,573 文件 / 57.5 MB） | 74,194 符号；4 worker 热缓存 **0.8–1.2 s**，不变增量重建 0.5 s，快照 3.06 MB / 加载 18 ms |
+| 全量工程（121,606 文件 / 2.6 GB）原型扫描 | 单线程 157 s（40–60 s 可并行化）；建议按模块配置 `indexRoots` |
 | 本机文件系统吞吐 | 约 **22 MB/s**（`/mnt/data` 慢速挂载，`rg` 全扫同量数据 14 s）——引用扫描受此限制 |
 
 > 引用扫描/调用者是**按需全文扫描**（先用 `indexOf` 预筛，只对候选文件做词法剥离），
@@ -128,8 +128,8 @@ cursor --install-extension code-insight-0.1.0.vsix
 ## 安装后自测清单
 
 1. 首次打开 C 工程 → 左侧出现「Code Insight」图标，视图显示引导页。
-2. 执行"配置索引目录"，只勾一个中等目录（如 `rcios/plat`）→ 状态栏出现进度，结束后显示函数数量。
-3. 打开 `rcios/plat/` 下任意 `.c`，光标放在一个跨文件调用的函数名上按 `F12` → 跳到定义文件对应行。
+2. 执行"配置索引目录"，只勾一个中等目录（如 `plat`）→ 状态栏出现进度，结束后显示函数数量。
+3. 打开该目录下任意 `.c`，光标放在一个跨文件调用的函数名上按 `F12` → 跳到定义文件对应行。
 4. `Ctrl+T` 输入函数名片段 → 结果列表含文件与行，回车跳转。
 5. 在函数声明处 `Shift+F12` → 找到调用点列表。
 6. 右键函数 →"显示被调用者"→ 列出它调用的函数；"显示调用者"→ 列出调用它的函数。

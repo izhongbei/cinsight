@@ -3,7 +3,7 @@
   "displayName": "%displayName%",
   "description": "%description%",
   "version": "0.1.0",
-  "publisher": "rcios",
+  "publisher": "cinsight",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
@@ -20,7 +20,6 @@
     "index",
     "code navigation",
     "source insight",
-    "rcios",
     "forwarding",
     "c code navigation",
     "code insight"

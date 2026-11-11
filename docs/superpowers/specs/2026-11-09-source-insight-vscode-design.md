@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-把 Source Insight 的核心体验搬进 VS Code，面向本机 `rcios/` 这类大型嵌入式 C 工程（实测 12.1 万 C/H 文件、2.6 GB、108 万函数定义），不依赖编译数据库、clangd 或任何外部工具：
+把 Source Insight 的核心体验搬进 VS Code，面向十几万文件级的大型嵌入式 C 工程（实测 12.1 万 C/H 文件、2.6 GB、108 万函数定义），不依赖编译数据库、clangd 或任何外部工具：
 
 1. **A 跳转定义**：F12 / Ctrl+Click 从调用点跳到函数定义（无定义时跳头文件原型）。
 2. **B 函数搜索**：按名字模糊搜索全工程函数（Ctrl+T / 命令面板），显示签名与位置，回车跳转。
@@ -27,7 +27,7 @@
 | 引用/调用图 | 按需扫描（文件名预筛 + 内容预筛），结果按查询名缓存 | 避免常驻巨型倒排索引 |
 | 调用关系 UI | 原生 `CallHierarchyProvider` | 复用 VS Code 成熟 UI，不重复造轮子 |
 | 符号搜索 UI | 原生 `WorkspaceSymbolProvider`（Ctrl+T）+ QuickPick 命令 | 两种入口，符合 VS Code 习惯 |
-| 工程位置 | `tools/vscode-source-insight/`（独立 git 仓库，不动 rcios 任何文件） | 不污染固件仓库 |
+| 工程位置 | `tools/vscode-source-insight/`（独立 git 仓库，不改动固件仓库文件） | 不污染固件仓库 |
 | 语言 | TypeScript → CommonJS → `dist/` | 接口可被编译器校验，团队并行开发 |
 
 ## 3. 架构

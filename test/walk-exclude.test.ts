@@ -43,8 +43,8 @@ function isAbortError(err: unknown): boolean {
 // ---------------------------------------------------------------- matchesGlob
 
 test('walk-exclude: ** matches across directories', () => {
-  assert.equal(matchesGlob('rcios/build/a.c', '**/build/**'), true)
-  assert.equal(matchesGlob('rcios/src/a.c', '**/build/**'), false)
+  assert.equal(matchesGlob('proj/build/a.c', '**/build/**'), true)
+  assert.equal(matchesGlob('proj/src/a.c', '**/build/**'), false)
   assert.equal(matchesGlob('build/a.c', '**/build/**'), true, 'leading **/ may match zero dirs')
 })
 
@@ -64,14 +64,14 @@ test('walk-exclude: tmp pattern and wildcard suffix', () => {
 
 test('walk-exclude: literal dir pattern matches any level', () => {
   assert.equal(matchesGlob('x/build/a.c', 'build'), true)
-  assert.equal(matchesGlob('rcios/build/a.c', 'build/'), true)
+  assert.equal(matchesGlob('proj/build/a.c', 'build/'), true)
   assert.equal(matchesGlob('x/builder/a.c', 'build'), false)
-  assert.equal(matchesGlob('rcios/build/a.c', 'rcios/build'), true)
+  assert.equal(matchesGlob('proj/build/a.c', 'proj/build'), true)
 })
 
 test('walk-exclude: leading slash anchors at workspace root', () => {
   assert.equal(matchesGlob('build/a.c', '/build/**'), true)
-  assert.equal(matchesGlob('rcios/build/a.c', '/build/**'), false)
+  assert.equal(matchesGlob('proj/build/a.c', '/build/**'), false)
 })
 
 test('walk-exclude: compileExclude with empty patterns never matches', () => {
@@ -82,9 +82,9 @@ test('walk-exclude: compileExclude with empty patterns never matches', () => {
 
 test('walk-exclude: compileExclude combines patterns', () => {
   const isExcluded = compileExclude(['**/build/**', '**/generated/*.c'])
-  assert.equal(isExcluded('rcios/build/a.c'), true)
-  assert.equal(isExcluded('rcios/generated/x.c'), true)
-  assert.equal(isExcluded('rcios/src/x.c'), false)
+  assert.equal(isExcluded('proj/build/a.c'), true)
+  assert.equal(isExcluded('proj/generated/x.c'), true)
+  assert.equal(isExcluded('proj/src/x.c'), false)
 })
 
 // ------------------------------------------------------------ isIndexableFile

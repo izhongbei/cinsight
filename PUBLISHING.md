@@ -21,7 +21,7 @@ cd tools/vscode-source-insight
 1. **`publisher` 不能是 `local`**。改成你的组织/个人 ID（Open VSX 的 namespace 必须与它完全一致）：
    ```jsonc
    // package.json
-   "publisher": "rcios",
+   "publisher": "cinsight",
    "repository": { "type": "git", "url": "https://git.example.com/tools/vscode-source-insight" },
    "homepage": "https://git.example.com/tools/vscode-source-insight",
    "bugs": { "url": "https://git.example.com/tools/vscode-source-insight/issues" }
@@ -93,13 +93,13 @@ curl -fsSL http://intranet/tools/code-insight-latest.vsix -o /tmp/si.vsix && \
 1. 用 GitHub 账号登录 <https://open-vsx.org>。
 2. 创建 namespace（等于 `package.json` 的 `publisher`）：
    ```bash
-   npx ovsx create-namespace rcios -p <token>
+   npx ovsx create-namespace cinsight -p <token>
    # 首次发布时也可以直接在网站上认领 namespace
    ```
 3. 生成访问令牌：<https://open-vsx.org/user-settings/tokens> → 新建 token。
 4. 校验 token 与 namespace 匹配：
    ```bash
-   npx ovsx verify-pat rcios -p "$OVSX_PAT"
+   npx ovsx verify-pat cinsight -p "$OVSX_PAT"
    ```
 5. 发布（脚本会先跑测试+打包）：
    ```bash
@@ -111,14 +111,14 @@ curl -fsSL http://intranet/tools/code-insight-latest.vsix -o /tmp/si.vsix && \
    ```
 6. 验证：
    ```bash
-   npx ovsx show rcios.code-insight
-   # 页面：https://open-vsx.org/extension/rcios/code-insight
+   npx ovsx show cinsight.code-insight
+   # 页面：https://open-vsx.org/extension/cinsight/code-insight
    ```
    Cursor 侧：Open VSX 收录后，经由 Cursor 代理分析（通常几分钟到数小时）才出现在 Cursor 的扩展搜索里；期间可用 VSIX 安装。
 7. 升级：改 `version` + `CHANGELOG`，重跑第 5 步；`--skip-duplicate` 让 CI 重跑不会因版本已存在而失败。
 8. 撤版：
    ```bash
-   npx ovsx unpublish rcios.code-insight@0.1.0 -p "$OVSX_PAT"
+   npx ovsx unpublish cinsight.code-insight@0.1.0 -p "$OVSX_PAT"
    ```
 
 > Open VSX 上架的扩展由 Open VSX 签名；Cursor 企业版若开启 *Require Extension Signature Verification*，从 Open VSX 安装的版本才能通过校验（手工 sideload 的 vsix 不满足）。
@@ -131,14 +131,14 @@ curl -fsSL http://intranet/tools/code-insight-latest.vsix -o /tmp/si.vsix && \
 2. 打开 <https://marketplace.visualstudio.com/manage>，创建 publisher，ID 与 `package.json` 的 `publisher` 一致。
 3. 登录并发布：
    ```bash
-   npx vsce login rcios          # 交互式粘贴 PAT
+   npx vsce login cinsight          # 交互式粘贴 PAT
    # 或直接：
    export VSCE_PAT=<pat>
    npm run publish:vsce
    # 等价于：npx vsce publish --packagePath code-insight-0.1.0.vsix -p "$VSCE_PAT"
    ```
-4. 验证：`https://marketplace.visualstudio.com/items?itemName=rcios.code-insight`；首次发布可能被扫描/挂起一段时间。
-5. `vsce publish minor|patch` / `--packagePath` 均可；撤版用 `npx vsce unpublish rcios.code-insight`。
+4. 验证：`https://marketplace.visualstudio.com/items?itemName=cinsight.code-insight`；首次发布可能被扫描/挂起一段时间。
+5. `vsce publish minor|patch` / `--packagePath` 均可；撤版用 `npx vsce unpublish cinsight.code-insight`。
 
 > 注意：发给 Cursor 用户无效——Cursor 只认 Open VSX / VSIX。
 

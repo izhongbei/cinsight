@@ -552,7 +552,7 @@ const context = {
   secrets: { get: async () => undefined, store: async () => {}, delete: async () => {} },
   environmentVariableCollection: { replace: () => {}, append: () => {}, prepend: () => {} },
   asAbsolutePath: (p) => path.join(extensionPath, p),
-  extension: { id: 'local.rcios-insight', packageJSON: pkg },
+  extension: { id: 'cinsight.code-insight', packageJSON: pkg },
 }
 
 async function main() {

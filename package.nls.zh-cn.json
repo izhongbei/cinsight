@@ -1,6 +1,6 @@
 {
   "displayName": "Code Insight",
-  "description": "RCIOS 基础转发组的 C/C++ 代码导航（Code Insight）：持久函数索引，支持跳转定义、查找引用、调用层次、符号搜索、悬停签名、大纲与符号树（参考 Source Insight）。",
+  "description": "面向大型 C/C++ 工程的代码导航（Code Insight）：持久函数索引，支持跳转定义、查找引用、调用层次、符号搜索、悬停签名、大纲与符号树（参考 Source Insight）。",
   "command.category": "Code Insight",
   "command.configureRoots.title": "配置索引目录",
   "command.rebuildIndex.title": "重建索引",

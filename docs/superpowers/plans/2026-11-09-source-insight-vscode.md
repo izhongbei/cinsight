@@ -18,7 +18,7 @@
 - 每个任务先写失败测试再实现（TDD），提交信息用 `feat:` / `test:` / `fix:`。
 - 工作目录：`/mnt/data/br_v4.35_develop_feature_hisi_20260825/tools/vscode-source-insight`（独立 git 仓库）。
 - 编译命令：`npx tsc -p .`；单测命令：`npm test`（= 编译 + `node --test dist/test`）。
-- 不得修改 `rcios/` 下任何文件；不得写入扩展目录以外的工作区文件。
+- 不得修改固件工程源码；不得写入扩展目录以外的工作区文件。
 
 ## File Map
 
@@ -255,7 +255,7 @@ export async function calleesOf(
 - `walkFiles`：对每个 root 递归 `readdir(withFileTypes)`，跳过 `.git`；`followSymlinks=false` 时忽略 `Dirent.isSymbolicLink()`；`maxFileSizeKB` 超限跳过（计入 skipped 不可见，直接不返回）；只返回 `isIndexableFile` 的文件；相对路径用 `posix` 分隔符；结果按路径字典序排序；每 500 个文件回调一次 `onProgress({phase:'walk',done,total:0,currentFile})`；`signal?.aborted` 时抛 `AbortError`（`new Error('aborted'); error.name='AbortError'`）。
 
 **Tests（先写失败）:**
-1. `matchesGlob('rcios/build/a.c','**/build/**') === true`；`matchesGlob('rcios/src/a.c','**/build/**') === false`。
+1. `matchesGlob('proj/build/a.c','**/build/**') === true`；`matchesGlob('proj/src/a.c','**/build/**') === false`。
 2. `matchesGlob('a/b/c.c','a/**/*.c') === true`；`matchesGlob('a/c.c','a/**/*.c') === false`（`**/` 至少一层）。
 3. `matchesGlob('x/tmp/y.h','**/tmp/**') === true`。
 4. `compileExclude([])('any/path.c') === false`。
@@ -296,7 +296,7 @@ export async function calleesOf(
 11. 误报排除：`if (x) { }`、`for (;;) {}`、`sizeof(x)`、`return (a+b);` 均不产生符号。
 12. 结构体定义 `struct s { int a; };` 不产生函数符号。
 
-**Verify:** `npm test -- --test-name-pattern=parser`；并 `node -e` 对 `rcios/plat/` 抽 100 个文件跑 `scanSource` 不抛异常（脚本临时命令即可）。
+**Verify:** `npm test -- --test-name-pattern=parser`；并 `node -e` 对 `plat/` 抽 100 个文件跑 `scanSource` 不抛异常（脚本临时命令即可）。
 **Commit:** `feat: c lexer and symbol scanner`
 
 ---
@@ -475,7 +475,7 @@ export class SymbolService implements vscode.Disposable {
 - [ ] `package.nls.json` / `package.nls.zh-cn.json`：displayName、description、命令标题、配置项描述、视图标题、欢迎页文案。
 - [ ] `README.md`：功能、安装（`code --install-extension source-insight-c-0.1.0.vsix`）、首次使用（配置索引目录）、配置说明、自测清单、已知限制。
 - [ ] 全量验证：`npm test`、`npm run smoke`、`npx vsce package --no-dependencies`，`unzip -l` 校验 vsix 内容。
-- [ ] 真实仓库压测：对 `rcios/component + rcios/plat` 跑 perf-build，记录数据到 README。
+- [ ] 真实仓库压测：对 `component` + `plat` 跑 perf-build，记录数据到 README。
 - [ ] `git add -A && git commit`。
 
 ---

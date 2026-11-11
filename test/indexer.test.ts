@@ -95,7 +95,7 @@ test('indexer/store: binary snapshot roundtrip preserves every field', async () 
   try {
     const files = makeFileRecords(dir, 3)
     const entries = makeEntries(files, 5)
-    const snapshot = createSnapshot(['rcios/plat', 'rcios/component'], files, entries)
+    const snapshot = createSnapshot(['proj/plat', 'proj/component'], files, entries)
     const file = path.join(dir, 'nested', 'symbols.sidx')
     const bytes = await saveSnapshot(file, snapshot)
     assert.ok(bytes > 20, `expected snapshot bytes, got ${bytes}`)
@@ -104,7 +104,7 @@ test('indexer/store: binary snapshot roundtrip preserves every field', async () 
     assert.ok(loaded, 'snapshot should load')
     assert.deepEqual(loaded, snapshot)
     assert.equal(loaded!.version, SNAPSHOT_VERSION)
-    assert.deepEqual([...loaded!.roots], ['rcios/plat', 'rcios/component'])
+    assert.deepEqual([...loaded!.roots], ['proj/plat', 'proj/component'])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

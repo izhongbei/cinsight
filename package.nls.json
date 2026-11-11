@@ -1,6 +1,6 @@
 {
   "displayName": "Code Insight",
-  "description": "Source Insight-style code navigation for RCIOS C/C++ projects: persistent function index with go to definition, find references, call hierarchy, symbol search, hover signatures, outline and a symbol tree.",
+  "description": "Source Insight-style code navigation for large C/C++ projects: persistent function index with go to definition, find references, call hierarchy, symbol search, hover signatures, outline and a symbol tree.",
   "command.category": "Code Insight",
   "command.configureRoots.title": "Configure Index Roots",
   "command.rebuildIndex.title": "Rebuild Index",

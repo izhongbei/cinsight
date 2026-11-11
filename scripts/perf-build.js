@@ -3,9 +3,8 @@
  * 真实仓库压测：对指定目录构建符号索引，并测量搜索/引用/调用图耗时。
  *
  * 用法（在扩展目录下）：
- *   node scripts/perf-build.js                       # 默认 rcios/plat + rcios/plugin
- *   node scripts/perf-build.js rcios/component rcios/plat
- *   node scripts/perf-build.js --query=fopen rcios/plat
+ *   node scripts/perf-build.js plat plugin
+ *   node scripts/perf-build.js --query=fopen component plat
  *
  * 输出：文件数、符号数、各阶段耗时、快照体积、关键查询耗时、内存 RSS。
  */
@@ -29,7 +28,10 @@ const { DEFAULT_EXCLUDE } = require(path.join(EXT_ROOT, 'dist/src/shared/types.j
 const args = process.argv.slice(2)
 const queryArg = args.find((a) => a.startsWith('--query='))
 const roots = args.filter((a) => !a.startsWith('--'))
-if (!roots.length) roots.push('rcios/plat', 'rcios/plugin')
+if (!roots.length) {
+  console.error('用法: node scripts/perf-build.js <相对 workspace 的目录...> [--query=<symbol>]')
+  process.exit(2)
+}
 
 const readFile = (rel) => fsp.readFile(path.join(WORKSPACE_ROOT, rel), 'latin1')
 const snapshotPath = path.join('/tmp', 'si-perf-snapshot-' + Date.now() + '.sidx')
