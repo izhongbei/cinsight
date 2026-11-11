@@ -1,5 +1,5 @@
 /**
- * 「RCIOS Insight」输出通道日志。
+ * 「Code Insight」输出通道日志。
  *
  * 约定（spec §8）：
  * - 文件读/解析失败等错误写入输出面板，错误类消息最多记录 50 条，避免大仓库刷屏；
@@ -22,10 +22,10 @@ export function createLogger(): Logger {
   let channel: vscode.OutputChannel | undefined
   try {
     if (typeof vscode.window.createOutputChannel === 'function') {
-      channel = vscode.window.createOutputChannel(vscode.l10n.t('RCIOS Insight'))
+      channel = vscode.window.createOutputChannel(vscode.l10n.t('Code Insight'))
     }
   } catch (error) {
-    console.error('[rcios-insight] cannot create output channel', error)
+    console.error('[code-insight] cannot create output channel', error)
   }
 
   let errorCount = 0
@@ -33,9 +33,9 @@ export function createLogger(): Logger {
   const write = (level: 'info' | 'warn' | 'error', message: string): void => {
     const line = `[${new Date().toISOString()}] [${level}] ${message}`
     if (level === 'error') {
-      console.error('[rcios-insight]', message)
+      console.error('[code-insight]', message)
     } else if (level === 'warn') {
-      console.warn('[rcios-insight]', message)
+      console.warn('[code-insight]', message)
     }
     if (!channel) {
       return

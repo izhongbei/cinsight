@@ -1,7 +1,7 @@
 {
-  "displayName": "RCIOS Insight",
-  "description": "RCIOS 基础转发组的 C/C++ 代码导航：持久函数索引，支持跳转定义、查找引用、调用层次、符号搜索、悬停签名、大纲与符号树（参考 Source Insight）。",
-  "command.category": "RCIOS Insight",
+  "displayName": "Code Insight",
+  "description": "RCIOS 基础转发组的 C/C++ 代码导航（Code Insight）：持久函数索引，支持跳转定义、查找引用、调用层次、符号搜索、悬停签名、大纲与符号树（参考 Source Insight）。",
+  "command.category": "Code Insight",
   "command.configureRoots.title": "配置索引目录",
   "command.rebuildIndex.title": "重建索引",
   "command.searchSymbol.title": "搜索函数",
@@ -20,7 +20,7 @@
   "config.autoReindexOnSave": "文件保存、新建或删除后自动重新解析该文件。",
   "config.enableCallHierarchy": "同时注册 VS Code 原生调用层次 Provider（右键函数可交互查看调用者/被调用者）。",
   "config.followSymlinks": "遍历索引目录时是否跟随符号链接。",
-  "viewContainer.title": "RCIOS Insight",
+  "viewContainer.title": "Code Insight",
   "view.symbols.name": "符号",
   "viewWelcome": "尚未配置索引目录。\n\n[配置索引目录](command:si.configureRoots)\n\n选择要索引的 C/C++ 目录后，Source Insight C 会在后台建立紧凑的函数索引，随后即可使用跳转定义（F12）、查找引用（Shift+F12）、调用层次、符号搜索（Ctrl+T）与左侧符号树。\n\n[重建索引](command:si.rebuildIndex)"
 }

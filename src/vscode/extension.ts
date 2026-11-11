@@ -50,7 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     try {
       context?.subscriptions?.push(disposable)
     } catch (error) {
-      console.error('[rcios-insight] cannot push disposable to context', error)
+      console.error('[code-insight] cannot push disposable to context', error)
     }
   }
   const current: Runtime = {
@@ -64,7 +64,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         try {
           disposable.dispose()
         } catch (error) {
-          console.error('[rcios-insight] dispose failed', error)
+          console.error('[code-insight] dispose failed', error)
         }
       }
       disposables.length = 0
@@ -141,7 +141,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       try {
         if (service.building) {
-          view.message = vscode.l10n.t('Building the RCIOS Insight index…')
+          view.message = vscode.l10n.t('Building the Code Insight index…')
         } else if (!service.hasRoots) {
           view.message = undefined
         } else if (!service.ready) {
@@ -173,7 +173,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void buildInBackground(service, logger)
     }
 
-    logger.info('RCIOS Insight activated')
+    logger.info('Code Insight activated')
   } catch (error) {
     logger.error('activation failed', error)
   }
@@ -186,7 +186,7 @@ export async function deactivate(): Promise<void> {
   try {
     await service?.flush()
   } catch (error) {
-    console.error('[rcios-insight] cannot flush snapshot during deactivate', error)
+    console.error('[code-insight] cannot flush snapshot during deactivate', error)
   }
   const current = runtime
   runtime = undefined
@@ -217,7 +217,7 @@ async function promptRebuildAfterConfigChange(
     }
     const rebuildLabel = vscode.l10n.t('Rebuild')
     const answer = await showInformationMessage(
-      vscode.l10n.t('RCIOS Insight index settings changed. Rebuild the index now?'),
+      vscode.l10n.t('Code Insight index settings changed. Rebuild the index now?'),
       rebuildLabel,
       vscode.l10n.t('Later'),
     )

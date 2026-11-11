@@ -45,7 +45,7 @@ export function getWordAt(
       }
     }
   } catch (error) {
-    console.error('[rcios-insight] getWordRangeAtPosition failed', error)
+    console.error('[code-insight] getWordRangeAtPosition failed', error)
   }
   // 兜底：部分 mock / 老版本 API 行为差异时直接扫该行文本
   try {
@@ -65,7 +65,7 @@ export function getWordAt(
       }
     }
   } catch (error) {
-    console.error('[rcios-insight] fallback word scan failed', error)
+    console.error('[code-insight] fallback word scan failed', error)
   }
   return undefined
 }
@@ -79,7 +79,7 @@ export function currentWord(): WordHit | undefined {
     }
     return getWordAt(editor.document, editor.selection.active)
   } catch (error) {
-    console.error('[rcios-insight] active editor word lookup failed', error)
+    console.error('[code-insight] active editor word lookup failed', error)
     return undefined
   }
 }
@@ -181,7 +181,7 @@ export async function withProgress<T>(
       pending = vscode.window.withProgress({ location, title, cancellable }, task)
     } catch (error) {
       // 仅当 withProgress 自身的同步调用失败时才退化为直接执行
-      console.error('[rcios-insight] withProgress unavailable, running task directly', error)
+      console.error('[code-insight] withProgress unavailable, running task directly', error)
       const fallbackProgress: ProgressLike = { report: () => undefined }
       return task(fallbackProgress, neverCancelledToken())
     }
@@ -212,7 +212,7 @@ export async function quiet<T>(
     return await work()
   } catch (error) {
     if (!isAbortError(error)) {
-      console.error(`[rcios-insight] ${label} failed`, error)
+      console.error(`[code-insight] ${label} failed`, error)
     }
     return fallback
   }
@@ -246,7 +246,7 @@ export async function openLocation(
       preview,
     })
   } catch (error) {
-    console.error(`[rcios-insight] cannot open ${file}:${line + 1}`, error)
+    console.error(`[code-insight] cannot open ${file}:${line + 1}`, error)
   }
 }
 
@@ -258,7 +258,7 @@ export async function showInformationMessage(message: string, ...items: string[]
       return await vscode.window.showInformationMessage(message, ...items)
     }
   } catch (error) {
-    console.error('[rcios-insight] showInformationMessage failed', error)
+    console.error('[code-insight] showInformationMessage failed', error)
   }
   return undefined
 }
@@ -269,7 +269,7 @@ export async function showWarningMessage(message: string, ...items: string[]): P
       return await vscode.window.showWarningMessage(message, ...items)
     }
   } catch (error) {
-    console.error('[rcios-insight] showWarningMessage failed', error)
+    console.error('[code-insight] showWarningMessage failed', error)
   }
   return undefined
 }
@@ -280,7 +280,7 @@ export async function showErrorMessage(message: string, ...items: string[]): Pro
       return await vscode.window.showErrorMessage(message, ...items)
     }
   } catch (error) {
-    console.error('[rcios-insight] showErrorMessage failed', error)
+    console.error('[code-insight] showErrorMessage failed', error)
   }
   return undefined
 }
@@ -292,7 +292,7 @@ export async function executeCommand(command: string, ...args: unknown[]): Promi
       return await vscode.commands.executeCommand(command, ...args)
     }
   } catch (error) {
-    console.error(`[rcios-insight] command ${command} failed`, error)
+    console.error(`[code-insight] command ${command} failed`, error)
   }
   return undefined
 }

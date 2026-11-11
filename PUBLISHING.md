@@ -1,4 +1,4 @@
-# 发布 RCIOS Insight
+# 发布 Code Insight
 
 三种渠道，按用途选一个或多个：
 
@@ -38,7 +38,7 @@ cd tools/vscode-source-insight
    npx vsce ls                                          # 确认打包文件清单（应为 39 个文件、~90KB）
    ```
 
-4. **商标**：displayName 已定为中性的 **RCIOS Insight**，不冒用 Source Dynamics 的产品名；README/描述里的 "Source Insight-style / 参考 Source Insight" 属于描述性引用（nominative use），公开发布时可以保留，也可以改成 "Source-Insight-like"。
+4. **商标**：displayName 已定为中性的 **Code Insight**，不冒用 Source Dynamics 的产品名；README/描述里的 "Source Insight-style / 参考 Source Insight" 属于描述性引用（nominative use），公开发布时可以保留，也可以改成 "Source-Insight-like"。
 
 5. 图标/许可已就绪：`resources/icon.png`（128×128）、`LICENSE`（MIT）、中英双语 `package.nls*.json`。
 
@@ -48,7 +48,7 @@ cd tools/vscode-source-insight
 
 ```bash
 npm run package
-# 产物：rcios-insight-<version>.vsix
+# 产物：code-insight-<version>.vsix
 ```
 
 **分发**（任选其一）：
@@ -57,29 +57,29 @@ npm run package
 - GitLab Generic Package Registry：
   ```bash
   curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-       --upload-file rcios-insight-0.1.0.vsix \
-       "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/rcios-insight/0.1.0/rcios-insight-0.1.0.vsix"
+       --upload-file code-insight-0.1.0.vsix \
+       "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/code-insight/0.1.0/code-insight-0.1.0.vsix"
   ```
 - Nexus / Artifactory 的 raw/通用仓库：
   ```bash
-  curl -u "$NEXUS_USER:$NEXUS_PASS" --upload-file rcios-insight-0.1.0.vsix \
-       "https://nexus.example.com/repository/raw-releases/rcios-insight/0.1.0/"
+  curl -u "$NEXUS_USER:$NEXUS_PASS" --upload-file code-insight-0.1.0.vsix \
+       "https://nexus.example.com/repository/raw-releases/code-insight/0.1.0/"
   ```
 
 **安装**（分发给同事时给这条命令）：
 
 ```bash
 # VS Code
-code   --install-extension rcios-insight-0.1.0.vsix --force
+code   --install-extension code-insight-0.1.0.vsix --force
 # Cursor
-cursor --install-extension rcios-insight-0.1.0.vsix --force
+cursor --install-extension code-insight-0.1.0.vsix --force
 # 或 GUI：Ctrl+Shift+P → Extensions: Install from VSIX...
 ```
 
 **升级**：sideload 的扩展**不会自动更新**（不走 gallery），需要发新版 vsix 并重跑安装命令。可以给团队一个更新脚本：
 
 ```bash
-curl -fsSL http://intranet/tools/rcios-insight-latest.vsix -o /tmp/si.vsix && \
+curl -fsSL http://intranet/tools/code-insight-latest.vsix -o /tmp/si.vsix && \
   (command -v cursor >/dev/null && cursor --install-extension /tmp/si.vsix --force || \
    code --install-extension /tmp/si.vsix --force)
 ```
@@ -107,18 +107,18 @@ curl -fsSL http://intranet/tools/rcios-insight-latest.vsix -o /tmp/si.vsix && \
    npm run publish:ovsx
    # 等价于：
    # npx vsce package --no-dependencies
-   # npx ovsx publish rcios-insight-0.1.0.vsix -p "$OVSX_PAT" --skip-duplicate
+   # npx ovsx publish code-insight-0.1.0.vsix -p "$OVSX_PAT" --skip-duplicate
    ```
 6. 验证：
    ```bash
-   npx ovsx show rcios.rcios-insight
-   # 页面：https://open-vsx.org/extension/rcios/rcios-insight
+   npx ovsx show rcios.code-insight
+   # 页面：https://open-vsx.org/extension/rcios/code-insight
    ```
    Cursor 侧：Open VSX 收录后，经由 Cursor 代理分析（通常几分钟到数小时）才出现在 Cursor 的扩展搜索里；期间可用 VSIX 安装。
 7. 升级：改 `version` + `CHANGELOG`，重跑第 5 步；`--skip-duplicate` 让 CI 重跑不会因版本已存在而失败。
 8. 撤版：
    ```bash
-   npx ovsx unpublish rcios.rcios-insight@0.1.0 -p "$OVSX_PAT"
+   npx ovsx unpublish rcios.code-insight@0.1.0 -p "$OVSX_PAT"
    ```
 
 > Open VSX 上架的扩展由 Open VSX 签名；Cursor 企业版若开启 *Require Extension Signature Verification*，从 Open VSX 安装的版本才能通过校验（手工 sideload 的 vsix 不满足）。
@@ -135,10 +135,10 @@ curl -fsSL http://intranet/tools/rcios-insight-latest.vsix -o /tmp/si.vsix && \
    # 或直接：
    export VSCE_PAT=<pat>
    npm run publish:vsce
-   # 等价于：npx vsce publish --packagePath rcios-insight-0.1.0.vsix -p "$VSCE_PAT"
+   # 等价于：npx vsce publish --packagePath code-insight-0.1.0.vsix -p "$VSCE_PAT"
    ```
-4. 验证：`https://marketplace.visualstudio.com/items?itemName=rcios.rcios-insight`；首次发布可能被扫描/挂起一段时间。
-5. `vsce publish minor|patch` / `--packagePath` 均可；撤版用 `npx vsce unpublish rcios.rcios-insight`。
+4. 验证：`https://marketplace.visualstudio.com/items?itemName=rcios.code-insight`；首次发布可能被扫描/挂起一段时间。
+5. `vsce publish minor|patch` / `--packagePath` 均可；撤版用 `npx vsce unpublish rcios.code-insight`。
 
 > 注意：发给 Cursor 用户无效——Cursor 只认 Open VSX / VSIX。
 
@@ -211,8 +211,8 @@ release:
     - npx vsce package --no-dependencies --allow-missing-repository
     - |
       curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-           --upload-file "rcios-insight-$(node -p "require('./package.json').version").vsix" \
-           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/rcios-insight/$(node -p "require('./package.json').version")/"
+           --upload-file "code-insight-$(node -p "require('./package.json').version").vsix" \
+           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/code-insight/$(node -p "require('./package.json').version")/"
   rules:
     - if: $CI_COMMIT_TAG
 ```

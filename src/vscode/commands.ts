@@ -56,12 +56,12 @@ export function registerCommands(
           try {
             await handler(...args)
           } catch (error) {
-            console.error(`[rcios-insight] command ${id} failed`, error)
+            console.error(`[code-insight] command ${id} failed`, error)
           }
         }),
       )
     } catch (error) {
-      console.error(`[rcios-insight] cannot register command ${id}`, error)
+      console.error(`[code-insight] cannot register command ${id}`, error)
     }
   }
 
@@ -100,7 +100,7 @@ async function configureRoots(service: SymbolService): Promise<void> {
   const workspaceRoot = service.workspaceRoot
   if (!workspaceRoot) {
     await showWarningMessage(
-      vscode.l10n.t('Open a folder before configuring RCIOS Insight index roots.'),
+      vscode.l10n.t('Open a folder before configuring Code Insight index roots.'),
     )
     return
   }
@@ -171,9 +171,9 @@ async function configureRoots(service: SymbolService): Promise<void> {
     const target = resolveConfigurationTarget()
     await configuration.update('indexRoots', nextRoots, target)
   } catch (error) {
-    console.error('[rcios-insight] cannot update indexRoots', error)
+    console.error('[code-insight] cannot update indexRoots', error)
     await showWarningMessage(
-      vscode.l10n.t('Failed to update the RCIOS Insight index roots setting.'),
+      vscode.l10n.t('Failed to update the Code Insight index roots setting.'),
     )
     return
   }
@@ -247,7 +247,7 @@ async function browseDirectories(service: SymbolService, workspaceRoot: string):
       result.push(relative === '' ? '.' : relative)
     }
   } catch (error) {
-    console.error('[rcios-insight] browse directories failed', error)
+    console.error('[code-insight] browse directories failed', error)
   }
   return result
 }
@@ -283,7 +283,7 @@ async function rebuildIndex(service: SymbolService): Promise<void> {
   if (summary) {
     await showInformationMessage(
       vscode.l10n.t(
-        'RCIOS Insight index rebuilt: {0} files, {1} symbols in {2} s.',
+        'Code Insight index rebuilt: {0} files, {1} symbols in {2} s.',
         String(summary.files),
         String(summary.entries),
         (summary.durationMs / 1000).toFixed(1),
@@ -359,7 +359,7 @@ async function tryNativeFindReferences(
     await vscode.commands.executeCommand('editor.action.findReferences', uri, position)
     return true
   } catch (error) {
-    console.error('[rcios-insight] native findReferences failed', error)
+    console.error('[code-insight] native findReferences failed', error)
     return false
   }
 }
@@ -444,7 +444,7 @@ function toNonNegativeInteger(value: unknown, fallback: number): number {
 
 async function clearCache(service: SymbolService): Promise<void> {
   const answer = await showInformationMessage(
-    vscode.l10n.t('Clear the RCIOS Insight index cache?'),
+    vscode.l10n.t('Clear the Code Insight index cache?'),
     vscode.l10n.t('Clear'),
     vscode.l10n.t('Cancel'),
   )
@@ -452,5 +452,5 @@ async function clearCache(service: SymbolService): Promise<void> {
     return
   }
   await service.clearCache()
-  await showInformationMessage(vscode.l10n.t('RCIOS Insight index cache cleared.'))
+  await showInformationMessage(vscode.l10n.t('Code Insight index cache cleared.'))
 }

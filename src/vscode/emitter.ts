@@ -36,7 +36,7 @@ export class SimpleEmitter<T> implements vscode.Disposable {
       try {
         listener(event)
       } catch (error) {
-        console.error('[rcios-insight] event listener failed', error)
+        console.error('[code-insight] event listener failed', error)
       }
     }
   }

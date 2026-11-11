@@ -1,7 +1,7 @@
 {
-  "displayName": "RCIOS Insight",
+  "displayName": "Code Insight",
   "description": "Source Insight-style code navigation for RCIOS C/C++ projects: persistent function index with go to definition, find references, call hierarchy, symbol search, hover signatures, outline and a symbol tree.",
-  "command.category": "RCIOS Insight",
+  "command.category": "Code Insight",
   "command.configureRoots.title": "Configure Index Roots",
   "command.rebuildIndex.title": "Rebuild Index",
   "command.searchSymbol.title": "Search Function",
@@ -20,7 +20,7 @@
   "config.autoReindexOnSave": "Re-parse a file automatically when it is saved, created or deleted.",
   "config.enableCallHierarchy": "Also register the native VS Code call hierarchy provider (right-click a function to show callers/callees interactively).",
   "config.followSymlinks": "Follow symbolic links while walking the indexed directories.",
-  "viewContainer.title": "RCIOS Insight",
+  "viewContainer.title": "Code Insight",
   "view.symbols.name": "Symbols",
   "viewWelcome": "No index configured yet.\n\n[Configure Index Roots](command:si.configureRoots)\n\nPick the C/C++ directories to index. Source Insight C builds a compact function index in the background, then enables go to definition (F12), find references (Shift+F12), call hierarchy, symbol search (Ctrl+T) and this symbol tree.\n\n[Rebuild Index](command:si.rebuildIndex)"
 }

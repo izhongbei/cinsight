@@ -38,7 +38,7 @@ class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider
       }
       return items.length > 0 ? items : undefined
     } catch (error) {
-      console.error('[rcios-insight] prepareCallHierarchy failed', error)
+      console.error('[code-insight] prepareCallHierarchy failed', error)
       return undefined
     }
   }
@@ -68,7 +68,7 @@ class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider
       }
       return result
     } catch (error) {
-      console.error('[rcios-insight] provideCallHierarchyIncomingCalls failed', error)
+      console.error('[code-insight] provideCallHierarchyIncomingCalls failed', error)
       return []
     }
   }
@@ -96,7 +96,7 @@ class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider
       }
       return result
     } catch (error) {
-      console.error('[rcios-insight] provideCallHierarchyOutgoingCalls failed', error)
+      console.error('[code-insight] provideCallHierarchyOutgoingCalls failed', error)
       return []
     }
   }
@@ -122,7 +122,7 @@ class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider
         selectionRange,
       )
     } catch (error) {
-      console.error('[rcios-insight] cannot build CallHierarchyItem', error)
+      console.error('[code-insight] cannot build CallHierarchyItem', error)
       return undefined
     }
   }
@@ -138,7 +138,7 @@ export function registerCallHierarchyProvider(service: SymbolService): vscode.Di
       new SourceInsightCallHierarchyProvider(service),
     )
   } catch (error) {
-    console.error('[rcios-insight] cannot register call hierarchy provider', error)
+    console.error('[code-insight] cannot register call hierarchy provider', error)
     return noopDisposable()
   }
 }

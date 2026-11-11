@@ -143,7 +143,7 @@ export function createFileWatcher(
       },
     }
   } catch (error) {
-    console.error('[rcios-insight] cannot create file system watcher', error)
+    console.error('[code-insight] cannot create file system watcher', error)
     return noopDisposable()
   }
 }

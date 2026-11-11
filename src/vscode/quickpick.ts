@@ -37,14 +37,14 @@ function showAndWait<T extends vscode.QuickPickItem>(
     try {
       quickPick.onDidHide(finish)
     } catch (error) {
-      console.error('[rcios-insight] quick pick hide listener failed', error)
+      console.error('[code-insight] quick pick hide listener failed', error)
       finish()
       return
     }
     try {
       quickPick.show()
     } catch (error) {
-      console.error('[rcios-insight] quick pick show failed', error)
+      console.error('[code-insight] quick pick show failed', error)
       finish()
     }
   })
@@ -89,7 +89,7 @@ export async function showSymbolQuickPick(service: SymbolService): Promise<void>
             try {
               quickPick.items = value.trim() ? service.search(value).map(toSymbolItem) : []
             } catch (error) {
-              console.error('[rcios-insight] symbol quick pick search failed', error)
+              console.error('[code-insight] symbol quick pick search failed', error)
               quickPick.items = []
             }
           }, SEARCH_DEBOUNCE_MS)
@@ -110,7 +110,7 @@ export async function showSymbolQuickPick(service: SymbolService): Promise<void>
         }),
       )
     } catch (error) {
-      console.error('[rcios-insight] quick pick listeners failed', error)
+      console.error('[code-insight] quick pick listeners failed', error)
     }
 
     try {
@@ -126,7 +126,7 @@ export async function showSymbolQuickPick(service: SymbolService): Promise<void>
       }
     }
   } catch (error) {
-    console.error('[rcios-insight] showSymbolQuickPick failed', error)
+    console.error('[code-insight] showSymbolQuickPick failed', error)
   }
 }
 
@@ -150,7 +150,7 @@ export async function showSymbolEntriesQuickPick(
       await openLocation(service, picked.entry.file, picked.entry.line, picked.entry.column)
     }
   } catch (error) {
-    console.error('[rcios-insight] showSymbolEntriesQuickPick failed', error)
+    console.error('[code-insight] showSymbolEntriesQuickPick failed', error)
   }
 }
 
@@ -182,7 +182,7 @@ export async function showCallerQuickPick(
       await openLocation(service, picked.hit.file, picked.hit.line, picked.hit.column)
     }
   } catch (error) {
-    console.error('[rcios-insight] showCallerQuickPick failed', error)
+    console.error('[code-insight] showCallerQuickPick failed', error)
   }
 }
 
@@ -211,6 +211,6 @@ export async function showReferenceQuickPick(
       await openLocation(service, picked.hit.file, picked.hit.line, picked.hit.column)
     }
   } catch (error) {
-    console.error('[rcios-insight] showReferenceQuickPick failed', error)
+    console.error('[code-insight] showReferenceQuickPick failed', error)
   }
 }

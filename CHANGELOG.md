@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 (RCIOS Insight)
+## 0.1.0 (Code Insight)
 
-- 定名 **RCIOS Insight**（publisher `rcios`，扩展 ID `rcios.rcios-insight`）。
+- 定名 **Code Insight**（publisher `rcios`，扩展 ID `rcios.code-insight`）。
 - 补齐运行时中文语言包 `l10n/bundle.l10n.zh-cn.json`（72 条文案）。
 
 初版，参考 Source Insight 的核心代码浏览体验：

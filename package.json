@@ -1,5 +1,5 @@
 {
-  "name": "rcios-insight",
+  "name": "code-insight",
   "displayName": "%displayName%",
   "description": "%description%",
   "version": "0.1.0",
@@ -22,7 +22,8 @@
     "source insight",
     "rcios",
     "forwarding",
-    "c code navigation"
+    "c code navigation",
+    "code insight"
   ],
   "icon": "resources/icon.png",
   "main": "./dist/src/vscode/extension.js",

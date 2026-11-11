@@ -50,7 +50,7 @@ class SourceInsightDocumentSymbolProvider implements vscode.DocumentSymbolProvid
       }
       return symbols
     } catch (error) {
-      console.error('[rcios-insight] document symbol provider failed', error)
+      console.error('[code-insight] document symbol provider failed', error)
       return []
     }
   }
@@ -66,7 +66,7 @@ export function registerDocumentSymbolProvider(service: SymbolService): vscode.D
       new SourceInsightDocumentSymbolProvider(service),
     )
   } catch (error) {
-    console.error('[rcios-insight] cannot register document symbol provider', error)
+    console.error('[code-insight] cannot register document symbol provider', error)
     return noopDisposable()
   }
 }

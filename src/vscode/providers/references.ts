@@ -38,7 +38,7 @@ class SourceInsightReferenceProvider implements vscode.ReferenceProvider {
           ),
       )
     } catch (error) {
-      console.error('[rcios-insight] references provider failed', error)
+      console.error('[code-insight] references provider failed', error)
       return []
     }
   }
@@ -54,7 +54,7 @@ export function registerReferenceProvider(service: SymbolService): vscode.Dispos
       new SourceInsightReferenceProvider(service),
     )
   } catch (error) {
-    console.error('[rcios-insight] cannot register reference provider', error)
+    console.error('[code-insight] cannot register reference provider', error)
     return noopDisposable()
   }
 }

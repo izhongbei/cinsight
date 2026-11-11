@@ -1,5 +1,5 @@
 /**
- * 状态栏：`$(symbol-function) RCIOS: 123,456 functions` / `$(sync~spin) RCIOS: Indexing 45%` / 未配置。
+ * 状态栏：`$(symbol-function) 123,456 functions` / `$(sync~spin) Indexing 45%` / 未配置。
  *
  * 点击行为：未配置 -> si.configureRoots；其余 -> si.rebuildIndex。
  * 大仓库保护：符号数 > MAX_SYMBOLS_WARNING 时用警告色并提示缩小 indexRoots。
@@ -29,7 +29,7 @@ export class StatusBarController implements vscode.Disposable {
         )
       }
     } catch (error) {
-      console.error('[rcios-insight] cannot create status bar item', error)
+      console.error('[code-insight] cannot create status bar item', error)
       item = undefined
     }
     this.item = item
@@ -39,14 +39,14 @@ export class StatusBarController implements vscode.Disposable {
         this.disposables.push(this.service.onProgress(() => this.update()))
         this.disposables.push(onDidChangeConfig(() => this.update()))
       } catch (error) {
-        console.error('[rcios-insight] status bar listeners failed', error)
+        console.error('[code-insight] status bar listeners failed', error)
       }
     }
     this.update()
     try {
       this.item?.show()
     } catch (error) {
-      console.error('[rcios-insight] cannot show status bar item', error)
+      console.error('[code-insight] cannot show status bar item', error)
     }
   }
 
@@ -58,7 +58,7 @@ export class StatusBarController implements vscode.Disposable {
       const service = this.service
       const config = readConfig()
       if (!service.hasRoots || config.indexRoots.length === 0) {
-        this.item.text = vscode.l10n.t('$(info) RCIOS: Index not configured')
+        this.item.text = vscode.l10n.t('$(info) Index not configured')
         this.item.tooltip = markdown(
           vscode.l10n.t('Pick the C/C++ directories to index to enable navigation.'),
         )
@@ -73,11 +73,11 @@ export class StatusBarController implements vscode.Disposable {
             100,
             Math.max(0, Math.floor((progress.done / progress.total) * 100)),
           )
-          this.item.text = vscode.l10n.t('$(sync~spin) RCIOS: Indexing {0}%', String(percent))
+          this.item.text = vscode.l10n.t('$(sync~spin) Indexing {0}%', String(percent))
         } else {
-          this.item.text = vscode.l10n.t('$(sync~spin) RCIOS: Indexing…')
+          this.item.text = vscode.l10n.t('$(sync~spin) Indexing…')
         }
-        this.item.tooltip = markdown(vscode.l10n.t('Building the RCIOS Insight index…'))
+        this.item.tooltip = markdown(vscode.l10n.t('Building the Code Insight index…'))
         this.item.command = 'si.rebuildIndex'
         this.item.backgroundColor = undefined
         return
@@ -88,8 +88,8 @@ export class StatusBarController implements vscode.Disposable {
         const tooManySymbols = symbols > MAX_SYMBOLS_WARNING
         const formatted = formatNumber(symbols)
         this.item.text = tooManySymbols
-          ? vscode.l10n.t('$(warning) RCIOS: {0} functions', formatted)
-          : vscode.l10n.t('$(symbol-function) RCIOS: {0} functions', formatted)
+          ? vscode.l10n.t('$(warning) {0} functions', formatted)
+          : vscode.l10n.t('$(symbol-function) {0} functions', formatted)
         const lines: string[] = [
           vscode.l10n.t('Files: {0}', formatNumber(files)),
           vscode.l10n.t('Symbols: {0}', formatted),
@@ -129,16 +129,16 @@ export class StatusBarController implements vscode.Disposable {
         return
       }
       if (service.lastError) {
-        this.item.text = vscode.l10n.t('$(error) RCIOS: Index failed')
+        this.item.text = vscode.l10n.t('$(error) Index failed')
         this.item.tooltip = markdown(service.lastError)
         this.item.command = 'si.rebuildIndex'
         return
       }
-      this.item.text = vscode.l10n.t('$(sync) RCIOS: Index not built')
-      this.item.tooltip = markdown(vscode.l10n.t('Click to build the RCIOS Insight index.'))
+      this.item.text = vscode.l10n.t('$(sync) Index not built')
+      this.item.tooltip = markdown(vscode.l10n.t('Click to build the Code Insight index.'))
       this.item.command = 'si.rebuildIndex'
     } catch (error) {
-      console.error('[rcios-insight] status bar update failed', error)
+      console.error('[code-insight] status bar update failed', error)
     }
   }
 

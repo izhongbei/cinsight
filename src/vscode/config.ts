@@ -165,11 +165,11 @@ export function onDidChangeConfig(
           affectsAnything: true,
         })
       } catch (error) {
-        console.error('[rcios-insight] config change listener failed', error)
+        console.error('[code-insight] config change listener failed', error)
       }
     })
   } catch (error) {
-    console.error('[rcios-insight] cannot listen to configuration changes', error)
+    console.error('[code-insight] cannot listen to configuration changes', error)
     return noop
   }
 }

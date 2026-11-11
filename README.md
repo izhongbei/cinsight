@@ -1,31 +1,31 @@
-# RCIOS Insight
+# Code Insight
 
-> RCIOS 基础转发组出品。参考 Source Insight 的 VS Code 代码导航扩展：为大型 C/C++ 工程建立**独立、持久、可增量更新**的函数符号索引，不依赖编译数据库、clangd 或任何外部工具。
+> RCIOS 基础转发组出品。参考 Source Insight 的 VS Code 代码导航扩展（Code Insight）：为大型 C/C++ 工程建立**独立、持久、可增量更新**的函数符号索引，不依赖编译数据库、clangd 或任何外部工具。
 
-面向的场景：像 `rcios/` 这样的嵌入式固件仓库（实测 **121,606 个 C/H 文件、2.6 GB、108 万个函数定义**），编译配置复杂、工程庞大，靠 IntelliSense 建索引慢且经常不完整。RCIOS Insight 自己解析源码并维护符号库，跳转/搜索/引用都走本地索引，毫秒级响应。
+面向的场景：像 `rcios/` 这样的嵌入式固件仓库（实测 **121,606 个 C/H 文件、2.6 GB、108 万个函数定义**），编译配置复杂、工程庞大，靠 IntelliSense 建索引慢且经常不完整。Code Insight 自己解析源码并维护符号库，跳转/搜索/引用都走本地索引，毫秒级响应。
 
 ## 功能
 
 | 功能 | 入口 |
 |---|---|
 | **跳转定义** | 光标在函数调用处按 `F12` / `Ctrl+Click`；无定义时回退到头文件原型声明 |
-| **函数搜索** | `Ctrl+T`（VS Code 原生"转到工作区中的符号"）或命令 `RCIOS Insight: 搜索函数`（QuickPick，显示签名与位置） |
+| **函数搜索** | `Ctrl+T`（VS Code 原生"转到工作区中的符号"）或命令 `Code Insight: 搜索函数`（QuickPick，显示签名与位置） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
-| **调用关系** | 右键 → `RCIOS Insight: 显示调用者 / 显示被调用者`；开启 `enableCallHierarchy` 后还支持 VS Code 原生调用层次（可交互逐层展开） |
-| **侧边栏符号窗口** | 左侧 Activity Bar 的「RCIOS Insight」图标 → 目录 → 文件 → 函数（签名摘要），懒加载 |
+| **调用关系** | 右键 → `Code Insight: 显示调用者 / 显示被调用者`；开启 `enableCallHierarchy` 后还支持 VS Code 原生调用层次（可交互逐层展开） |
+| **侧边栏符号窗口** | 左侧 Activity Bar 的「Code Insight」图标 → 目录 → 文件 → 函数（签名摘要），懒加载 |
 | **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` + 定义/声明位置 |
 | **文档大纲** | `Ctrl+Shift+O` 列出当前文件函数 |
 | **索引管理** | 状态栏显示索引状态/函数数量；命令：配置索引目录、重建索引、清除索引缓存 |
 
 ## 安装
 
-本仓库已构建好 `rcios-insight-0.1.0.vsix`：
+本仓库已构建好 `code-insight-0.1.0.vsix`：
 
 ```bash
 # VS Code
-code --install-extension rcios-insight-0.1.0.vsix
+code --install-extension code-insight-0.1.0.vsix
 # Cursor（基于 VS Code 1.128，已验证可安装）
-cursor --install-extension rcios-insight-0.1.0.vsix
+cursor --install-extension code-insight-0.1.0.vsix
 ```
 
 或在编辑器里 `Ctrl+Shift+P` → `Extensions: Install from VSIX...` 选择该文件。要求宿主 **VS Code ≥ 1.90**（Cursor 3.x 满足）。
@@ -33,7 +33,7 @@ cursor --install-extension rcios-insight-0.1.0.vsix
 ## 首次使用
 
 1. 打开你的 C 工程目录（`File → Open Folder`）。
-2. 命令面板执行 **`RCIOS Insight: 配置索引目录`**，勾选要索引的目录（例如 `rcios/component`、`rcios/plat`、`rcios/plugin`）。
+2. 命令面板执行 **`Code Insight: 配置索引目录`**，勾选要索引的目录（例如 `rcios/component`、`rcios/plat`、`rcios/plugin`）。
 3. 选择后确认重建，右下角状态栏显示进度；完成后显示 `$(symbol-function) SI: <符号数> 函数`。
 4. 打开任意 `.c` 文件，把光标放到函数调用上按 `F12`。
 
@@ -127,7 +127,7 @@ cursor --install-extension rcios-insight-0.1.0.vsix
 
 ## 安装后自测清单
 
-1. 首次打开 C 工程 → 左侧出现「RCIOS Insight」图标，视图显示引导页。
+1. 首次打开 C 工程 → 左侧出现「Code Insight」图标，视图显示引导页。
 2. 执行"配置索引目录"，只勾一个中等目录（如 `rcios/plat`）→ 状态栏出现进度，结束后显示函数数量。
 3. 打开 `rcios/plat/` 下任意 `.c`，光标放在一个跨文件调用的函数名上按 `F12` → 跳到定义文件对应行。
 4. `Ctrl+T` 输入函数名片段 → 结果列表含文件与行，回车跳转。
@@ -157,7 +157,7 @@ npm run compile      # tsc -> dist/
 npm test             # 编译 + node:test 单元测试
 npm run smoke        # mock vscode 激活冒烟（无需真实 VS Code）
 npm run perf          # 对真实仓库建索引并测查询耗时
-npm run package      # 生成 rcios-insight-0.1.0.vsix
+npm run package      # 生成 code-insight-0.1.0.vsix
 ```
 
 目录结构见 `docs/superpowers/specs/2026-11-09-source-insight-vscode-design.md`。
