@@ -167,34 +167,56 @@ npm run release -- --channel=vsix --skip-tests
 
 ---
 
-## CI 示例
+## CI 自动发布（已配好）
 
-**GitHub Actions（打 tag 自动发布 Open VSX）**：
+仓库内已有 **`.github/workflows/publish.yml`**：`push` tag `v*` 或手动 `workflow_dispatch` 时执行
 
-```yaml
-name: release
-on:
-  push:
-    tags: ['v*']
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tools/vscode-source-insight
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: tools/vscode-source-insight/package-lock.json
-      - run: npm ci
-      - run: node --test dist/test/*.test.js
-      - run: node test/smoke-activate.js
-      - run: npx ovsx publish -p "$OVSX_PAT" --skip-duplicate
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+1. `npm ci` → `npm test`（137 个单测）→ 激活冒烟 → `vsce package` → 上传 vsix artifact
+2. **Open VSX**：`npx ovsx publish code-insight-*.vsix -p "$OVSX_PAT" --skip-duplicate`
+   （Cursor / VS Code forks 用户）
+3. **VS Code Marketplace**：`npx @vscode/vsce@4.1.0 publish --oidc`
+   （OIDC Trusted Publishing，**不存任何长期密钥**；Azure DevOps 的全局 PAT 将于 2026-12-01 退役）
+
+两个渠道各自独立、按配置自动跳过。
+
+### 一次性配置
+
+**A. Open VSX（Secret）**
+1. 在 <https://open-vsx.org/user-settings/tokens> 生成 token
+2. 仓库 → Settings → Secrets and variables → Actions → **New repository secret**
+   - Name: `OVSX_PAT`，Value: 上面的 token
+
+**B. VS Code Marketplace（OIDC，可选）**
+1. <https://marketplace.visualstudio.com/manage> 创建 publisher，**ID 必须是 `cinsight`**（与 `package.json` 的 `publisher` 一致）
+2. 该 publisher → **Trusted Publishing** → **Create**：
+   - Repository owner: `izhongbei`
+   - Repository: `cinsight`
+   - Workflow: `publish.yml`
+   - Environment: 留空
+3. 仓库 → Settings → Secrets and variables → Actions → **Variables** → New repository variable
+   - Name: `ENABLE_MARKETPLACE`，Value: `true`
+   > 不配置这个变量时 Marketplace 步骤会被跳过，不会让 Open VSX 发布失败。
+
+### 发布一个新版本
+
+```bash
+# 1) 本地升版本、跑测试、打包（可选，CI 会重新打包）
+npm run release -- 0.3.2
+# 2) 提交 + 打 tag + 推送（推 tag 即触发自动发布）
+git add -A && git commit -m "release: 0.3.2"
+git tag v0.3.2
+git push origin master --tags
+```
+
+也可以不推 tag：Actions → **publish** → **Run workflow**，用当前 `package.json` 的版本发布（适合第一次试跑）。
+
+### 手动/本地发布（CI 之外，兜底）
+
+```bash
+# Open VSX
+OVSX_PAT=xxx npm run publish:ovsx
+# Marketplace（2026-12-01 前仍可用 PAT；之后用上面的 OIDC）
+VSCE_PAT=xxx npm run publish:vsce
 ```
 
 **GitLab CI（内网：打 tag 上传 vsix 到 Generic Package Registry）**：

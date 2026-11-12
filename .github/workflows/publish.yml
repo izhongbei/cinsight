@@ -1,0 +1,62 @@
+name: publish
+
+# 打 tag（v*）或手动触发时：编译 + 测试 + 打包，然后按配置发布到
+#   - Open VSX（需要仓库 Secret: OVSX_PAT）
+#   - VS Code Marketplace（需要仓库 Variable: ENABLE_MARKETPLACE=true + 已配置 Trusted Publishing）
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # VS Code Marketplace Trusted Publishing (OIDC)
+    env:
+      # 未配置 Secret 时该值为空，对应的发布步骤会被跳过
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile and run tests
+        run: npm test
+
+      - name: Activation smoke test (mock vscode host)
+        run: node test/smoke-activate.js
+
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce@4.1.0 package --no-dependencies
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-insight-vsix
+          path: code-insight-*.vsix
+          if-no-files-found: error
+
+      # ---- Open VSX（Cursor / VS Code forks）----
+      - name: Publish to Open VSX
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx --yes ovsx@latest publish code-insight-*.vsix -p "$OVSX_PAT" --skip-duplicate
+
+      # ---- VS Code Marketplace（OIDC，无需 PAT）----
+      # 前置：marketplace.visualstudio.com/manage 里已有 publisher `cinsight`，
+      # 且在该 publisher 的 Trusted Publishing 里创建策略：
+      #   Repository owner = izhongbei / Repository = cinsight / Workflow = publish.yml
+      - name: Publish to VS Code Marketplace
+        if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
+        run: npx --yes @vscode/vsce@4.1.0 publish --oidc
