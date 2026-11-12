@@ -225,7 +225,6 @@ VSCE_PAT=xxx npm run publish:vsce
 release:
   image: node:22
   script:
-    - cd tools/vscode-source-insight
     - npm ci
     - npm run compile
     - node --test dist/test/*.test.js
