@@ -387,3 +387,53 @@ test('indexer: abort during parse rejects with AbortError', async () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('indexer: single-pass build reads each source file exactly once', async () => {
+  const dir = tempDir('si-singlepass-')
+  try {
+    writeFiles(dir, {
+      'a.c': 'int alpha(void) { return 0; }\n',
+      'b.h': 'int beta(void);\n',
+    })
+    const reads: string[] = []
+    const readFile: ReadFileFn = async (rel) => {
+      reads.push(rel)
+      return fs.readFileSync(path.join(dir, rel), 'latin1')
+    }
+    const snapshotPath = path.join(dir, 'symbols.sidx')
+    const nameIndexPath = path.join(dir, 'symbols.names')
+    const result = await buildIndex({
+      workspaceRoot: dir,
+      roots: ['.'],
+      exclude: [],
+      maxFileSizeKB: 4096,
+      concurrency: 1,
+      followSymlinks: false,
+      readFile,
+      snapshotPath,
+      nameIndexPath,
+    })
+    assert.equal(reads.length, 2, `each file read exactly once (got ${reads.join(', ')})`)
+    assert.equal(new Set(reads).size, reads.length, 'no file read twice')
+    assert.ok(result.summary.nameIndexBytes && result.summary.nameIndexBytes > 0)
+
+    // 第二次构建：全部文件未变 → 不应再读源码
+    reads.length = 0
+    const second = await buildIndex({
+      workspaceRoot: dir,
+      roots: ['.'],
+      exclude: [],
+      maxFileSizeKB: 4096,
+      concurrency: 1,
+      followSymlinks: false,
+      readFile,
+      snapshotPath,
+      nameIndexPath,
+      previous: result.snapshot,
+    })
+    assert.equal(reads.length, 0, 'unchanged rebuild does not read sources')
+    assert.equal(second.summary.nameIndexBytes, result.summary.nameIndexBytes)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -21,7 +21,14 @@ const { buildIndex } = require(path.join(EXT_ROOT, 'dist/src/core/indexer.js'))
 const { loadSnapshot, saveSnapshot } = require(path.join(EXT_ROOT, 'dist/src/core/store.js'))
 const { searchSymbols, findByName } = require(path.join(EXT_ROOT, 'dist/src/core/query.js'))
 const { findReferences, clearReferenceCache } = require(path.join(EXT_ROOT, 'dist/src/core/references.js'))
-const { candidatesForName, loadNameIndex } = require(path.join(EXT_ROOT, 'dist/src/core/nameindex.js'))
+const {
+  appendNameIndexDelta,
+  candidatesForName,
+  collectIdentifierHashes,
+  loadNameIndexWithDelta,
+  nameIndexDeltaBytes,
+  nameIndexDeltaPath,
+} = require(path.join(EXT_ROOT, 'dist/src/core/nameindex.js'))
 const { callersOf, calleesOf } = require(path.join(EXT_ROOT, 'dist/src/core/callgraph.js'))
 const { readSignature } = require(path.join(EXT_ROOT, 'dist/src/core/signature.js'))
 const { DEFAULT_EXCLUDE } = require(path.join(EXT_ROOT, 'dist/src/shared/types.js'))
@@ -34,7 +41,11 @@ if (!roots.length) {
   process.exit(2)
 }
 
-const readFile = (rel) => fsp.readFile(path.join(WORKSPACE_ROOT, rel), 'latin1')
+const readCounts = new Map()
+const readFile = async (rel) => {
+  readCounts.set(rel, (readCounts.get(rel) ?? 0) + 1)
+  return fsp.readFile(path.join(WORKSPACE_ROOT, rel), 'latin1')
+}
 const snapshotPath = path.join('/tmp', 'si-perf-snapshot-' + Date.now() + '.sidx')
 const nameIndexPath = path.join('/tmp', 'si-perf-names-' + Date.now() + '.names')
 
@@ -79,6 +90,10 @@ async function main() {
   console.log('  duration     :', total, 'ms')
   console.log('  snapshot     :', mb(snapshotBytes))
   console.log('  nameIndex    :', summary.nameIndexBytes ? mb(summary.nameIndexBytes) : 'not built')
+  const perFile = [...readCounts.values()]
+  const totalReads = perFile.reduce((a, b) => a + b, 0)
+  console.log('  reads        :', totalReads, 'total |', perFile.length ? Math.max(...perFile) : 0, 'max per file',
+    perFile.length && Math.max(...perFile) === 1 ? '(single-pass ✅)' : '(⚠️ multi-pass)')
   console.log('  rss          :', mb(process.memoryUsage().rss))
   console.log('')
 
@@ -88,8 +103,20 @@ async function main() {
   console.log('  duration     :', ms(tLoad), 'ms; entries:', loaded ? loaded.entries.length : 'FAILED')
   if (!loaded) throw new Error('snapshot load failed')
 
+  // 单文件增量保存：只追加 delta（与索引总量无关）
+  if (summary.nameIndexBytes) {
+    const rel = loaded.files[0]?.path
+    if (rel) {
+      const hashes = collectIdentifierHashes(await readFile(rel))
+      const tDelta = performance.now()
+      const bytes = await appendNameIndexDelta(nameIndexDeltaPath(nameIndexPath), { kind: 'set', path: rel, hashes })
+      console.log('  delta append :', mb(bytes), 'in', ms(tDelta), 'ms (per-file save, no full rewrite)')
+      console.log('  delta size   :', mb(await nameIndexDeltaBytes(nameIndexDeltaPath(nameIndexPath))))
+    }
+  }
+
   const tName = performance.now()
-  const nameIndex = await loadNameIndex(nameIndexPath)
+  const nameIndex = await loadNameIndexWithDelta(nameIndexPath)
   console.log('=== load reference index ===')
   console.log('  duration     :', ms(tName), 'ms;', nameIndex
     ? `files=${nameIndex.filePaths.length} hashes=${nameIndex.hashes.length} size=${mb(require('fs').statSync(nameIndexPath).size)}`

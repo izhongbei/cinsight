@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-11-12
+
+### English
+
+- **Single-pass index build**: the parse worker now returns attribute hashes together with symbols, so the reference index no longer re-reads the sources. Measured on 6,838 files: exactly **1 read per file** (6,838 total), build 6.1 s cold (previously two passes / 2x I/O).
+- **Incremental reference index**: saving one file appends a small delta record instead of rewriting the whole index — **743 B / ~1 ms** versus 68 MB / 362 ms on the 68k-file corpus. Deltas are merged back automatically above 4 MB or when VS Code flushes/deactivates.
+- **Lazy reference index loading**: the index is now loaded on the first find-references / call-hierarchy request instead of at activation (68k-file corpus: saves ~194 ms activation time and ~69 MB resident memory).
+- Crash-safe: a truncated delta tail is ignored, so an interrupted write cannot corrupt the index.
+- Snapshot format is unchanged; the reference index keeps its base format and adds a `symbols.names.delta` sidecar (backward compatible, auto-compacted).
+
+### 中文
+
+- **单遍构建**：解析 worker 现在同时返回符号与标识符哈希，引用索引不再二次读源码。6,838 文件实测：**每个文件只读 1 次**（共 6,838 次），冷盘构建 6.1 s（此前读两遍 / 2 倍 I/O）。
+- **引用索引增量维护**：保存单个文件只追加一条小 delta 记录，不再重写整个索引——**743 B / 约 1 ms**（68k 文件语料旧实现为 68 MB / 362 ms）。delta 超过 4 MB 或 VS Code 卸载/失焦时自动合并回 base。
+- **引用索引惰性加载**：改为首次「查找引用 / 调用层次」时才读盘，激活不再加载（68k 文件语料约省 194 ms 与 69 MB 常驻内存）。
+- 崩溃安全：delta 尾部未写完的记录会被忽略，写入中断不会破坏索引。
+- 快照格式不变；引用索引保持原 base 格式，新增 `symbols.names.delta` 边车文件（向后兼容，自动 compaction）。
+
+
 ## 0.3.1 — 2026-11-12
 
 ### English

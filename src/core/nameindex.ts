@@ -1,4 +1,4 @@
-import { readFile as readFileAsync, rename, unlink, writeFile as writeFileAsync } from 'node:fs/promises'
+import { appendFile as appendFileAsync, readFile as readFileAsync, rename, stat as statFile, truncate as truncateFileAsync, unlink as unlinkAsync, writeFile as writeFileAsync } from 'node:fs/promises'
 import type { FileRecord, NameIndexData, ReadFileFn } from '../shared/types'
 import { NAME_INDEX_VERSION } from '../shared/types'
 import { stripSources } from './scan'
@@ -152,6 +152,11 @@ export interface BuildNameIndexOptions {
   readonly previous?: NameIndexData
   /** 需要重新读取解析的文件路径；其余文件复用 previous 的切片 */
   readonly changedPaths: ReadonlySet<string>
+  /**
+   * 变更文件在解析阶段已经算好的标识符哈希（单遍构建）。
+   * 命中时不再读盘；未命中才回退到 readFile。
+   */
+  readonly changedHashes?: ReadonlyMap<string, Uint32Array>
   readonly readFile: ReadFileFn
   readonly signal?: AbortSignal
   readonly onProgress?: (done: number, total: number) => void
@@ -160,7 +165,7 @@ export interface BuildNameIndexOptions {
 
 /** 构建倒排索引：变更文件重新读盘计算，未变更文件复用旧切片。 */
 export async function buildNameIndex(options: BuildNameIndexOptions): Promise<NameIndexData> {
-  const { files, previous, changedPaths, readFile, signal, onProgress } = options
+  const { files, previous, changedPaths, changedHashes, readFile, signal, onProgress } = options
   const concurrency = Math.max(1, Math.min(options.concurrency ?? 4, files.length || 1))
   throwIfAborted(signal)
 
@@ -179,6 +184,13 @@ export async function buildNameIndex(options: BuildNameIndexOptions): Promise<Na
       if (reusable !== undefined && !changedPaths.has(file.path)) {
         slices[index] = reusable
       } else {
+        const precomputed = changedHashes?.get(file.path)
+        if (precomputed !== undefined) {
+          slices[index] = precomputed
+          done += 1
+          onProgress?.(done, files.length)
+          continue
+        }
         let text: string | undefined
         try {
           text = await readFile(file.path)
@@ -300,8 +312,182 @@ export async function saveNameIndex(file: string, data: NameIndexData): Promise<
     await writeFileAsync(temporary, buffer)
     await rename(temporary, file)
   } catch (error) {
-    await unlink(temporary).catch(() => undefined)
+    await unlinkAsync(temporary).catch(() => undefined)
     throw error
   }
   return buffer.length
+}
+
+// ---------------------------------------------------------------------------
+// 增量 delta：单文件保存时只追加一条 KB 级记录，避免重写整个引用索引
+// （实测 68k 文件索引单次重写 68MB / 362ms，改为原地追加后是 KB 级 / 毫秒级）。
+//
+// delta 文件格式（可安全截断，崩溃最多丢最后一条未写完的记录）：
+//   magic "SIND" (4B) | version u32 | record*
+//   record: kind u8 (0=set, 1=remove) | pathLen u32 | path utf8 | hashCount u32 | hash u32*
+// ---------------------------------------------------------------------------
+
+export interface NameIndexDeltaEntry {
+  readonly kind: 'set' | 'remove'
+  readonly path: string
+  readonly hashes: Uint32Array
+}
+
+const DELTA_MAGIC = 'SIND'
+const DELTA_VERSION = 1
+const DELTA_HEADER_BYTES = 8
+const DELTA_KIND_SET = 0
+const DELTA_KIND_REMOVE = 1
+
+/** 引用索引对应的 delta 文件路径。 */
+export function nameIndexDeltaPath(basePath: string): string {
+  return `${basePath}.delta`
+}
+
+function encodeDeltaRecord(entry: NameIndexDeltaEntry): Buffer {
+  const pathBytes = Buffer.byteLength(entry.path, 'utf8')
+  const record = Buffer.allocUnsafe(1 + 4 + pathBytes + 4 + entry.hashes.length * 4)
+  let offset = 0
+  record.writeUInt8(entry.kind === 'set' ? DELTA_KIND_SET : DELTA_KIND_REMOVE, offset)
+  offset += 1
+  record.writeUInt32LE(pathBytes, offset)
+  offset += 4
+  record.write(entry.path, offset, 'utf8')
+  offset += pathBytes
+  record.writeUInt32LE(entry.hashes.length, offset)
+  offset += 4
+  for (let i = 0; i < entry.hashes.length; i++) {
+    record.writeUInt32LE(entry.hashes[i]!, offset)
+    offset += 4
+  }
+  return record
+}
+
+function emptyNameIndex(): NameIndexData {
+  return { filePaths: [], offsets: new Uint32Array(1), hashes: new Uint32Array(0) }
+}
+
+/** 逐条应用 delta；base 为空时也能得出新索引。 */
+export function applyNameIndexDeltas(
+  base: NameIndexData | undefined,
+  entries: readonly NameIndexDeltaEntry[],
+): NameIndexData | undefined {
+  if (entries.length === 0) return base
+  let data: NameIndexData | undefined = base
+  for (const entry of entries) {
+    if (entry.kind === 'remove') {
+      if (data !== undefined) data = removeFileIndex(data, entry.path)
+      continue
+    }
+    data = upsertFileIndex(data ?? emptyNameIndex(), entry.path, entry.hashes)
+  }
+  return data
+}
+
+/** 把一条增量记录追加到 delta 文件（O(记录大小)，不重写整个索引）。返回追加字节数。 */
+export async function appendNameIndexDelta(
+  deltaPath: string,
+  entry: NameIndexDeltaEntry,
+): Promise<number> {
+  const record = encodeDeltaRecord(entry)
+  try {
+    // 首次使用或文件为空时写入 header
+    let existing = 0
+    try {
+      const stat = await statFile(deltaPath)
+      existing = stat.size
+    } catch {
+      existing = 0
+    }
+    let written = record.length
+    if (existing === 0) {
+      const header = Buffer.alloc(DELTA_HEADER_BYTES)
+      header.write(DELTA_MAGIC, 0, 'latin1')
+      header.writeUInt32LE(DELTA_VERSION, 4)
+      await appendFileAsync(deltaPath, header)
+      written += DELTA_HEADER_BYTES
+    }
+    await appendFileAsync(deltaPath, record)
+    return written
+  } catch (error) {
+    throw error
+  }
+}
+
+/** 读取 delta 文件；magic/版本不符返回 []，尾部未写完的记录被忽略。 */
+export async function readNameIndexDeltas(deltaPath: string): Promise<NameIndexDeltaEntry[]> {
+  let buffer: Buffer
+  try {
+    buffer = await readFileAsync(deltaPath)
+  } catch {
+    return []
+  }
+  if (buffer.length < DELTA_HEADER_BYTES) return []
+  if (buffer.toString('latin1', 0, 4) !== DELTA_MAGIC) return []
+  if (buffer.readUInt32LE(4) !== DELTA_VERSION) return []
+  const entries: NameIndexDeltaEntry[] = []
+  let offset = DELTA_HEADER_BYTES
+  while (offset < buffer.length) {
+    if (offset + 5 > buffer.length) break
+    const kindCode = buffer.readUInt8(offset)
+    offset += 1
+    const pathLength = buffer.readUInt32LE(offset)
+    offset += 4
+    if (offset + pathLength + 4 > buffer.length) break
+    const path = buffer.toString('utf8', offset, offset + pathLength)
+    offset += pathLength
+    const hashCount = buffer.readUInt32LE(offset)
+    offset += 4
+    if (offset + hashCount * 4 > buffer.length) break
+    const hashes = new Uint32Array(hashCount)
+    for (let i = 0; i < hashCount; i++) {
+      hashes[i] = buffer.readUInt32LE(offset)
+      offset += 4
+    }
+    entries.push({ kind: kindCode === DELTA_KIND_REMOVE ? 'remove' : 'set', path, hashes })
+  }
+  return entries
+}
+
+/** 加载 base + delta 合并后的引用索引。 */
+export async function loadNameIndexWithDelta(basePath: string): Promise<NameIndexData | undefined> {
+  const base = await loadNameIndex(basePath)
+  const deltas = await readNameIndexDeltas(nameIndexDeltaPath(basePath))
+  return applyNameIndexDeltas(base, deltas)
+}
+
+/** 合并写回 base 并清空 delta（构建完成、或 delta 超过阈值时调用）。 */
+export async function compactNameIndex(
+  basePath: string,
+  data: NameIndexData,
+): Promise<{ baseBytes: number; deltaTruncated: boolean }> {
+  const baseBytes = await saveNameIndex(basePath, data)
+  const deltaPath = nameIndexDeltaPath(basePath)
+  let deltaTruncated = false
+  try {
+    await truncateFileAsync(deltaPath, 0)
+    deltaTruncated = true
+  } catch {
+    // delta 不存在：无需处理
+  }
+  return { baseBytes, deltaTruncated }
+}
+
+/** 删除 delta 文件（清缓存 / 全量重建后）。 */
+export async function removeNameIndexDelta(deltaPath: string): Promise<void> {
+  try {
+    await unlinkAsync(deltaPath)
+  } catch {
+    // ignore
+  }
+}
+
+/** delta 文件大小（用于判断是否该 compaction）。 */
+export async function nameIndexDeltaBytes(deltaPath: string): Promise<number> {
+  try {
+    const stat = await statFile(deltaPath)
+    return stat.size
+  } catch {
+    return 0
+  }
 }

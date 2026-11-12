@@ -20,7 +20,17 @@ import { entriesInFile, findByName, searchSymbols } from '../core/query'
 import { findReferences } from '../core/references'
 import { readSignature } from '../core/signature'
 import { scanSource } from '../core/scan'
-import { collectIdentifierHashes, loadNameIndex, removeFileIndex, saveNameIndex, upsertFileIndex } from '../core/nameindex'
+import {
+  appendNameIndexDelta,
+  collectIdentifierHashes,
+  compactNameIndex,
+  loadNameIndexWithDelta,
+  nameIndexDeltaBytes,
+  nameIndexDeltaPath,
+  removeFileIndex,
+  removeNameIndexDelta,
+  upsertFileIndex,
+} from '../core/nameindex'
 import { loadSnapshot, saveSnapshot } from '../core/store'
 import { compileExclude } from '../core/exclude'
 import {
@@ -52,6 +62,8 @@ import { isAbortError, withProgress, type ProgressLike } from './util'
 
 const SNAPSHOT_FILE_NAME = 'symbols.sidx'
 const NAME_INDEX_FILE_NAME = 'symbols.names'
+/** delta 超过该大小时合并回 base（写一次 base、清空 delta） */
+const NAME_INDEX_COMPACT_BYTES = 4 * 1024 * 1024
 const SAVE_DEBOUNCE_MS = 3000
 const SIGNATURE_CACHE_CHAR_BUDGET = 8 * 1024 * 1024
 const MAX_TRACKED_CACHE_FILES = 256
@@ -72,6 +84,9 @@ export class SymbolService implements vscode.Disposable {
 
   private snapshotValue: IndexSnapshot | undefined
   private nameIndexValue: NameIndexData | undefined
+  /** 引用索引是否已加载进内存（惰性加载：只在首次查引用/调用层次时读盘） */
+  private nameIndexLoaded = false
+  private nameIndexLoadPromise: Promise<NameIndexData | undefined> | undefined
   private lastSummaryValue: BuildSummary | undefined
   private lastErrorValue: string | undefined
   private progressValue: IndexProgress | undefined
@@ -245,7 +260,7 @@ export class SymbolService implements vscode.Disposable {
       title,
       async (signal, report) =>
         findReferences(snapshot, name, this.readFileBound, {
-          nameIndex: this.nameIndexValue,
+          nameIndex: await this.ensureNameIndex(),
           signal,
           onProgress: report,
         }),
@@ -264,7 +279,7 @@ export class SymbolService implements vscode.Disposable {
       title,
       async (signal, report) =>
         callersOf(snapshot, name, this.readFileBound, {
-          nameIndex: this.nameIndexValue,
+          nameIndex: await this.ensureNameIndex(),
           signal,
           onProgress: report,
         }),
@@ -468,6 +483,7 @@ export class SymbolService implements vscode.Disposable {
               })
             },
           }
+          await this.compactNameIndexIfNeeded(true)
           const result = await buildIndex(options)
           if (this.clearRequested || generation !== this.generation || this.disposed) {
             // 构建期间用户清空了缓存：丢弃本次结果，并把 buildIndex 可能刚写下的快照删掉
@@ -480,9 +496,13 @@ export class SymbolService implements vscode.Disposable {
             return undefined
           }
           this.snapshotValue = result.snapshot
-          this.nameIndexValue = this.nameIndexPathValue
-            ? await loadNameIndex(this.nameIndexPathValue)
-            : undefined
+          // 构建已经写出新的 base；丢弃内存副本，下次查引用时惰性加载
+          this.nameIndexValue = undefined
+          this.nameIndexLoaded = false
+          this.nameIndexLoadPromise = undefined
+          if (this.nameIndexPathValue) {
+            await removeNameIndexDelta(nameIndexDeltaPath(this.nameIndexPathValue))
+          }
           this.lastSummaryValue = result.summary
           this.textCache.clear()
           this.textCacheChars = 0
@@ -724,15 +744,61 @@ export class SymbolService implements vscode.Disposable {
     }
   }
 
-  /** 增量更新单个文件的引用索引切片（失败只记日志，不影响主流程）。 */
+  /**
+   * 惰性加载引用索引（base + delta 合并）。首次查引用/调用层次才读盘：
+   * 68k 文件索引实测省下激活时 194ms 与 69MB 常驻内存。
+   */
+  private async ensureNameIndex(): Promise<NameIndexData | undefined> {
+    const nameIndexPath = this.nameIndexPathValue
+    if (!nameIndexPath) {
+      return undefined
+    }
+    if (this.nameIndexLoaded) {
+      return this.nameIndexValue
+    }
+    if (!this.nameIndexLoadPromise) {
+      this.nameIndexLoadPromise = (async () => {
+        try {
+          const started = Date.now()
+          const loaded = await loadNameIndexWithDelta(nameIndexPath)
+          this.nameIndexValue = loaded
+          this.nameIndexLoaded = true
+          this.logger.info(
+            `reference index loaded lazily in ${Date.now() - started}ms` +
+              (loaded ? ` (${loaded.filePaths.length} files)` : ' (missing)'),
+          )
+          return loaded
+        } catch (error) {
+          this.logger.warn('cannot load reference index', error)
+          return undefined
+        } finally {
+          this.nameIndexLoadPromise = undefined
+        }
+      })()
+    }
+    return this.nameIndexLoadPromise
+  }
+
+  /**
+   * 增量维护：只往 delta 文件追加一条 KB 级记录，不重写整个索引
+   * （旧实现每次保存重写 68MB / 362ms）。索引未加载时也无需加载，直接追加。
+   */
   private async refreshNameIndexForFile(relPath: string, text: string): Promise<void> {
     const nameIndexPath = this.nameIndexPathValue
-    if (!nameIndexPath || !this.nameIndexValue) {
+    if (!nameIndexPath) {
       return
     }
     try {
-      this.nameIndexValue = upsertFileIndex(this.nameIndexValue, relPath, collectIdentifierHashes(text))
-      await saveNameIndex(nameIndexPath, this.nameIndexValue)
+      const hashes = collectIdentifierHashes(text)
+      if (this.nameIndexLoaded && this.nameIndexValue) {
+        this.nameIndexValue = upsertFileIndex(this.nameIndexValue, relPath, hashes)
+      }
+      await appendNameIndexDelta(nameIndexDeltaPath(nameIndexPath), {
+        kind: 'set',
+        path: relPath,
+        hashes,
+      })
+      await this.compactNameIndexIfNeeded()
     } catch (error) {
       this.logger.warn('name index update failed', error)
     }
@@ -740,14 +806,51 @@ export class SymbolService implements vscode.Disposable {
 
   private async removeNameIndexForFile(relPath: string): Promise<void> {
     const nameIndexPath = this.nameIndexPathValue
-    if (!nameIndexPath || !this.nameIndexValue) {
+    if (!nameIndexPath) {
       return
     }
     try {
-      this.nameIndexValue = removeFileIndex(this.nameIndexValue, relPath)
-      await saveNameIndex(nameIndexPath, this.nameIndexValue)
+      if (this.nameIndexLoaded && this.nameIndexValue) {
+        this.nameIndexValue = removeFileIndex(this.nameIndexValue, relPath)
+      }
+      await appendNameIndexDelta(nameIndexDeltaPath(nameIndexPath), {
+        kind: 'remove',
+        path: relPath,
+        hashes: new Uint32Array(0),
+      })
+      await this.compactNameIndexIfNeeded()
     } catch (error) {
       this.logger.warn('name index removal failed', error)
+    }
+  }
+
+  /** delta 超过阈值（或 force）时合并回 base 并清空 delta。 */
+  private async compactNameIndexIfNeeded(force = false): Promise<void> {
+    const nameIndexPath = this.nameIndexPathValue
+    if (!nameIndexPath) {
+      return
+    }
+    try {
+      const deltaBytes = await nameIndexDeltaBytes(nameIndexDeltaPath(nameIndexPath))
+      const hasDelta = deltaBytes > 0
+      if (!force && !hasDelta) {
+        return
+      }
+      if (!force && deltaBytes < NAME_INDEX_COMPACT_BYTES) {
+        return
+      }
+      // 合并需要 base 的完整内容；未加载时惰性加载一次
+      const merged = await this.ensureNameIndex()
+      if (!merged) {
+        return
+      }
+      const started = Date.now()
+      await compactNameIndex(nameIndexPath, merged)
+      this.logger.info(
+        `reference index compacted (${deltaBytes} delta bytes -> base) in ${Date.now() - started}ms`,
+      )
+    } catch (error) {
+      this.logger.warn('reference index compaction failed', error)
     }
   }
 
@@ -756,12 +859,17 @@ export class SymbolService implements vscode.Disposable {
     if (!nameIndexPath) {
       return
     }
-    try {
-      await fs.promises.unlink(nameIndexPath)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code
-      if (code !== 'ENOENT') {
-        this.logger.warn('cannot remove name index file', error)
+    this.nameIndexValue = undefined
+    this.nameIndexLoaded = false
+    this.nameIndexLoadPromise = undefined
+    for (const target of [nameIndexPath, nameIndexDeltaPath(nameIndexPath)]) {
+      try {
+        await fs.promises.unlink(target)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code !== 'ENOENT') {
+          this.logger.warn(`cannot remove index file ${target}`, error)
+        }
       }
     }
   }
@@ -826,7 +934,7 @@ export class SymbolService implements vscode.Disposable {
     }
   }
 
-  /** deactivate 前把防抖中的增量快照落盘。 */
+  /** deactivate 前把防抖中的增量快照落盘，并把引用索引 delta 合并回 base。 */
   async flush(): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
@@ -835,6 +943,7 @@ export class SymbolService implements vscode.Disposable {
     if (this.pendingSave) {
       await this.persistNow()
     }
+    await this.compactNameIndexIfNeeded(true)
   }
 
   /** 清空内存索引 + 删除快照文件（"清除索引缓存"命令）。 */
@@ -876,13 +985,12 @@ export class SymbolService implements vscode.Disposable {
         return
       }
       this.snapshotValue = snapshot
-      if (this.nameIndexPathValue) {
-        this.nameIndexValue = await loadNameIndex(this.nameIndexPathValue)
-      }
+      // 引用索引惰性加载：只在首次查引用/调用层次时读盘
+      this.nameIndexValue = undefined
+      this.nameIndexLoaded = false
       this.logger.info(
         `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entries.length} ` +
-          `builtAt=${new Date(snapshot.builtAt).toISOString()}` +
-          (this.nameIndexValue ? ' (reference index loaded)' : ''),
+          `builtAt=${new Date(snapshot.builtAt).toISOString()}`,
       )
     } catch (error) {
       // 快照损坏/版本不符：删除后等待重建，不弹错误（spec §8）

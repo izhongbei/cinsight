@@ -39,6 +39,12 @@ export interface IndexSnapshot {
   readonly entries: readonly SymbolEntry[]
 }
 
+/** worker 单遍解析结果：符号 + 该文件标识符哈希（供引用索引复用，避免二次读盘） */
+export interface ScannedFileResult {
+  readonly symbols: readonly ScannedSymbol[]
+  readonly hashes: Uint32Array
+}
+
 export interface ScannedSymbol {
   readonly name: string
   readonly kind: SymbolKind

@@ -8,10 +8,11 @@ import type {
   FileRecord,
   IndexSnapshot,
   ReadFileFn,
+  ScannedFileResult,
   ScannedSymbol,
   SymbolEntry,
 } from '../shared/types'
-import { buildNameIndex, loadNameIndex, saveNameIndex } from './nameindex'
+import { buildNameIndex, collectIdentifierHashes, loadNameIndex, saveNameIndex } from './nameindex'
 import { scanSource } from './scan'
 import { saveSnapshot } from './store'
 import { walkFiles } from './walk'
@@ -87,6 +88,7 @@ export function createSnapshot(
 interface WorkerReply {
   id: number
   symbols?: ScannedSymbol[]
+  hashes?: Uint32Array
   error?: string
 }
 
@@ -95,7 +97,7 @@ class WorkerPool {
   private readonly queues: number[] = []
   private readonly pending = new Map<
     number,
-    { resolve: (symbols: ScannedSymbol[]) => void; reject: (error: Error) => void }
+    { resolve: (result: ScannedFileResult) => void; reject: (error: Error) => void }
   >()
   private nextId = 1
   private failure: Error | undefined
@@ -125,7 +127,12 @@ class WorkerPool {
     if (!item) return
     this.pending.delete(message.id)
     if (message.error !== undefined) item.reject(new Error(message.error))
-    else item.resolve(message.symbols ?? [])
+    else {
+      item.resolve({
+        symbols: message.symbols ?? [],
+        hashes: message.hashes ?? new Uint32Array(0),
+      })
+    }
   }
 
   private handleFailure(error: Error): void {
@@ -135,7 +142,7 @@ class WorkerPool {
     this.pending.clear()
   }
 
-  run(text: string): Promise<ScannedSymbol[]> {
+  run(text: string): Promise<ScannedFileResult> {
     if (this.failure) return Promise.reject(this.failure)
     let best = 0
     for (let i = 1; i < this.queues.length; i++) {
@@ -144,11 +151,11 @@ class WorkerPool {
     const worker = this.workers[best]
     this.queues[best] += 1
     const id = this.nextId++
-    return new Promise<ScannedSymbol[]>((resolve, reject) => {
+    return new Promise<ScannedFileResult>((resolve, reject) => {
       this.pending.set(id, {
-        resolve: (symbols) => {
+        resolve: (result) => {
           this.queues[best] -= 1
-          resolve(symbols)
+          resolve(result)
         },
         reject: (error) => {
           this.queues[best] -= 1
@@ -176,7 +183,7 @@ type PendingParser = {
   readFile: ReadFileFn
   concurrency: number
   signal?: AbortSignal
-  finish: (file: FileRecord, symbols: ScannedSymbol[]) => void
+  finish: (file: FileRecord, result: ScannedFileResult) => void
   finishSkipped: (file: FileRecord) => void
   isDone: (file: FileRecord) => boolean
 }
@@ -201,8 +208,8 @@ async function dispatchThroughPool(pool: WorkerPool, job: PendingParser): Promis
             continue
           }
           throwIfAborted(job.signal)
-          const symbols = await pool.run(text)
-          job.finish(file, symbols)
+          const result = await pool.run(text)
+          job.finish(file, result)
         }
       })(),
     )
@@ -222,7 +229,7 @@ async function parseRemainingSerial(job: PendingParser): Promise<void> {
       continue
     }
     throwIfAborted(job.signal)
-    job.finish(file, scanSource(text))
+    job.finish(file, { symbols: scanSource(text), hashes: collectIdentifierHashes(text) })
   }
 }
 
@@ -297,10 +304,13 @@ export async function buildIndex(
     onProgress?.({ phase: 'parse', done, total, currentFile })
     if (signal?.aborted) throw makeAbortError()
   }
-  const finish = (file: FileRecord, symbols: ScannedSymbol[]): void => {
+  /** 每个文件的标识符哈希（单遍解析产出，供引用索引复用，不再二次读盘） */
+  const parsedHashes = new Map<string, Uint32Array>()
+  const finish = (file: FileRecord, result: ScannedFileResult): void => {
+    parsedHashes.set(file.path, result.hashes)
     parsed.set(
       file.path,
-      symbols.map((symbol) => ({
+      result.symbols.map((symbol) => ({
         name: symbol.name,
         kind: symbol.kind,
         file: file.path,
@@ -374,7 +384,8 @@ export async function buildIndex(
   let snapshotBytes = 0
   if (snapshotPath) snapshotBytes = await saveSnapshot(snapshotPath, snapshot)
 
-  // 引用加速索引：变更文件重新读盘计算标识符哈希，未变更文件复用旧切片。
+  // 引用加速索引：直接用本次解析同时产出的标识符哈希（单遍构建，不再二次读盘）；
+  // 未变更文件复用旧索引切片。
   let nameIndexBytes = 0
   if (nameIndexPath) {
     const previousNameIndex = await loadNameIndex(nameIndexPath)
@@ -384,9 +395,9 @@ export async function buildIndex(
       files: successfulFiles,
       previous: previousNameIndex,
       changedPaths,
+      changedHashes: parsedHashes,
       readFile,
       signal,
-      // 第二遍只为收集标识符：慢盘上单文件读延迟高，必须用更高并发把 I/O 打满
       concurrency: Math.min(64, Math.max(8, concurrency * 8)),
       onProgress: (done, total) => onProgress?.({ phase: 'index', done, total }),
     })
