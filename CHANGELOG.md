@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- README 改为中英双语（英文在前、中文在后），补充隐私与安全、反馈章节。
+- package.json 补充 `repository` / `homepage` / `bugs`：Open VSX 页面显示 Repository 链接，README 反馈入口可用。
+- 与 0.1.0 索引快照格式完全兼容，升级后无需重建索引。
+
 ## 0.1.0 (Code Insight)
 
 - 定名 **Code Insight**（扩展 ID `cinsight.code-insight`）。
