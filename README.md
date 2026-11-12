@@ -23,20 +23,26 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 
 ## Installation
 
-From **Open VSX** (works in VS Code, Cursor, VSCodium, …):
+From [Open VSX](https://open-vsx.org/extension/cinsight/code-insight) (Cursor, VSCodium and VS Code all work):
 
 ```bash
-code   --install-extension cinsight.code-insight
 cursor --install-extension cinsight.code-insight
+code   --install-extension cinsight.code-insight
+```
+
+VS Code users can also install from the Marketplace (same code; the ID differs because the marketplace requires a globally unique extension name and display name):
+
+```bash
+code --install-extension cinsight.codeinsight
 ```
 
 Or search for **Code Insight** in the Extensions view.
 
-Offline install: download `code-insight-0.1.0.vsix` and run
+Offline install: download `code-insight-0.3.1.vsix` and run
 
 ```bash
-code   --install-extension code-insight-0.1.0.vsix
-cursor --install-extension code-insight-0.1.0.vsix
+code   --install-extension code-insight-0.3.1.vsix
+cursor --install-extension code-insight-0.3.1.vsix
 # or: Ctrl+Shift+P → Extensions: Install from VSIX...
 ```
 
@@ -174,20 +180,26 @@ MIT
 
 ## 安装
 
-从 **Open VSX** 安装（VS Code、Cursor、VSCodium 等均适用）：
+从 [Open VSX](https://open-vsx.org/extension/cinsight/code-insight) 安装（Cursor、VSCodium、VS Code 均可用）：
 
 ```bash
-code   --install-extension cinsight.code-insight
 cursor --install-extension cinsight.code-insight
+code   --install-extension cinsight.code-insight
+```
+
+VS Code 用户也可从 Marketplace 安装（同一份代码；因 Marketplace 要求扩展名与显示名全局唯一，ID 不同）：
+
+```bash
+code --install-extension cinsight.codeinsight
 ```
 
 或在扩展面板搜索 **Code Insight** 后安装。
 
-离线安装：下载 `code-insight-0.1.0.vsix` 后执行
+离线安装：下载 `code-insight-0.3.1.vsix` 后执行
 
 ```bash
-code   --install-extension code-insight-0.1.0.vsix
-cursor --install-extension code-insight-0.1.0.vsix
+code   --install-extension code-insight-0.3.1.vsix
+cursor --install-extension code-insight-0.3.1.vsix
 ```
 
 要求宿主 **VS Code ≥ 1.90**（Cursor 3.x 满足），无需另装 C/C++ 扩展。

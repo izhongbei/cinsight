@@ -127,6 +127,20 @@ curl -fsSL http://intranet/tools/code-insight-latest.vsix -o /tmp/si.vsix && \
 
 ## C. 发布到 VS Code Marketplace（仅 VS Code 用户）
 
+> **两个市场使用不同的扩展 ID（代码完全相同）：**
+>
+> | 市场 | 扩展 ID | displayName |
+> |---|---|---|
+> | Open VSX（Cursor / VS Code forks） | `cinsight.code-insight` | Code Insight |
+> | VS Code Marketplace | `cinsight.codeinsight` | Code Insight for C/C++ |
+>
+> 原因是 Marketplace 要求扩展 `name` 与 `displayName` **全局唯一**：`code-insight` 已被保留、
+> `Code Insight` 已被 `ArtePrime.arteprime-code-insight` 占用。CI 在 Marketplace 发布前用
+> `npm pkg set name/displayName` 打补丁（见 `.github/workflows/publish.yml`），不改仓库里的
+> `package.json`，所以 Open VSX 身份保持不变。
+>
+> 注意：Marketplace 上**永远不要删除**该扩展（删除后名字永久保留、无法复用）。
+
 1. 注册 Azure DevOps 组织（免费），生成 PAT：*User settings → Personal access tokens*，Scopes 选 **Marketplace → Manage**（这是发布扩展需要的权限）。
 2. 打开 <https://marketplace.visualstudio.com/manage>，创建 publisher，ID 与 `package.json` 的 `publisher` 一致。
 3. 登录并发布：
