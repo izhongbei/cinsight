@@ -30,6 +30,9 @@ const CH_RPAREN = 41
 const CH_SEMI = 59
 const CH_LBRACE = 123
 const CH_RBRACE = 125
+const CH_LBRACKET = 91
+const CH_RBRACKET = 93
+const CH_COMMA = 44
 const CH_SLASH = 47
 const CH_BACKSLASH = 92
 const CH_UNDERSCORE = 95
@@ -202,7 +205,7 @@ function computeLineStarts(text: string): number[] {
 }
 
 /** offset 所在行号（0-based）。 */
-function lineOf(lineStarts: number[], offset: number): number {
+function lineOf(lineStarts: readonly number[], offset: number): number {
   let lo = 0
   let hi = lineStarts.length - 1
   while (lo < hi) {
@@ -487,9 +490,290 @@ function scanFunctions(text: string, lineStarts: number[]): ScannedSymbol[] {
   return symbols
 }
 
+
+// ---------------------------------------------------------------------------
+// 类型符号：struct / union / enum 标签 与 typedef 名字
+// ---------------------------------------------------------------------------
+
+/** 跳过空白，返回第一个非空白字符下标。 */
+function skipSpaceText(text: string, from: number): number {
+  let k = from
+  while (k < text.length && isWsCode(text.charCodeAt(k))) k++
+  return k
+}
+
+/** 从 from 起读一个标识符。 */
+function readWordAt(text: string, from: number): { value: string; start: number; end: number } | undefined {
+  if (from >= text.length || !isIdentStartCode(text.charCodeAt(from))) return undefined
+  let end = from + 1
+  while (end < text.length && isIdentCode(text.charCodeAt(end))) end++
+  return { value: text.slice(from, end), start: from, end }
+}
+
+/** 跳过 `(...)`，返回右括号之后的下标。 */
+function skipParenGroup(text: string, from: number): number {
+  if (text.charCodeAt(from) !== CH_LPAREN) return from
+  const close = matchPair(text, from, CH_LPAREN, CH_RPAREN)
+  return close < 0 ? text.length : close + 1
+}
+
+/** 跳过 tag 与 `{` 之间的属性修饰（`__attribute__((...))`、`__declspec(...)` 等）。 */
+function skipTypeAttributes(text: string, from: number): number {
+  let j = from
+  for (;;) {
+    const k = skipSpaceText(text, j)
+    const word = readWordAt(text, k)
+    if (!word || !POST_ATTRIBUTES.has(word.value)) return k
+    const p = skipSpaceText(text, word.end)
+    if (text.charCodeAt(p) !== CH_LPAREN) return k
+    j = skipParenGroup(text, p)
+  }
+}
+
+/** 在 typedef 的一个声明符段里找出被声明的名字：`(*name)`、`name(`、最后一个标识符。 */
+function declaratorNameIn(text: string, start: number, end: number): { start: number; end: number } | undefined {
+  let paren = -1
+  for (let i = start; i < end; i++) {
+    if (text.charCodeAt(i) === CH_LPAREN) {
+      paren = i
+      break
+    }
+  }
+
+  if (paren >= 0) {
+    // 函数指针：(*name)
+    let k = paren + 1
+    while (k < end && isWsCode(text.charCodeAt(k))) k++
+    let star = false
+    if (text.charCodeAt(k) === CH_STAR) {
+      star = true
+      k++
+      while (k < end && isWsCode(text.charCodeAt(k))) k++
+    }
+    const word = readWordAt(text, k)
+    if (star && word && word.end <= end) {
+      const after = skipSpaceText(text, word.end)
+      if (text.charCodeAt(after) === CH_RPAREN) return { start: word.start, end: word.end }
+    }
+
+    // 函数类型：`typedef int handler(int);` -> `(` 之前的标识符
+    let b = paren - 1
+    while (b >= start && (isWsCode(text.charCodeAt(b)) || text.charCodeAt(b) === CH_STAR)) b--
+    if (b >= start && isIdentCode(text.charCodeAt(b))) {
+      let nameStart = b
+      while (nameStart > start && isIdentCode(text.charCodeAt(nameStart - 1))) nameStart--
+      const name = text.slice(nameStart, b + 1)
+      if (!NAMED_KEYWORDS.has(name) && isIdentStartCode(text.charCodeAt(nameStart))) {
+        return { start: nameStart, end: b + 1 }
+      }
+    }
+    return undefined
+  }
+
+  // 普通声明符：取最后一个非关键字标识符，跳过 `struct tag` 里的 tag
+  let candidate: { start: number; end: number } | undefined
+  let prevWord = ''
+  let i = start
+  while (i < end) {
+    const code = text.charCodeAt(i)
+    if (isIdentStartCode(code)) {
+      const word = readWordAt(text, i)!
+      const afterStruct = prevWord === 'struct' || prevWord === 'union' || prevWord === 'enum'
+      if (!NAMED_KEYWORDS.has(word.value) && !afterStruct) {
+        candidate = { start: word.start, end: word.end }
+      }
+      prevWord = word.value
+      i = word.end
+      continue
+    }
+    if (!isWsCode(code)) prevWord = ''
+    i++
+  }
+  return candidate
+}
+
+/** 解析 `typedef ...;`：按顶层逗号切分，逐段抽名字（支持匿名 struct 与函数指针）。 */
+function extractTypedefSymbols(
+  text: string,
+  start: number,
+  end: number,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  const chunks: Array<[number, number]> = []
+  let chunkStart = start
+  let nest = 0
+  for (let i = start; i < end; i++) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LPAREN || code === CH_LBRACKET || code === CH_LBRACE) nest++
+    else if (code === CH_RPAREN || code === CH_RBRACKET || code === CH_RBRACE) {
+      if (nest > 0) nest--
+    } else if (code === CH_COMMA && nest === 0) {
+      chunks.push([chunkStart, i])
+      chunkStart = i + 1
+    }
+  }
+  chunks.push([chunkStart, end])
+
+  const endLine = lineOf(lineStarts, end)
+  for (const [chunkStartIdx, chunkEnd] of chunks) {
+    const name = declaratorNameIn(text, chunkStartIdx, chunkEnd)
+    if (!name) continue
+    const line = lineOf(lineStarts, name.start)
+    out.push({
+      name: text.slice(name.start, name.end),
+      kind: 'typedef',
+      line,
+      endLine,
+      column: name.start - lineStarts[line],
+    })
+  }
+}
+
+
+/** `typedef struct tag { ... } alias;` 里的 `tag` 也是被定义的 struct，需要单独索引。 */
+function extractTaggedTypeFromTypedef(
+  text: string,
+  start: number,
+  end: number,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  const keywordAt = skipSpaceText(text, start)
+  const keyword = readWordAt(text, keywordAt)
+  if (!keyword || (keyword.value !== 'struct' && keyword.value !== 'union' && keyword.value !== 'enum')) {
+    return
+  }
+  const tagAt = skipTypeAttributes(text, keyword.end)
+  const tag = readWordAt(text, tagAt)
+  if (!tag || NAMED_KEYWORDS.has(tag.value)) return
+  const afterTag = skipTypeAttributes(text, tag.end)
+  if (text.charCodeAt(afterTag) !== CH_LBRACE) return // `typedef struct foo foo_t;`：不是定义
+  const line = lineOf(lineStarts, tag.start)
+  out.push({
+    name: tag.value,
+    kind: keyword.value === 'struct' ? 'struct' : keyword.value === 'union' ? 'union' : 'enum',
+    line,
+    endLine: lineOf(lineStarts, end),
+    column: tag.start - lineStarts[line],
+  })
+}
+
 /**
- * 扫描一份 C/C++ 源文本，返回函数定义、声明与函数式宏。
- * 行号、列号均为 0-based；`endLine` 为函数体配对 `}` 所在行（声明/宏等于 `line`）。
+ * 深度 0 扫描类型符号：`struct/union/enum NAME { ... }`（定义）、`struct NAME;`（前置声明）、
+ * `typedef ... NAME;`（含匿名 struct 与函数指针 typedef）。函数体内的类型不索引。
+ */
+function scanTypes(text: string, lineStarts: readonly number[]): ScannedSymbol[] {
+  const n = text.length
+  const symbols: ScannedSymbol[] = []
+  let i = 0
+  let depth = 0
+
+  while (i < n) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LBRACE) {
+      depth++
+      i++
+      continue
+    }
+    if (code === CH_RBRACE) {
+      if (depth > 0) depth--
+      i++
+      continue
+    }
+    if (depth !== 0 || !isIdentStartCode(code)) {
+      i++
+      continue
+    }
+
+    const word = readWordAt(text, i)!
+    const keyword = word.value
+
+    if (keyword === 'struct' || keyword === 'union' || keyword === 'enum') {
+      let p = skipTypeAttributes(text, word.end)
+      if (text.charCodeAt(p) === CH_LBRACE) {
+        // 匿名类型：跳过整个定义
+        const close = matchPair(text, p, CH_LBRACE, CH_RBRACE)
+        i = close < 0 ? n : close + 1
+        continue
+      }
+      const tag = readWordAt(text, p)
+      if (!tag || NAMED_KEYWORDS.has(tag.value)) {
+        i = word.end
+        continue
+      }
+      const afterTag = skipTypeAttributes(text, tag.end)
+      const next = text.charCodeAt(afterTag)
+      if (next === CH_LBRACE) {
+        const close = matchPair(text, afterTag, CH_LBRACE, CH_RBRACE)
+        if (close < 0) {
+          i = tag.end
+          continue
+        }
+        const line = lineOf(lineStarts, tag.start)
+        symbols.push({
+          name: tag.value,
+          kind: keyword === 'struct' ? 'struct' : keyword === 'union' ? 'union' : 'enum',
+          line,
+          endLine: lineOf(lineStarts, close),
+          column: tag.start - lineStarts[line],
+        })
+        i = close + 1
+        continue
+      }
+      if (next === CH_SEMI) {
+        const line = lineOf(lineStarts, tag.start)
+        symbols.push({
+          name: tag.value,
+          kind: 'declaration',
+          line,
+          endLine: line,
+          column: tag.start - lineStarts[line],
+        })
+        i = tag.end
+        continue
+      }
+      // `struct foo *p;` 等使用场景：只跳过 tag，不索引
+      i = tag.end
+      continue
+    }
+
+    if (keyword === 'typedef') {
+      let j = word.end
+      let nest = 0
+      let end = -1
+      while (j < n) {
+        const c = text.charCodeAt(j)
+        if (c === CH_LPAREN || c === CH_LBRACKET || c === CH_LBRACE) nest++
+        else if (c === CH_RPAREN || c === CH_RBRACKET || c === CH_RBRACE) {
+          if (nest > 0) nest--
+        } else if (c === CH_SEMI && nest === 0) {
+          end = j
+          break
+        }
+        j++
+      }
+      if (end < 0) {
+        i = word.end
+        continue
+      }
+      extractTaggedTypeFromTypedef(text, word.end, end, lineStarts, symbols)
+      extractTypedefSymbols(text, word.end, end, lineStarts, symbols)
+      i = end + 1
+      continue
+    }
+
+    i = word.end
+  }
+
+  return symbols
+}
+
+/**
+ * 扫描一份 C/C++ 源文本，返回函数定义/声明、函数式宏，以及
+ * struct/union/enum 标签与 typedef 名字。
+ * 行号、列号均为 0-based；`endLine` 为函数体/类型体的配对 `}` 所在行
+ * （声明、宏与 typedef 等于声明所在行）。
  */
 export function scanSource(text: string): ScannedSymbol[] {
   if (text.length === 0) return []
@@ -497,7 +781,8 @@ export function scanSource(text: string): ScannedSymbol[] {
   const lineStarts = computeLineStarts(prepared)
   const { clean, macros } = extractMacros(prepared, lineStarts)
   const functions = scanFunctions(clean, lineStarts)
-  const all = macros.concat(functions)
+  const types = scanTypes(clean, lineStarts)
+  const all = macros.concat(functions, types)
   all.sort((a, b) => {
     if (a.line !== b.line) return a.line - b.line
     if (a.column !== b.column) return a.column - b.column

@@ -211,9 +211,16 @@ test('parser: control flow and operators are not symbols', () => {
   assert.deepEqual(scanSource(text), [])
 })
 
-test('parser: struct definitions are not function symbols', () => {
+test('parser: struct/union definitions are type symbols, not function symbols', () => {
   const text = ['struct s { int a; };', 'struct t { void (*cb)(int); };', 'union u { int x; long y; };'].join('\n')
-  assert.deepEqual(scanSource(text), [])
+  assert.deepEqual(
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind]),
+    [
+      ['s', 'struct'],
+      ['t', 'struct'],
+      ['u', 'union'],
+    ],
+  )
 })
 
 test('parser: calls inside top level initialisers are not definitions', () => {
@@ -221,9 +228,15 @@ test('parser: calls inside top level initialisers are not definitions', () => {
   assert.deepEqual(scanSource(text), [])
 })
 
-test('parser: typedef of a function type is not a function', () => {
+test('parser: typedef of a function type is a typedef symbol, not a function', () => {
   const text = 'typedef int func_t(int);\ntypedef void (*handler_t)(int);'
-  assert.deepEqual(scanSource(text), [])
+  assert.deepEqual(
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind]),
+    [
+      ['func_t', 'typedef'],
+      ['handler_t', 'typedef'],
+    ],
+  )
 })
 
 test('parser: prototype macros like __P((...)) are not declarations', () => {

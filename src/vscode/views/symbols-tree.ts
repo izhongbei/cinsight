@@ -13,6 +13,7 @@ import type { SymbolService } from '../service'
 import { SimpleEmitter } from '../emitter'
 import { baseName, isIndexablePath, normalizeRelative } from '../paths'
 import { kindLabel } from '../util'
+import type { SymbolKind } from '../../shared/types'
 
 export interface RootNode {
   readonly kind: 'root'
@@ -206,7 +207,7 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
     item.id = `si-symbol:${entry.file}:${entry.line}:${entry.column}`
     item.contextValue = 'siSymbol'
     item.description = `:${entry.line + 1} · ${kindLabel(entry.kind)}`
-    item.iconPath = new vscode.ThemeIcon(entry.kind === 'macro' ? 'symbol-constant' : 'symbol-method')
+    item.iconPath = new vscode.ThemeIcon(symbolIconFor(entry.kind))
     item.command = {
       command: 'si.openSymbolAt',
       title: vscode.l10n.t('Open Symbol'),
@@ -291,5 +292,22 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
       nodes.push({ kind: 'more', rel, remaining: entries.length - limit })
     }
     return nodes
+  }
+}
+
+/** 符号种类 -> codicon。 */
+function symbolIconFor(kind: SymbolKind): string {
+  switch (kind) {
+    case 'struct':
+    case 'union':
+      return 'symbol-struct'
+    case 'enum':
+      return 'symbol-enum'
+    case 'typedef':
+      return 'symbol-class'
+    case 'macro':
+      return 'symbol-constant'
+    default:
+      return 'symbol-method'
   }
 }

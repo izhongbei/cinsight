@@ -84,11 +84,18 @@ export function currentWord(): WordHit | undefined {
   }
 }
 
-/** core 的 SymbolKind（function/declaration/macro） -> vscode.SymbolKind。 */
+/** core 的 SymbolKind -> vscode.SymbolKind。 */
 export function toVscodeSymbolKind(kind: SymbolKind): vscode.SymbolKind {
   switch (kind) {
     case 'macro':
       return vscode.SymbolKind.Constant
+    case 'struct':
+    case 'union':
+      return vscode.SymbolKind.Struct
+    case 'enum':
+      return vscode.SymbolKind.Enum
+    case 'typedef':
+      return vscode.SymbolKind.Class
     case 'declaration':
     case 'function':
     default:
@@ -103,6 +110,14 @@ export function kindLabel(kind: SymbolKind): string {
       return vscode.l10n.t('Declaration')
     case 'macro':
       return vscode.l10n.t('Macro')
+    case 'struct':
+      return vscode.l10n.t('Struct')
+    case 'union':
+      return vscode.l10n.t('Union')
+    case 'enum':
+      return vscode.l10n.t('Enum')
+    case 'typedef':
+      return vscode.l10n.t('Typedef')
     case 'function':
     default:
       return vscode.l10n.t('Function')

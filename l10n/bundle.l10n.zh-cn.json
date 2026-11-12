@@ -1,11 +1,11 @@
 {
   "$(error) Index failed": "$(error) 索引失败",
   "$(info) Index not configured": "$(info) 未配置索引",
-  "$(symbol-function) {0} functions": "$(symbol-function) {0} 个函数",
+  "$(symbol-function) {0} symbols": "$(symbol-function) {0} 个符号",
   "$(sync) Index not built": "$(sync) 索引未建立",
   "$(sync~spin) Indexing…": "$(sync~spin) 正在索引…",
   "$(sync~spin) Indexing {0}%": "$(sync~spin) 正在索引 {0}%",
-  "$(warning) {0} functions": "$(warning) {0} 个函数",
+  "$(warning) {0} symbols": "$(warning) {0} 个符号",
   "{0} is outside the workspace folder and was skipped.": "{0} 位于工作区之外，已跳过。",
   "Add to index roots": "加入索引目录",
   "… and {0} more": "… 还有 {0} 项",
@@ -30,6 +30,7 @@
   "Definition: {0}:{1}": "定义：{0}:{1}",
   "Directory": "目录",
   "Entire workspace": "整个工作区",
+  "Enum": "枚举",
   "Failed to update the Code Insight index roots setting.": "更新 Code Insight 索引目录设置失败。",
   "Files: {0}": "文件：{0}",
   "Finding callees of \"{0}\"…": "正在查找“{0}”调用的函数…",
@@ -69,8 +70,11 @@
   "Select the definition of \"{0}\"": "选择“{0}”的定义",
   "Select the directories to index recursively": "选择要递归索引的目录",
   "Snapshot: {0}": "快照：{0}",
+  "Struct": "结构体",
   "Symbols: {0}": "符号数：{0}",
   "The index build is already running.": "索引建立任务已在运行中。",
+  "Typedef": "类型别名",
+  "Union": "联合体",
   "Workspace": "工作区",
   "workspace root": "工作区根目录"
 }

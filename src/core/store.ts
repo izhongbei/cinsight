@@ -24,8 +24,25 @@ const HEADER_BYTES = MAGIC_BYTES + 4 /* version */ + 8 /* builtAt */ + 4 /* file
 const FILE_RECORD_BYTES = 4 + 8 + 4
 const ENTRY_BYTES = 4 + 4 + 4 + 4 + 2 + 1 + 1
 
-const KINDS: readonly SymbolKind[] = ['function', 'declaration', 'macro']
-const KIND_CODES: Record<SymbolKind, number> = { function: 0, declaration: 1, macro: 2 }
+// 码值 0/1/2 与 v1 快照保持一致；类型符号追加在末尾（v2 快照起使用）
+const KINDS: readonly SymbolKind[] = [
+  'function',
+  'declaration',
+  'macro',
+  'struct',
+  'union',
+  'enum',
+  'typedef',
+]
+const KIND_CODES: Record<SymbolKind, number> = {
+  function: 0,
+  declaration: 1,
+  macro: 2,
+  struct: 3,
+  union: 4,
+  enum: 5,
+  typedef: 6,
+}
 
 function kindToCode(kind: SymbolKind): number {
   const code = KIND_CODES[kind]

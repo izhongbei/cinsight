@@ -1,5 +1,5 @@
 /**
- * 状态栏：`$(symbol-function) 123,456 functions` / `$(sync~spin) Indexing 45%` / 未配置。
+ * 状态栏：`$(symbol-function) 123,456 symbols` / `$(sync~spin) Indexing 45%` / 未配置。
  *
  * 点击行为：未配置 -> si.configureRoots；其余 -> si.rebuildIndex。
  * 大仓库保护：符号数 > MAX_SYMBOLS_WARNING 时用警告色并提示缩小 indexRoots。
@@ -88,8 +88,8 @@ export class StatusBarController implements vscode.Disposable {
         const tooManySymbols = symbols > MAX_SYMBOLS_WARNING
         const formatted = formatNumber(symbols)
         this.item.text = tooManySymbols
-          ? vscode.l10n.t('$(warning) {0} functions', formatted)
-          : vscode.l10n.t('$(symbol-function) {0} functions', formatted)
+          ? vscode.l10n.t('$(warning) {0} symbols', formatted)
+          : vscode.l10n.t('$(symbol-function) {0} symbols', formatted)
         const lines: string[] = [
           vscode.l10n.t('Files: {0}', formatNumber(files)),
           vscode.l10n.t('Symbols: {0}', formatted),

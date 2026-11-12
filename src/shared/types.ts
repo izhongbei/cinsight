@@ -3,7 +3,14 @@
  * 所有结构只读，避免一侧意外修改另一侧状态。
  */
 
-export type SymbolKind = 'function' | 'declaration' | 'macro'
+export type SymbolKind =
+  | 'function'
+  | 'struct'
+  | 'union'
+  | 'enum'
+  | 'typedef'
+  | 'declaration'
+  | 'macro'
 
 export interface SymbolEntry {
   readonly name: string
@@ -107,7 +114,7 @@ export interface NameIndexData {
 
 export type ReadFileFn = (relativePath: string) => Promise<string>
 
-export const SNAPSHOT_VERSION = 1
+export const SNAPSHOT_VERSION = 2
 export const NAME_INDEX_VERSION = 1
 export const INDEXED_EXTENSIONS = ['.c', '.h', '.cc', '.cpp', '.hpp', '.hh', '.inl'] as const
 export const DEFAULT_EXCLUDE = [
@@ -118,7 +125,11 @@ export const DEFAULT_EXCLUDE = [
 ] as const
 export const SYMBOL_KIND_ORDER: Record<SymbolKind, number> = {
   function: 0,
-  declaration: 1,
-  macro: 2,
+  struct: 1,
+  union: 2,
+  enum: 3,
+  typedef: 4,
+  declaration: 5,
+  macro: 6,
 }
 export const MAX_SYMBOLS_WARNING = 5_000_000
