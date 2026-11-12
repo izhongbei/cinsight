@@ -70,13 +70,10 @@ jobs:
         if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
         env:
           MARKETPLACE_NAMES: cinsight-navigator code-insight-c cinsight-code-insight codeinsight-x
-          MARKETPLACE_DISPLAY_NAMES: >-
-            Code Insight C/C++ Navigator
-            Code Insight for C/C++ by cinsight
-          MARKETPLACE_DISPLAY_NAME: Code Insight C/C++ Navigator
         run: |
           set -o pipefail
-          for display in $MARKETPLACE_DISPLAY_NAMES; do
+          display_names=("Code Insight C/C++ Navigator" "Code Insight for C/C++ by cinsight")
+          for display in "${display_names[@]}"; do
             npm pkg set displayName="$display"
             for name in $MARKETPLACE_NAMES; do
               echo "::group::try marketplace identity: $name / $display"
@@ -92,12 +89,12 @@ jobs:
               fi
               echo "$out"
               echo "::endgroup::"
-              if grep -qiE "already exists in the Marketplace|display name .* already" <<<"$out"; then
-                if grep -qiE "display name .* already" <<<"$out"; then
-                  echo "display name '$display' is taken; trying the next display name"
-                  break
-                fi
-                echo "name '$name' is reserved by someone else; trying the next candidate"
+              if grep -qiE "display name .* already" <<<"$out"; then
+                echo "display name '$display' is taken; trying the next display name"
+                break
+              fi
+              if grep -qiE "already exists in the Marketplace" <<<"$out"; then
+                echo "name '$name' is reserved by someone else; trying the next name"
                 continue
               fi
               echo "publish failed for a reason other than a name conflict; aborting"
