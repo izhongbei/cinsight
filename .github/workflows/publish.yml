@@ -63,28 +63,46 @@ jobs:
       #   name        = codeinsight            (ID: cinsight.codeinsight)
       #   displayName = Code Insight for C/C++
       # Open VSX 继续使用 package.json 里的 cinsight.code-insight，两边同一份代码。
-      - name: Prepare Marketplace metadata
-        if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
-        env:
-          MARKETPLACE_NAME: codeinsight
-          MARKETPLACE_DISPLAY_NAME: Code Insight for C/C++
-        run: |
-          npm pkg set name="$MARKETPLACE_NAME"
-          npm pkg set displayName="$MARKETPLACE_DISPLAY_NAME"
-          echo "Marketplace identity: $(npm pkg get name publisher displayName --json)"
-
-      - name: Package Marketplace VSIX
-        if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
-        run: npx --yes @vscode/vsce@4.1.0 package --no-dependencies
-
-      - name: Upload Marketplace VSIX artifact
-        if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: code-insight-marketplace-vsix
-          path: codeinsight-*.vsix
-          if-no-files-found: error
-
+      # Marketplace 的扩展 name / displayName 都要求全局唯一，且"已删除"的扩展名会被
+      # 永久保留（搜索查不到）。这里按候选列表逐个尝试：只有出现名字/显示名冲突时才换
+      # 下一个候选，其它错误立即失败，避免把真正的配置问题掩盖掉。
       - name: Publish to VS Code Marketplace
         if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
-        run: npx --yes @vscode/vsce@4.1.0 publish --oidc
+        env:
+          MARKETPLACE_NAMES: cinsight-navigator code-insight-c cinsight-code-insight codeinsight-x
+          MARKETPLACE_DISPLAY_NAMES: >-
+            Code Insight C/C++ Navigator
+            Code Insight for C/C++ by cinsight
+          MARKETPLACE_DISPLAY_NAME: Code Insight C/C++ Navigator
+        run: |
+          set -o pipefail
+          for display in $MARKETPLACE_DISPLAY_NAMES; do
+            npm pkg set displayName="$display"
+            for name in $MARKETPLACE_NAMES; do
+              echo "::group::try marketplace identity: $name / $display"
+              npm pkg set name="$name"
+              echo "identity: $(npm pkg get name publisher displayName --json | tr -d '\n')"
+              if out=$(npx --yes @vscode/vsce@4.1.0 publish --oidc 2>&1); then
+                echo "$out"
+                echo "PUBLISHED_AS=$name" >> "$GITHUB_STEP_SUMMARY"
+                echo "PUBLISHED_DISPLAY_NAME=$display" >> "$GITHUB_STEP_SUMMARY"
+                echo "Marketplace ID: cinsight.$name"
+                echo "::endgroup::"
+                exit 0
+              fi
+              echo "$out"
+              echo "::endgroup::"
+              if grep -qiE "already exists in the Marketplace|display name .* already" <<<"$out"; then
+                if grep -qiE "display name .* already" <<<"$out"; then
+                  echo "display name '$display' is taken; trying the next display name"
+                  break
+                fi
+                echo "name '$name' is reserved by someone else; trying the next candidate"
+                continue
+              fi
+              echo "publish failed for a reason other than a name conflict; aborting"
+              exit 1
+            done
+          done
+          echo "all candidate identities are taken on the Marketplace; extend MARKETPLACE_NAMES"
+          exit 1
