@@ -10,7 +10,8 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 
 | Feature | How to use |
 |---|---|
-| **Go to definition** | `F12` / `Ctrl+Click` on a call; falls back to the header prototype when no definition exists |
+| **Go to definition** | `F12` / `Ctrl+Click` on a call or a type name; falls back to the header prototype / forward declaration when no definition exists |
+| **Type navigation** | `struct` / `union` / `enum` tags and `typedef` names (anonymous structs and function-pointer typedefs included) are indexed like functions |
 | **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Function` (lists signature and location) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
@@ -86,7 +87,7 @@ sources ──walk──> file list ──mtime+size delta──> changed files
                                                      │
                               worker_threads ×N ─────┤ lexing + definition detection
                                                      ▼
-                        compact symbol table (definitions / prototypes / function-like macros)
+                        compact symbol table (functions / prototypes / macros / struct / union / enum / typedef)
                                                      │
                                        binary snapshot symbols.sidx (extension storage)
                                                      ▼
@@ -105,9 +106,9 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 
 | Metric | Result |
 |---|---|
-| Symbols | 98,930 |
-| Index build (4 workers, cold cache) | 6.5 s |
-| Snapshot size / load | 3.87 MB / 28 ms |
+| Symbols | 118,730 (incl. 19,800 type symbols) |
+| Index build (4 workers, cold cache) | 7.4 s |
+| Snapshot size / load | 4.51 MB / 33 ms |
 | Symbol search (limit 50) | 11 ms |
 | Exact name lookup | 8 ms |
 | Signature reconstruction (first read) | 56 ms |
@@ -125,7 +126,7 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 ## Known limitations
 
 - Heuristic parsing, not a full C front end: functions produced by macro expansion, old K&R parameter lists and unusual function-pointer forms may be missed (header prototypes still let you jump).
-- Only functions, function prototypes and function-like macros are indexed; struct/enum/variable navigation is out of scope for now.
+- Indexed symbols: functions, function prototypes, function-like macros, `struct`/`union`/`enum` tags and `typedef` names. **Struct members, plain variables and enum constants are not indexed** — jumping to `obj->field` would need type inference.
 - No preprocessor branch evaluation: definitions of the same name in different `#if` branches all appear as candidates (pick one in the native list).
 - Reference scanning is textual (with comment/string stripping), not semantic; same-named but unrelated symbols match too; first searches on huge roots are bound by disk throughput.
 - Single-root workspaces only (the first workspace folder); `indexRoots` must be workspace-relative.
@@ -159,7 +160,8 @@ MIT
 
 | 功能 | 入口 |
 |---|---|
-| **跳转定义** | 光标在函数调用处按 `F12` / `Ctrl+Click`；无定义时回退到头文件原型声明 |
+| **跳转定义** | 光标在函数调用或类型名处按 `F12` / `Ctrl+Click`；无定义时回退到头文件原型 / 前置声明 |
+| **类型跳转** | `struct` / `union` / `enum` 标签与 `typedef` 名字（含匿名结构体、函数指针 typedef）和函数一样进索引 |
 | **函数搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索函数`（列出签名与位置） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
@@ -222,12 +224,12 @@ cursor --install-extension code-insight-0.1.0.vsix
 
 ## 性能
 
-对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 98,930；建索引（含倒排索引）约 2.5–6.5 s（取决于磁盘缓存）；快照 3.87 MB / 加载 20–28 ms；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 335–410 MB。
+对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 **118,730**（含 19,800 个类型符号）；建索引（含倒排索引）约 2.5–7.4 s（取决于磁盘缓存）；快照 4.51 MB / 加载 20–33 ms；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 335–410 MB。
 
 ## 已知限制
 
 - 启发式解析：宏展开生成的函数、K&R 老式参数表、极端函数指针写法可能漏识别（头文件原型可兜底跳转）。
-- 只索引函数、函数原型与函数式宏；结构体/枚举/变量跳转不在当前范围。
+- 已索引：函数、函数原型、函数式宏、`struct`/`union`/`enum` 标签与 `typedef` 名字。**结构体成员、普通变量、枚举常量暂不索引**——`obj->field` 的跳转需要类型推导。
 - 不做预处理分支求值，同一名字在多个 `#if` 分支的定义都会出现在候选里。
 - 引用扫描是文本级（已剥离注释/字符串），不是语义级；首次在大仓库上受磁盘吞吐限制。
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。

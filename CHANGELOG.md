@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-11-12
+
+### English
+
+- **C type symbols are now indexed**: `struct` / `union` / `enum` tags and `typedef` names (including anonymous-struct and function-pointer typedefs) participate in go-to-definition, find-references, hover, outline and symbol search.
+- Forward declarations (`struct foo;`) are indexed as declarations, so the real definition wins in the candidate list.
+- Snapshot format bumped to version 2: after upgrading, the index rebuilds once automatically in the background.
+- Measured corpus: symbols 98,930 → **118,730** (+19,800 type symbols); snapshot 3.87 → 4.51 MB; reference lookup stays ~8 ms (about 31× faster than a full scan).
+- Not covered: struct **members**, plain variables and enum constants — resolving `obj->field` needs type inference.
+
+### 中文
+
+- **C 类型符号进入索引**：`struct` / `union` / `enum` 标签与 `typedef` 名字（含匿名结构体 typedef、函数指针 typedef）现在支持跳转定义、查找引用、悬停、大纲与符号搜索。
+- 前置声明（`struct foo;`）按声明索引，候选列表中真正的定义优先。
+- 快照格式升到 v2：升级后会自动在后台重建一次索引。
+- 实测语料：符号 98,930 → **118,730**（新增 19,800 个类型符号），快照 3.87 → 4.51 MB；引用查询仍约 8 ms（比全量扫描快约 31 倍）。
+- 未覆盖：**结构体成员**、普通变量、枚举常量——`obj->field` 的跳转需要类型推导。
+
+
 ## 0.2.0 — 2026-11-12
 
 ### English
