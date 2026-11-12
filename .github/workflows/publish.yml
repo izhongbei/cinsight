@@ -69,10 +69,10 @@ jobs:
       - name: Publish to VS Code Marketplace
         if: ${{ vars.ENABLE_MARKETPLACE == 'true' }}
         env:
-          MARKETPLACE_NAMES: cinsight-navigator code-insight-c cinsight-code-insight codeinsight-x
+          MARKETPLACE_NAMES: insight-c cinsight-navigator cinsight-code-insight codeinsight-c
         run: |
           set -o pipefail
-          display_names=("Code Insight C/C++ Navigator" "Code Insight for C/C++ by cinsight")
+          display_names=("Code Insight for C/C++" "Code Insight C/C++ Navigator" "Code Insight for C/C++ by cinsight")
           for display in "${display_names[@]}"; do
             npm pkg set displayName="$display"
             for name in $MARKETPLACE_NAMES; do

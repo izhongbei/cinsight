@@ -132,7 +132,7 @@ curl -fsSL http://intranet/tools/code-insight-latest.vsix -o /tmp/si.vsix && \
 > | 市场 | 扩展 ID | displayName |
 > |---|---|---|
 > | Open VSX（Cursor / VS Code forks） | `cinsight.code-insight` | Code Insight |
-> | VS Code Marketplace | `cinsight.codeinsight` | Code Insight for C/C++ |
+> | VS Code Marketplace | `cinsight.insight-c` | Code Insight for C/C++ |
 >
 > 原因是 Marketplace 要求扩展 `name` 与 `displayName` **全局唯一**：`code-insight` 已被保留、
 > `Code Insight` 已被 `ArtePrime.arteprime-code-insight` 占用。CI 在 Marketplace 发布前用

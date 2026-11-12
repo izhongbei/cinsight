@@ -30,10 +30,10 @@ cursor --install-extension cinsight.code-insight
 code   --install-extension cinsight.code-insight
 ```
 
-VS Code users can also install from the Marketplace (same code; the ID differs because the marketplace requires a globally unique extension name and display name):
+VS Code users can also install from the Marketplace (same code; the ID differs because the Marketplace requires globally unique extension name and display name):
 
 ```bash
-code --install-extension cinsight.codeinsight
+code --install-extension cinsight.insight-c
 ```
 
 Or search for **Code Insight** in the Extensions view.
@@ -190,7 +190,7 @@ code   --install-extension cinsight.code-insight
 VS Code 用户也可从 Marketplace 安装（同一份代码；因 Marketplace 要求扩展名与显示名全局唯一，ID 不同）：
 
 ```bash
-code --install-extension cinsight.codeinsight
+code --install-extension cinsight.insight-c
 ```
 
 或在扩展面板搜索 **Code Insight** 后安装。
