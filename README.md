@@ -95,6 +95,7 @@ sources ──walk──> file list ──mtime+size delta──> changed files
 
 - The parser works on bytes so line and column numbers stay stable. A single-pass state machine blanks comments, string literals and `#define` continuations, then detects definitions and declarations at file scope ("type + name + balanced parentheses + `{`/`;`") and matches braces to get each function body range.
 - The snapshot is a binary format (string table + compact integer arrays), roughly **20–30 MB per million symbols**, loaded in under 500 ms; unchanged files reuse their previous symbols.
+- A per-file **identifier hash index** (`symbols.names`, ~3.6 MB for 6,838 files) makes find-references read only the files that can contain the identifier instead of the whole tree: measured **1 candidate file vs 6,838**, 5 ms vs 159 ms on a warm cache (4.2 s cold). 32-bit collisions can add candidate files but never hide a reference, because each candidate is verified by exact word-boundary matching.
 - References and call relationships are scanned on demand: content prefilter first, then exact word-boundary matching; callers are derived from the line hit, callees only parse the target function body.
 - No third-party runtime dependency; fully offline.
 
@@ -110,14 +111,16 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 | Symbol search (limit 50) | 11 ms |
 | Exact name lookup | 8 ms |
 | Signature reconstruction (first read) | 56 ms |
-| Find references (first call, full scan of 75 MB) | 4.2 s (cached afterwards: 0 ms) |
+| Find references, full scan (first call, 75 MB, cold cache) | 4.2 s |
+| Find references, **indexed** | **5 ms** (1 candidate file out of 6,838) |
+| Reference index (name index) size / load | 3.57 MB / 10–38 ms |
 | Callers / callees | 14 ms / 13 ms |
 | Process memory (including index build) | ~335 MB |
 
 - Indexing `plat` alone (5,573 files / 57.5 MB): 74,194 symbols, 0.8–1.2 s with a warm cache, 0.5 s for an unchanged incremental rebuild.
 - A single-threaded scan of all 121,606 files (2.6 GB) takes ~157 s; configure `indexRoots` per module so you only index what you actually browse.
 
-> Find-references and call relationships scan file contents on demand: a content prefilter decides which files get lexed. On slow network drives the first search over a big root can take a while, but it reports progress, can be cancelled and caches its results.
+> Find-references and call relationships first narrow the candidate set through the per-file identifier index, then read and lex only those files. The index is built once with the symbol index (a fast second pass, high-concurrency I/O) and maintained incrementally: saving one file only refreshes that file's slice. Results are cached per snapshot.
 
 ## Known limitations
 
@@ -126,6 +129,7 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 - No preprocessor branch evaluation: definitions of the same name in different `#if` branches all appear as candidates (pick one in the native list).
 - Reference scanning is textual (with comment/string stripping), not semantic; same-named but unrelated symbols match too; first searches on huge roots are bound by disk throughput.
 - Single-root workspaces only (the first workspace folder); `indexRoots` must be workspace-relative.
+- The reference index adds roughly one third to on-disk index storage; identifiers are stored as 32-bit hashes, so collisions can only add candidate files (they are verified before reporting).
 - Requires the C/C++ language id (`.c`/`.h` opened as `c`/`cpp`, which the built-in grammar provides).
 
 ## Privacy and security
@@ -212,12 +216,13 @@ cursor --install-extension code-insight-0.1.0.vsix
 
 - 解析器按字节工作，行号列号稳定；单遍状态机剥离注释、字符串、`#define` 续行，在文件作用域按"类型 + 名字 + 平衡括号 + `{`/`;`"判定定义与声明，并做花括号配对得到函数体范围。
 - 快照为二进制格式，约 **20–30 MB / 100 万符号**，加载 < 500 ms；未变化的文件直接复用旧符号。
-- 引用与调用关系按需扫描：先用文件内容预筛，再按词边界精确匹配。
+- 每个文件的**标识符哈希倒排索引**（`symbols.names`，6,838 文件约 3.6 MB）让查找引用只读可能包含该名字的文件：实测**候选文件 1 个 vs 6,838 个**，热缓存 5 ms vs 全量 159 ms（冷盘全量 4.2 s）。32 位哈希碰撞只会多出候选文件，不会漏报——候选文件仍按词边界精确校验。
+- 引用与调用关系先用「每文件标识符倒排索引」缩小候选集，只对候选文件读盘并做词法剥离与词边界精确匹配。
 - 无第三方运行时依赖，离线可用。
 
 ## 性能
 
-对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 98,930；建索引 6.5 s（4 worker，冷缓存）；快照 3.87 MB / 加载 28 ms；函数搜索 11 ms；按名查找 8 ms；签名重建 56 ms；查找引用首次 4.2 s（缓存后 0 ms）；调用者/被调用者 14 ms / 13 ms；进程内存约 335 MB。
+对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 98,930；建索引（含倒排索引）约 2.5–6.5 s（取决于磁盘缓存）；快照 3.87 MB / 加载 20–28 ms；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 335–410 MB。
 
 ## 已知限制
 
@@ -226,6 +231,7 @@ cursor --install-extension code-insight-0.1.0.vsix
 - 不做预处理分支求值，同一名字在多个 `#if` 分支的定义都会出现在候选里。
 - 引用扫描是文本级（已剥离注释/字符串），不是语义级；首次在大仓库上受磁盘吞吐限制。
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。
+- 倒排索引会让索引占用增加约三分之一；标识符以 32 位哈希存储，碰撞只会增加候选文件（命中前仍精确校验），不会漏报。
 
 ## 隐私与安全
 

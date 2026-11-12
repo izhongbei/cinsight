@@ -11,6 +11,7 @@ import type {
   ScannedSymbol,
   SymbolEntry,
 } from '../shared/types'
+import { buildNameIndex, loadNameIndex, saveNameIndex } from './nameindex'
 import { scanSource } from './scan'
 import { saveSnapshot } from './store'
 import { walkFiles } from './walk'
@@ -241,6 +242,7 @@ export async function buildIndex(
     followSymlinks,
     previous,
     snapshotPath,
+    nameIndexPath,
     signal,
     onProgress,
     readFile,
@@ -372,6 +374,25 @@ export async function buildIndex(
   let snapshotBytes = 0
   if (snapshotPath) snapshotBytes = await saveSnapshot(snapshotPath, snapshot)
 
+  // 引用加速索引：变更文件重新读盘计算标识符哈希，未变更文件复用旧切片。
+  let nameIndexBytes = 0
+  if (nameIndexPath) {
+    const previousNameIndex = await loadNameIndex(nameIndexPath)
+    const changedPaths = new Set<string>(pending.map((file) => file.path))
+    onProgress?.({ phase: 'index', done: 0, total: successfulFiles.length })
+    const nameIndex = await buildNameIndex({
+      files: successfulFiles,
+      previous: previousNameIndex,
+      changedPaths,
+      readFile,
+      signal,
+      // 第二遍只为收集标识符：慢盘上单文件读延迟高，必须用更高并发把 I/O 打满
+      concurrency: Math.min(64, Math.max(8, concurrency * 8)),
+      onProgress: (done, total) => onProgress?.({ phase: 'index', done, total }),
+    })
+    nameIndexBytes = await saveNameIndex(nameIndexPath, nameIndex)
+  }
+
   const summary: BuildSummary = {
     files: successfulFiles.length,
     entries: entries.length,
@@ -382,6 +403,7 @@ export async function buildIndex(
     skipped: skipped.size,
     durationMs: Date.now() - startedAt,
     snapshotBytes,
+    nameIndexBytes,
   }
   return { snapshot, summary }
 }

@@ -40,7 +40,7 @@ export interface ScannedSymbol {
   readonly column: number
 }
 
-export type IndexPhase = 'walk' | 'parse' | 'save'
+export type IndexPhase = 'walk' | 'parse' | 'index' | 'save'
 
 export interface IndexProgress {
   readonly phase: IndexPhase
@@ -59,6 +59,8 @@ export interface BuildOptions {
   readonly previous?: IndexSnapshot
   /** 提供时 buildIndex 负责把快照写盘并回填 summary.snapshotBytes */
   readonly snapshotPath?: string
+  /** 提供时 buildIndex 同时构建引用加速索引并写盘，回填 summary.nameIndexBytes */
+  readonly nameIndexPath?: string
   readonly signal?: AbortSignal
   readonly onProgress?: (progress: IndexProgress) => void
 }
@@ -73,6 +75,8 @@ export interface BuildSummary {
   readonly skipped: number
   readonly durationMs: number
   readonly snapshotBytes: number
+  /** 引用加速索引写入字节数；未构建时为 0/undefined */
+  readonly nameIndexBytes?: number
 }
 
 export interface ReferenceHit {
@@ -87,9 +91,24 @@ export interface CallerHit extends ReferenceHit {
   readonly from: SymbolEntry | undefined
 }
 
+/**
+ * 引用加速用的「标识符倒排索引」：按文件存放该文件出现过的所有标识符的 32 位哈希
+ * （去重、升序）。查询时对每个文件的切片做二分查找即可得到候选文件，避免全量读盘。
+ * 32 位哈希可能碰撞，只会带来额外候选文件（读取后再按词边界精确匹配），不会漏报。
+ */
+export interface NameIndexData {
+  /** 与快照 files 同序的工作区相对 posix 路径 */
+  readonly filePaths: readonly string[]
+  /** offsets[i]..offsets[i+1] 是第 i 个文件在 hashes 中的切片 */
+  readonly offsets: Uint32Array
+  /** 所有文件标识符哈希，按文件分段、段内升序 */
+  readonly hashes: Uint32Array
+}
+
 export type ReadFileFn = (relativePath: string) => Promise<string>
 
 export const SNAPSHOT_VERSION = 1
+export const NAME_INDEX_VERSION = 1
 export const INDEXED_EXTENSIONS = ['.c', '.h', '.cc', '.cpp', '.hpp', '.hh', '.inl'] as const
 export const DEFAULT_EXCLUDE = [
   '**/.git/**',

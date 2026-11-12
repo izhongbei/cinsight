@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 — 2026-11-12
+
+### English
+
+- **Much faster find-references / call hierarchy**: a per-file identifier hash index (`symbols.names`) narrows each query to the few files that can contain the name. Measured on 6,838 C/H files: **1 candidate file instead of 6,838**, 5 ms instead of 159 ms warm (4.2 s cold) — about 30× faster.
+- The index is built with the symbol index in a second high-concurrency pass and maintained incrementally: saving one file refreshes only that file's slice.
+- Index storage grows by roughly one third (3.57 MB for the measured corpus); 32-bit hash collisions can add candidate files but never hide a reference.
+- Snapshot format unchanged; upgrading rebuilds the reference index once in the background.
+
+### 中文
+
+- **查找引用 / 调用层次大幅提速**：新增「每文件标识符哈希倒排索引」（`symbols.names`），每次查询只读取可能包含该名字的少量文件。6,838 个 C/H 文件实测：**候选文件 1 个（原来要全量 6,838 个）**，热缓存 5 ms（原 159 ms），冷盘 4.2 s → 5 ms，约 30 倍。
+- 倒排索引随符号索引一起构建（第二遍高并发 I/O），并支持增量维护：保存单个文件只刷新该文件的切片。
+- 索引体积增加约三分之一（实测语料 3.57 MB）；32 位哈希碰撞只会增加候选文件，不会漏报引用。
+- 快照格式不变；升级后后台重建一次倒排索引即可。
+
+
 All notable changes to this project are documented in this file.
 
 本文件记录本项目的所有重要变更（英文在前，中文说明在后 / English first, Chinese below）。

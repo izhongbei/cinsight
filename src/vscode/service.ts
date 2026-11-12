@@ -20,6 +20,7 @@ import { entriesInFile, findByName, searchSymbols } from '../core/query'
 import { findReferences } from '../core/references'
 import { readSignature } from '../core/signature'
 import { scanSource } from '../core/scan'
+import { collectIdentifierHashes, loadNameIndex, removeFileIndex, saveNameIndex, upsertFileIndex } from '../core/nameindex'
 import { loadSnapshot, saveSnapshot } from '../core/store'
 import { compileExclude } from '../core/exclude'
 import {
@@ -30,6 +31,7 @@ import {
   type FileRecord,
   type IndexProgress,
   type IndexSnapshot,
+  type NameIndexData,
   type ReadFileFn,
   type ReferenceHit,
   type SymbolEntry,
@@ -49,6 +51,7 @@ import {
 import { isAbortError, withProgress, type ProgressLike } from './util'
 
 const SNAPSHOT_FILE_NAME = 'symbols.sidx'
+const NAME_INDEX_FILE_NAME = 'symbols.names'
 const SAVE_DEBOUNCE_MS = 3000
 const SIGNATURE_CACHE_CHAR_BUDGET = 8 * 1024 * 1024
 const MAX_TRACKED_CACHE_FILES = 256
@@ -65,8 +68,10 @@ export class SymbolService implements vscode.Disposable {
   private readonly logger: Logger
   private readonly workspaceRootValue: string | undefined
   private readonly snapshotPathValue: string | undefined
+  private readonly nameIndexPathValue: string | undefined
 
   private snapshotValue: IndexSnapshot | undefined
+  private nameIndexValue: NameIndexData | undefined
   private lastSummaryValue: BuildSummary | undefined
   private lastErrorValue: string | undefined
   private progressValue: IndexProgress | undefined
@@ -88,6 +93,9 @@ export class SymbolService implements vscode.Disposable {
     this.logger = logger
     this.workspaceRootValue = resolveWorkspaceRoot()
     this.snapshotPathValue = resolveSnapshotPath(context)
+    this.nameIndexPathValue = this.snapshotPathValue
+      ? path.join(path.dirname(this.snapshotPathValue), NAME_INDEX_FILE_NAME)
+      : undefined
     this.onDidChange = this.changeEmitter.event
     this.onProgress = this.progressEmitter.event
     if (!this.workspaceRootValue) {
@@ -95,6 +103,9 @@ export class SymbolService implements vscode.Disposable {
     }
     if (!this.snapshotPathValue) {
       this.logger.warn('no storage URI available; index will not be persisted')
+    }
+    if (!this.nameIndexPathValue) {
+      this.logger.warn('reference name index disabled: no storage path')
     }
   }
 
@@ -233,7 +244,11 @@ export class SymbolService implements vscode.Disposable {
     return this.queryWithProgress<ReferenceHit[]>(
       title,
       async (signal, report) =>
-        findReferences(snapshot, name, this.readFileBound, { signal, onProgress: report }),
+        findReferences(snapshot, name, this.readFileBound, {
+          nameIndex: this.nameIndexValue,
+          signal,
+          onProgress: report,
+        }),
       token,
       [],
     )
@@ -247,7 +262,12 @@ export class SymbolService implements vscode.Disposable {
     const title = vscode.l10n.t('Finding callers of "{0}"…', name)
     return this.queryWithProgress<CallerHit[]>(
       title,
-      async (signal, report) => callersOf(snapshot, name, this.readFileBound, { signal, onProgress: report }),
+      async (signal, report) =>
+        callersOf(snapshot, name, this.readFileBound, {
+          nameIndex: this.nameIndexValue,
+          signal,
+          onProgress: report,
+        }),
       token,
       [],
     )
@@ -436,6 +456,7 @@ export class SymbolService implements vscode.Disposable {
             followSymlinks: config.followSymlinks,
             previous: this.snapshotValue,
             snapshotPath: this.snapshotPathValue,
+            nameIndexPath: this.nameIndexPathValue,
             signal: controller.signal,
             readFile: this.readFileBound,
             onProgress: (p: IndexProgress) => {
@@ -459,6 +480,9 @@ export class SymbolService implements vscode.Disposable {
             return undefined
           }
           this.snapshotValue = result.snapshot
+          this.nameIndexValue = this.nameIndexPathValue
+            ? await loadNameIndex(this.nameIndexPathValue)
+            : undefined
           this.lastSummaryValue = result.summary
           this.textCache.clear()
           this.textCacheChars = 0
@@ -525,6 +549,15 @@ export class SymbolService implements vscode.Disposable {
             p.total > 0
               ? vscode.l10n.t('Scanning files… {0}/{1}', p.done, p.total)
               : vscode.l10n.t('Scanning files…'),
+        })
+        return
+      }
+      if (p.phase === 'index') {
+        progress.report({
+          message:
+            p.total > 0
+              ? vscode.l10n.t('Building reference index… {0}/{1}', p.done, p.total)
+              : vscode.l10n.t('Building reference index…'),
         })
         return
       }
@@ -605,6 +638,7 @@ export class SymbolService implements vscode.Disposable {
         column: symbol.column,
       }))
       this.commitSnapshot(rel, entries, stat.mtimeMs, stat.size)
+      await this.refreshNameIndexForFile(rel, text)
       this.logger.info(`incremental update: ${rel} (${entries.length} symbols)`)
     } catch (error) {
       if (!isAbortError(error)) {
@@ -630,6 +664,7 @@ export class SymbolService implements vscode.Disposable {
         return
       }
       this.commitSnapshot(rel, [], 0, 0, true)
+      await this.removeNameIndexForFile(rel)
       this.logger.info(`incremental remove: ${rel}`)
     } catch (error) {
       this.logger.error(`removeFile failed: ${absPath}`, error)
@@ -686,6 +721,48 @@ export class SymbolService implements vscode.Disposable {
       builtAt: Date.now(),
       files: sortedFiles,
       entries: sortedEntries,
+    }
+  }
+
+  /** 增量更新单个文件的引用索引切片（失败只记日志，不影响主流程）。 */
+  private async refreshNameIndexForFile(relPath: string, text: string): Promise<void> {
+    const nameIndexPath = this.nameIndexPathValue
+    if (!nameIndexPath || !this.nameIndexValue) {
+      return
+    }
+    try {
+      this.nameIndexValue = upsertFileIndex(this.nameIndexValue, relPath, collectIdentifierHashes(text))
+      await saveNameIndex(nameIndexPath, this.nameIndexValue)
+    } catch (error) {
+      this.logger.warn('name index update failed', error)
+    }
+  }
+
+  private async removeNameIndexForFile(relPath: string): Promise<void> {
+    const nameIndexPath = this.nameIndexPathValue
+    if (!nameIndexPath || !this.nameIndexValue) {
+      return
+    }
+    try {
+      this.nameIndexValue = removeFileIndex(this.nameIndexValue, relPath)
+      await saveNameIndex(nameIndexPath, this.nameIndexValue)
+    } catch (error) {
+      this.logger.warn('name index removal failed', error)
+    }
+  }
+
+  private async removeNameIndexFile(): Promise<void> {
+    const nameIndexPath = this.nameIndexPathValue
+    if (!nameIndexPath) {
+      return
+    }
+    try {
+      await fs.promises.unlink(nameIndexPath)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code !== 'ENOENT') {
+        this.logger.warn('cannot remove name index file', error)
+      }
     }
   }
 
@@ -776,7 +853,9 @@ export class SymbolService implements vscode.Disposable {
       this.saveTimer = undefined
     }
     this.pendingSave = false
+    this.nameIndexValue = undefined
     await this.removeSnapshotFile()
+    await this.removeNameIndexFile()
     if (!this.disposed) {
       this.changeEmitter.fire()
     }
@@ -797,9 +876,13 @@ export class SymbolService implements vscode.Disposable {
         return
       }
       this.snapshotValue = snapshot
+      if (this.nameIndexPathValue) {
+        this.nameIndexValue = await loadNameIndex(this.nameIndexPathValue)
+      }
       this.logger.info(
         `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entries.length} ` +
-          `builtAt=${new Date(snapshot.builtAt).toISOString()}`,
+          `builtAt=${new Date(snapshot.builtAt).toISOString()}` +
+          (this.nameIndexValue ? ' (reference index loaded)' : ''),
       )
     } catch (error) {
       // 快照损坏/版本不符：删除后等待重建，不弹错误（spec §8）

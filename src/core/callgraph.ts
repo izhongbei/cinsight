@@ -187,6 +187,7 @@ export async function callersOf(
   throwIfAborted(options.signal)
 
   const references: ReferenceHit[] = await findReferences(snapshot, name, readFile, {
+    nameIndex: options.nameIndex,
     signal: options.signal,
     onProgress: options.onProgress,
     includeDeclaration: options.includeDeclaration ?? false,

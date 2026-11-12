@@ -11,6 +11,8 @@
   "… and {0} more": "… 还有 {0} 项",
   "Browse…": "浏览…",
   "Building Code Insight index…": "正在建立 Code Insight 索引…",
+  "Building reference index…": "正在建立引用索引…",
+  "Building reference index… {0}/{1}": "正在建立引用索引… {0}/{1}",
   "Building the Code Insight index…": "正在建立 Code Insight 索引…",
   "Built: {0}": "建立时间：{0}",
   "Cancel": "取消",

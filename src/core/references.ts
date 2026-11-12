@@ -1,4 +1,5 @@
-import type { IndexSnapshot, ReadFileFn, ReferenceHit } from '../shared/types'
+import type { FileRecord, IndexSnapshot, NameIndexData, ReadFileFn, ReferenceHit } from '../shared/types'
+import { candidatesForName } from './nameindex'
 import { stripSources } from './signature'
 
 /**
@@ -9,6 +10,8 @@ import { stripSources } from './signature'
  */
 
 export interface ReferenceOptions {
+  /** 提供了倒排索引时只读取可能包含该标识符的文件（数量级加速） */
+  readonly nameIndex?: NameIndexData
   readonly signal?: AbortSignal
   readonly onProgress?: (done: number, total: number) => void
   readonly includeDeclaration?: boolean
@@ -36,6 +39,11 @@ export function snapshotIdentity(snapshot: IndexSnapshot): number {
 
 /** 结果缓存：key = snapshotId|includeDeclaration|name → 已排序结果。 */
 const resultCache = new Map<string, readonly ReferenceHit[]>()
+
+/** 清空引用结果缓存（测试与压测用于对比冷启动耗时）。 */
+export function clearReferenceCache(): void {
+  resultCache.clear()
+}
 
 export function abortError(): Error {
   const error = new Error('aborted')
@@ -122,7 +130,26 @@ export async function findReferences(
     ? undefined
     : declarationLinesByName(snapshot, name)
 
-  const files = snapshot.files
+  // 有倒排索引时：先用哈希索引得到候选文件，未命中直接返回空（索引覆盖所有标识符，
+  // 注释/字符串中的文本本来就不算引用），命中则只读这些文件。
+  let files: readonly FileRecord[] = snapshot.files
+  if (options.nameIndex) {
+    const nameIndex = options.nameIndex
+    const candidateIndexes = candidatesForName(nameIndex, name)
+    if (candidateIndexes.length === 0) {
+      cacheSet(cacheKey, [])
+      return []
+    }
+    const byPath = new Map(snapshot.files.map((record) => [record.path, record]))
+    const narrowed: FileRecord[] = []
+    for (const candidate of candidateIndexes) {
+      const path = nameIndex.filePaths[candidate]
+      if (path === undefined) continue
+      const record = byPath.get(path)
+      if (record !== undefined) narrowed.push(record)
+    }
+    files = narrowed
+  }
   const total = files.length
   const concurrency = Math.min(DEFAULT_CONCURRENCY, Math.max(total, 1))
 

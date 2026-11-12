@@ -20,7 +20,8 @@ const WORKSPACE_ROOT = path.resolve(EXT_ROOT, '..', '..')
 const { buildIndex } = require(path.join(EXT_ROOT, 'dist/src/core/indexer.js'))
 const { loadSnapshot, saveSnapshot } = require(path.join(EXT_ROOT, 'dist/src/core/store.js'))
 const { searchSymbols, findByName } = require(path.join(EXT_ROOT, 'dist/src/core/query.js'))
-const { findReferences } = require(path.join(EXT_ROOT, 'dist/src/core/references.js'))
+const { findReferences, clearReferenceCache } = require(path.join(EXT_ROOT, 'dist/src/core/references.js'))
+const { candidatesForName, loadNameIndex } = require(path.join(EXT_ROOT, 'dist/src/core/nameindex.js'))
 const { callersOf, calleesOf } = require(path.join(EXT_ROOT, 'dist/src/core/callgraph.js'))
 const { readSignature } = require(path.join(EXT_ROOT, 'dist/src/core/signature.js'))
 const { DEFAULT_EXCLUDE } = require(path.join(EXT_ROOT, 'dist/src/shared/types.js'))
@@ -35,6 +36,7 @@ if (!roots.length) {
 
 const readFile = (rel) => fsp.readFile(path.join(WORKSPACE_ROOT, rel), 'latin1')
 const snapshotPath = path.join('/tmp', 'si-perf-snapshot-' + Date.now() + '.sidx')
+const nameIndexPath = path.join('/tmp', 'si-perf-names-' + Date.now() + '.names')
 
 const ms = (start) => Math.round(performance.now() - start)
 const mb = (bytes) => (bytes / 1048576).toFixed(2) + ' MB'
@@ -55,6 +57,7 @@ async function main() {
     followSymlinks: false,
     readFile,
     snapshotPath,
+    nameIndexPath,
     onProgress: (p) => {
       const label = p.phase + (p.phase === 'parse' && p.total ? ` ${p.done}/${p.total}` : '')
       if (label !== lastPhase && (p.phase !== 'parse' || p.done === p.total || p.done % 5000 === 0)) {
@@ -75,6 +78,7 @@ async function main() {
     summary.added, summary.updated, summary.removed, summary.unchanged, summary.skipped)
   console.log('  duration     :', total, 'ms')
   console.log('  snapshot     :', mb(snapshotBytes))
+  console.log('  nameIndex    :', summary.nameIndexBytes ? mb(summary.nameIndexBytes) : 'not built')
   console.log('  rss          :', mb(process.memoryUsage().rss))
   console.log('')
 
@@ -83,6 +87,13 @@ async function main() {
   console.log('=== load snapshot ===')
   console.log('  duration     :', ms(tLoad), 'ms; entries:', loaded ? loaded.entries.length : 'FAILED')
   if (!loaded) throw new Error('snapshot load failed')
+
+  const tName = performance.now()
+  const nameIndex = await loadNameIndex(nameIndexPath)
+  console.log('=== load reference index ===')
+  console.log('  duration     :', ms(tName), 'ms;', nameIndex
+    ? `files=${nameIndex.filePaths.length} hashes=${nameIndex.hashes.length} size=${mb(require('fs').statSync(nameIndexPath).size)}`
+    : 'FAILED')
   console.log('')
 
   const query = queryArg ? queryArg.slice('--query='.length) : (loaded.entries.find((e) => e.kind === 'function' && e.name.length > 4) || loaded.entries[0] || {}).name
@@ -101,12 +112,29 @@ async function main() {
     const sig = await readSignature(readFile, defs[0])
     console.log('  readSignature:', ms(t), 'ms;', JSON.stringify(sig))
 
+    // 全量扫描 vs 倒排索引（各自清缓存后冷跑，结果必须一致）
+    clearReferenceCache()
     t = performance.now()
-    const refs = await findReferences(loaded, query, readFile, { includeDeclaration: false })
-    console.log('  references   :', ms(t), 'ms; hits:', refs.length)
+    const refsFull = await findReferences(loaded, query, readFile, { includeDeclaration: false })
+    const refsFullMs = ms(t)
 
+    clearReferenceCache()
+    const candidates = nameIndex ? candidatesForName(nameIndex, query).length : -1
     t = performance.now()
-    const callers = await callersOf(loaded, query, readFile)
+    const refs = nameIndex
+      ? await findReferences(loaded, query, readFile, { includeDeclaration: false, nameIndex })
+      : refsFull
+    const refsIndexedMs = ms(t)
+    console.log('  references   : full scan', refsFullMs, 'ms vs indexed', refsIndexedMs,
+      'ms; hits:', refs.length, '| candidate files:', candidates,
+      '| speedup:', refsIndexedMs > 0 ? (refsFullMs / refsIndexedMs).toFixed(1) + 'x' : 'n/a')
+    if (refs.length !== refsFull.length) throw new Error('indexed references differ from full scan')
+
+    clearReferenceCache()
+    t = performance.now()
+    const callers = nameIndex
+      ? await callersOf(loaded, query, readFile, { nameIndex })
+      : await callersOf(loaded, query, readFile)
     console.log('  callers      :', ms(t), 'ms; hits:', callers.length)
 
     t = performance.now()
