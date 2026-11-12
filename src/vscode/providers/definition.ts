@@ -4,6 +4,7 @@
  */
 import * as vscode from 'vscode'
 
+import { rankDefinitions } from '../rank-definitions'
 import type { SymbolService } from '../service'
 import { entryLocation, getWordAt, noopDisposable } from '../util'
 
@@ -32,11 +33,32 @@ class SourceInsightDefinitionProvider implements vscode.DefinitionProvider {
       if (entries.length === 0) {
         return undefined
       }
-      return entries.map((entry) => entryLocation(this.service, entry))
+      // 多个同名定义（大仓里常有几十份）时，把「离光标最近」的排在前面：
+      // 同一索引根 > 共享路径前缀 > 定义优先 > 头文件/源文件偏好
+      const ranked = rankDefinitions(entries, {
+        sourceFile: sourceFileOf(this.service, document),
+        roots: this.service.configuredRoots,
+      })
+      return ranked.map((entry) => entryLocation(this.service, entry))
     } catch (error) {
       console.error('[code-insight] definition provider failed', error)
       return undefined
     }
+  }
+}
+
+/** 光标所在文件的 workspace 相对路径（无法换算时 undefined）。 */
+export function sourceFileOf(
+  service: SymbolService,
+  document: vscode.TextDocument | undefined,
+): string | undefined {
+  try {
+    const fsPath = document?.uri?.fsPath
+    if (!fsPath) return undefined
+    const relative = service.toRelative(fsPath)
+    return relative && !relative.startsWith('../') ? relative.replace(/\\/g, '/') : undefined
+  } catch {
+    return undefined
   }
 }
 

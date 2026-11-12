@@ -7,7 +7,8 @@ import * as vscode from 'vscode'
 import type { SymbolEntry } from '../../shared/types'
 import type { SymbolService } from '../service'
 import { getWordAt, noopDisposable, toVscodeSymbolKind } from '../util'
-import { C_CPP_SELECTOR } from './definition'
+import { rankDefinitions } from '../rank-definitions'
+import { C_CPP_SELECTOR, sourceFileOf } from './definition'
 
 class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider {
   constructor(private readonly service: SymbolService) {}
@@ -25,7 +26,10 @@ class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider
       if (!hit) {
         return undefined
       }
-      const entries = this.service.definitions(hit.word)
+      const entries = rankDefinitions(this.service.definitions(hit.word), {
+        sourceFile: sourceFileOf(this.service, document),
+        roots: this.service.configuredRoots,
+      })
       if (entries.length === 0) {
         return undefined
       }

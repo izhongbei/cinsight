@@ -5,8 +5,9 @@ import * as vscode from 'vscode'
 
 import type { SymbolEntry } from '../../shared/types'
 import type { SymbolService } from '../service'
+import { rankDefinitions } from '../rank-definitions'
 import { getWordAt, noopDisposable } from '../util'
-import { C_CPP_SELECTOR } from './definition'
+import { C_CPP_SELECTOR, sourceFileOf } from './definition'
 
 class SourceInsightHoverProvider implements vscode.HoverProvider {
   constructor(private readonly service: SymbolService) {}
@@ -28,7 +29,12 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
       if (entries.length === 0) {
         return undefined
       }
-      const best = pickBest(entries)
+      const context = {
+        sourceFile: sourceFileOf(this.service, document),
+        roots: this.service.configuredRoots,
+      }
+      const ranked = rankDefinitions(entries, context)
+      const best = ranked[0] as SymbolEntry
       const signature = (await this.service.signature(best)) ?? best.name
 
       const sections: string[] = []
@@ -36,11 +42,14 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
       sections.push(
         vscode.l10n.t('Definition: {0}:{1}', best.file, String(best.line + 1)),
       )
-      const declaration = entries.find(
-        (entry) =>
-          entry.kind === 'declaration' &&
-          !(entry.file === best.file && entry.line === best.line),
-      )
+      const declaration = rankDefinitions(
+        entries.filter(
+          (entry) =>
+            entry.kind === 'declaration' &&
+            !(entry.file === best.file && entry.line === best.line),
+        ),
+        context,
+      )[0]
       if (declaration) {
         sections.push(
           vscode.l10n.t('Declaration: {0}:{1}', declaration.file, String(declaration.line + 1)),
@@ -60,19 +69,6 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
 }
 
 /** 定义优先于声明；同为定义时取路径/行号最小的，保证悬停稳定。 */
-function pickBest(entries: readonly SymbolEntry[]): SymbolEntry {
-  const ordered = [...entries].sort((a, b) => {
-    const kindWeight = (entry: SymbolEntry): number => (entry.kind === 'function' ? 0 : 1)
-    if (kindWeight(a) !== kindWeight(b)) {
-      return kindWeight(a) - kindWeight(b)
-    }
-    if (a.file !== b.file) {
-      return a.file < b.file ? -1 : 1
-    }
-    return a.line - b.line
-  })
-  return ordered[0] as SymbolEntry
-}
 
 export function registerHoverProvider(service: SymbolService): vscode.Disposable {
   try {

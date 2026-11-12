@@ -16,6 +16,8 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 
 import { suppressRebuildPrompt } from './config'
+import { sourceFileOf } from './providers/definition'
+import { rankDefinitions } from './rank-definitions'
 import { showCallerQuickPick, showReferenceQuickPick, showSymbolEntriesQuickPick, showSymbolQuickPick } from './quickpick'
 import type { SymbolService } from './service'
 import {
@@ -309,11 +311,15 @@ async function gotoDefinition(service: SymbolService): Promise<void> {
   if (!hit) {
     return
   }
-  const entries = service.definitions(hit.word)
+  let entries = service.definitions(hit.word)
   if (entries.length === 0) {
     await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
     return
   }
+  entries = rankDefinitions(entries, {
+    sourceFile: sourceFileOf(service, hit.document),
+    roots: service.configuredRoots,
+  })
   if (entries.length === 1) {
     const entry = entries[0]
     if (entry) {

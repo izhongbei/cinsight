@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 — 2026-11-12
+
+### English
+
+- **Smart ordering of same-named definitions**: when a symbol has many definitions (e.g. `sk_buff` has 77 in a workspace with several kernel copies), F12 / hover / call-hierarchy candidates are now ordered by distance from the cursor: same `indexRoots` root first, then shared path prefix, then definition-before-declaration, then header-vs-source preference, with a stable path/line tie-break.
+- Measured on a 1,485,811-symbol / 68,184-file workspace: snapshot load 340 ms, name-index load 170 ms, `findByName` 26 ms, symbol search 100 ms, one indexed find-references 63 ms.
+
+### 中文
+
+- **同名定义智能排序**：同一个符号有很多定义时（例如多份内核拷贝的情况下 `sk_buff` 有 77 个），F12 / 悬停 / 调用层次的候选按「离光标远近」排序：同 `indexRoots` 根优先 → 共享路径前缀多优先 → 定义优先于声明 → 类型优先头文件、函数优先源文件 → 最后按路径/行号稳定排序。
+- 在 1,485,811 符号 / 68,184 文件的工作区实测：快照加载 340 ms、引用索引加载 170 ms、`findByName` 26 ms、符号搜索 100 ms、一次索引化查找引用 63 ms。
+
+
 ## 0.3.0 — 2026-11-12
 
 ### English

@@ -12,6 +12,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 |---|---|
 | **Go to definition** | `F12` / `Ctrl+Click` on a call or a type name; falls back to the header prototype / forward declaration when no definition exists |
 | **Type navigation** | `struct` / `union` / `enum` tags and `typedef` names (anonymous structs and function-pointer typedefs included) are indexed like functions |
+| **Smart candidate order** | When a name has many definitions (multiple kernel/driver copies), `F12` / hover / call hierarchy list the one closest to your cursor first (same index root, then shared path prefix) |
 | **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Function` (lists signature and location) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
@@ -162,6 +163,7 @@ MIT
 |---|---|
 | **跳转定义** | 光标在函数调用或类型名处按 `F12` / `Ctrl+Click`；无定义时回退到头文件原型 / 前置声明 |
 | **类型跳转** | `struct` / `union` / `enum` 标签与 `typedef` 名字（含匿名结构体、函数指针 typedef）和函数一样进索引 |
+| **候选智能排序** | 同名有很多定义时（多份内核/驱动拷贝），`F12` / 悬停 / 调用层次会把「离光标最近」的排在前面（同索引根 → 共享路径前缀） |
 | **函数搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索函数`（列出签名与位置） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
