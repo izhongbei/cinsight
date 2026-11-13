@@ -100,7 +100,7 @@ async function main() {
   const tLoad = performance.now()
   const loaded = await loadSnapshot(snapshotPath)
   console.log('=== load snapshot ===')
-  console.log('  duration     :', ms(tLoad), 'ms; entries:', loaded ? loaded.entries.length : 'FAILED')
+  console.log('  duration     :', ms(tLoad), 'ms; entries:', loaded ? loaded.entryCount : 'FAILED')
   if (!loaded) throw new Error('snapshot load failed')
 
   // 单文件增量保存：只追加 delta（与索引总量无关）
@@ -123,7 +123,14 @@ async function main() {
     : 'FAILED')
   console.log('')
 
-  const query = queryArg ? queryArg.slice('--query='.length) : (loaded.entries.find((e) => e.kind === 'function' && e.name.length > 4) || loaded.entries[0] || {}).name
+  let query = queryArg ? queryArg.slice('--query='.length) : ''
+  if (!query) {
+    let picked
+    loaded.forEachEntry((entry) => {
+      if (!picked && entry.kind === 'function' && entry.name.length > 4) picked = entry
+    })
+    query = picked?.name ?? ''
+  }
   console.log('=== query:', query, '===')
 
   let t = performance.now()

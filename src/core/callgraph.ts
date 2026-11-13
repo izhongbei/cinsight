@@ -1,6 +1,6 @@
 import type {
   CallerHit,
-  IndexSnapshot,
+  SymbolTable,
   ReadFileFn,
   ReferenceHit,
   ScannedSymbol,
@@ -101,7 +101,7 @@ function scanCacheSet(key: string, symbols: readonly ScannedSymbol[]): void {
 
 /** 取某文件的函数区间；优先用 scanSource（含未被索引的最新代码），异常时回退快照。 */
 function rangesForFile(
-  snapshot: IndexSnapshot,
+  snapshot: SymbolTable,
   file: string,
   text: string,
 ): readonly ScannedSymbol[] {
@@ -114,8 +114,9 @@ function rangesForFile(
     ranges = scanSource(text)
   } catch {
     // 扫描器不可用时退回索引里的函数区间，callers 仍可归属。
-    ranges = snapshot.entries
-      .filter((entry) => entry.file === file && entry.kind === 'function')
+    ranges = snapshot
+      .entriesInFile(file)
+      .filter((entry) => entry.kind === 'function')
       .map((entry) => ({
         name: entry.name,
         kind: entry.kind,
@@ -179,7 +180,7 @@ function readTextCached(
 }
 
 export async function callersOf(
-  snapshot: IndexSnapshot,
+  snapshot: SymbolTable,
   name: string,
   readFile: ReadFileFn,
   options: ReferenceOptions = {},
@@ -214,7 +215,7 @@ export async function callersOf(
 }
 
 export async function calleesOf(
-  snapshot: IndexSnapshot,
+  snapshot: SymbolTable,
   name: string,
   readFile: ReadFileFn,
   options: { signal?: AbortSignal } = {},

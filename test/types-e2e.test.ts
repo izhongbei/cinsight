@@ -108,7 +108,7 @@ test('types e2e: struct/union/enum/typedef are indexed, searchable and navigable
     await saveSnapshot(snapshotPath, snapshot)
     const loaded = await loadSnapshot(snapshotPath)
     assert.ok(loaded, 'snapshot loads')
-    const loadedKinds = new Map(loaded!.entries.map((entry) => [`${entry.file}:${entry.name}`, entry.kind]))
+    const loadedKinds = new Map(loaded!.toArray().map((entry) => [`${entry.file}:${entry.name}`, entry.kind]))
     assert.equal(loadedKinds.get('inc/types.h:point'), 'struct')
     assert.equal(loadedKinds.get('inc/types.h:point_t'), 'typedef')
     assert.equal(loadedKinds.get('inc/types.h:color'), 'enum')

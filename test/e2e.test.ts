@@ -16,7 +16,7 @@ import { entriesInFile, findByName, searchSymbols } from '../src/core/query'
 import { readSignature } from '../src/core/signature'
 import { findReferences } from '../src/core/references'
 import { callersOf, calleesOf } from '../src/core/callgraph'
-import type { IndexSnapshot, ReadFileFn } from '../src/shared/types'
+import type { ReadFileFn, SymbolTable } from '../src/shared/types'
 
 const MAIN_C = `#include "util.h"
 
@@ -73,7 +73,7 @@ async function makeFixture(): Promise<Fixture> {
   return { root, readFile }
 }
 
-async function buildFixtureSnapshot(fixture: Fixture): Promise<IndexSnapshot> {
+async function buildFixtureSnapshot(fixture: Fixture): Promise<SymbolTable> {
   const result = await buildIndex({
     workspaceRoot: fixture.root,
     roots: ['.'],
@@ -93,7 +93,7 @@ test('end-to-end: index, query, jump, references and call graph', async () => {
 
     // 索引结果：3 个文件，排除 build/
     assert.equal(snapshot.files.length, 3, 'indexed files')
-    assert.ok(snapshot.entries.length >= 4, 'symbol entries')
+    assert.ok(snapshot.entryCount >= 4, 'symbol entries')
 
     // 符号搜索
     const hits = searchSymbols(snapshot, 'compute')
@@ -139,9 +139,9 @@ test('end-to-end: index, query, jump, references and call graph', async () => {
     assert.ok(bytes > 0)
     const loaded = await loadSnapshot(snapshotPath)
     assert.ok(loaded, 'snapshot loads')
-    assert.equal(loaded?.entries.length, snapshot.entries.length)
+    assert.equal(loaded?.entryCount, snapshot.entryCount)
     assert.deepEqual(searchSymbols(loaded!, 'entry').map((entry) => entry.name), ['entry'])
-    assert.equal(loaded?.entries[0]?.kind, 'function')
+    assert.equal(loaded?.entryAt(0).kind, 'function')
   } finally {
     await rm(fixture.root, { recursive: true, force: true })
   }

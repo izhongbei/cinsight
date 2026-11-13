@@ -5,7 +5,9 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 
-import type { ReadFileFn, SymbolEntry, IndexSnapshot, SymbolKind } from '../src/shared/types'
+import type { ReadFileFn, SymbolEntry, SymbolKind, SymbolTable } from '../src/shared/types'
+import { SNAPSHOT_VERSION } from '../src/shared/types'
+import { createSymbolTable } from '../src/core/symbol-table'
 import { entriesInFile, findByName, searchSymbols } from '../src/core/query'
 import { readSignature, readSignatureAtLine } from '../src/core/signature'
 
@@ -24,13 +26,13 @@ function makeEntry(partial: Partial<SymbolEntry> & { name: string }): SymbolEntr
   }
 }
 
-function makeSnapshot(entries: readonly SymbolEntry[]): IndexSnapshot {
+function makeSnapshot(entries: readonly SymbolEntry[]): SymbolTable {
   const files = [...new Set(entries.map((e) => e.file))].map((path) => ({
     path,
     mtimeMs: 0,
     size: 0,
   }))
-  return { version: 1, roots: ['src'], builtAt: 1_700_000_000_000 + ++builtSeq, files, entries }
+  return createSymbolTable(['src'], files, entries, 1_700_000_000_000 + ++builtSeq, SNAPSHOT_VERSION)
 }
 
 function names(entries: readonly SymbolEntry[]): string[] {

@@ -201,7 +201,7 @@ test('indexer: createSnapshot sorts entries by (file, line) and stamps version',
   assert.equal(typeof snapshot.builtAt, 'number')
   assert.deepEqual(snapshot.files.map((f) => f.path), ['a/a.c', 'b/b.h', 'c/d.c'])
   assert.deepEqual(
-    snapshot.entries.map((e) => `${e.file}:${e.line}:${e.name}`),
+    snapshot.toArray().map((e) => `${e.file}:${e.line}:${e.name}`),
     ['a/a.c:1:a_first', 'a/a.c:9:a_second', 'b/b.h:2:b_one', 'c/d.c:5:z_last'],
   )
 })
@@ -218,7 +218,7 @@ test('indexer: first build indexes fixture tree, second reuses unchanged files',
   assert.equal(first.summary.unchanged, 0)
   assert.equal(first.summary.skipped, 0)
   assert.equal(first.summary.snapshotBytes, 0)
-  assert.deepEqual(first.snapshot.entries.map((e) => e.name).sort(), ['fixture_a', 'fixture_b'])
+  assert.deepEqual(first.snapshot.toArray().map((e) => e.name).sort(), ['fixture_a', 'fixture_b'])
   assert.deepEqual([...first.snapshot.roots], ['.'])
 
   // 第二次构建：未变文件不应再被读取
@@ -233,7 +233,7 @@ test('indexer: first build indexes fixture tree, second reuses unchanged files',
   assert.equal(second.summary.updated, 0)
   assert.equal(second.summary.removed, 0)
   assert.equal(second.summary.unchanged, 2)
-  assert.deepEqual(entryKeys(second.snapshot.entries), entryKeys(first.snapshot.entries))
+  assert.deepEqual(entryKeys(second.snapshot.toArray()), entryKeys(first.snapshot.toArray()))
 })
 
 test('indexer: buildIndex reports progress phases', async () => {
@@ -264,7 +264,7 @@ test('indexer: modified file is re-parsed as updated', async () => {
   const dir = makeTree()
   try {
     const first = await buildIndex(makeOptions(dir))
-    assert.equal(first.snapshot.entries.length, 4)
+    assert.equal(first.snapshot.entryCount, 4)
     const target = path.join(dir, 'sub/a.c')
     fs.writeFileSync(target, 'int delta(void) { return 2; }\n', 'utf8')
     const future = new Date(Date.now() + 5000)
@@ -274,7 +274,7 @@ test('indexer: modified file is re-parsed as updated', async () => {
     assert.equal(second.summary.unchanged, 1)
     assert.equal(second.summary.added, 0)
     assert.equal(second.summary.removed, 0)
-    const names = second.snapshot.entries.map((e) => e.name).sort()
+    const names = second.snapshot.toArray().map((e) => e.name).sort()
     assert.deepEqual(names, ['alpha', 'delta', 'gamma'])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -290,7 +290,7 @@ test('indexer: deleted file is removed from the snapshot', async () => {
     assert.equal(second.summary.removed, 1)
     assert.equal(second.summary.files, 1)
     assert.deepEqual(second.snapshot.files.map((f) => f.path), ['sub/a.c'])
-    assert.deepEqual(second.snapshot.entries.map((e) => e.name).sort(), ['alpha', 'beta'])
+    assert.deepEqual(second.snapshot.toArray().map((e) => e.name).sort(), ['alpha', 'beta'])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -301,7 +301,7 @@ test('indexer: concurrency 1 and concurrency 4 produce identical results', async
   try {
     const serial = await buildIndex({ ...makeOptions(dir), concurrency: 1 })
     const parallel = await buildIndex({ ...makeOptions(dir), concurrency: 4 })
-    assert.deepEqual(entryKeys(parallel.snapshot.entries), entryKeys(serial.snapshot.entries))
+    assert.deepEqual(entryKeys(parallel.snapshot.toArray()), entryKeys(serial.snapshot.toArray()))
     assert.deepEqual(
       parallel.snapshot.files.map((f) => f.path),
       serial.snapshot.files.map((f) => f.path),
@@ -324,7 +324,7 @@ test('indexer: unreadable file is skipped and build still succeeds', async () =>
     assert.equal(result.summary.skipped, 1)
     assert.equal(result.summary.files, 1)
     assert.deepEqual(result.snapshot.files.map((f) => f.path), ['sub/a.c'])
-    assert.deepEqual(result.snapshot.entries.map((e) => e.name).sort(), ['alpha', 'beta'])
+    assert.deepEqual(result.snapshot.toArray().map((e) => e.name).sort(), ['alpha', 'beta'])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -337,7 +337,7 @@ test('indexer: empty roots produce an empty snapshot', async () => {
     assert.equal(result.summary.files, 0)
     assert.equal(result.summary.entries, 0)
     assert.deepEqual(result.snapshot.files, [])
-    assert.deepEqual(result.snapshot.entries, [])
+    assert.equal(result.snapshot.entryCount, 0)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

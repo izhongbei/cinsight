@@ -6,13 +6,14 @@ import type {
   BuildOptions,
   BuildSummary,
   FileRecord,
-  IndexSnapshot,
   ReadFileFn,
   ScannedFileResult,
   ScannedSymbol,
   SymbolEntry,
+  SymbolTable,
 } from '../shared/types'
 import { buildNameIndex, collectIdentifierHashes, loadNameIndex, saveNameIndex } from './nameindex'
+import { createSymbolTable } from './symbol-table'
 import { scanSource } from './scan'
 import { saveSnapshot } from './store'
 import { walkFiles } from './walk'
@@ -50,37 +51,13 @@ function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
 }
 
-/** 组装快照：files 与 entries 都做稳定排序，entries 按 `(file, line, column)` 有序。 */
+/** 组装符号表：文件与符号都做稳定排序，索引查询走 name/file 两个维度。 */
 export function createSnapshot(
   roots: readonly string[],
   files: readonly FileRecord[],
   entries: readonly SymbolEntry[],
-): IndexSnapshot {
-  const sortedFiles = [...files].sort((a, b) => compareStrings(a.path, b.path))
-  const fileOrder = new Map<string, number>()
-  sortedFiles.forEach((file, index) => fileOrder.set(file.path, index))
-
-  const sortedEntries = [...entries].sort((a, b) => {
-    const aIndex = fileOrder.get(a.file)
-    const bIndex = fileOrder.get(b.file)
-    if (aIndex !== undefined && bIndex !== undefined) {
-      if (aIndex !== bIndex) return aIndex - bIndex
-    } else if (a.file !== b.file) {
-      return compareStrings(a.file, b.file)
-    }
-    if (a.line !== b.line) return a.line - b.line
-    if (a.column !== b.column) return a.column - b.column
-    if (a.endLine !== b.endLine) return a.endLine - b.endLine
-    return compareStrings(a.name, b.name)
-  })
-
-  return {
-    version: SNAPSHOT_VERSION,
-    roots: [...roots],
-    builtAt: Date.now(),
-    files: sortedFiles,
-    entries: sortedEntries,
-  }
+): SymbolTable {
+  return createSymbolTable(roots, files, entries, Date.now(), SNAPSHOT_VERSION)
 }
 
 // --------------------------------------------------------------- worker pool
@@ -239,7 +216,7 @@ async function parseRemainingSerial(job: PendingParser): Promise<void> {
  */
 export async function buildIndex(
   options: BuildOptions & { readFile: ReadFileFn },
-): Promise<{ snapshot: IndexSnapshot; summary: BuildSummary }> {
+): Promise<{ snapshot: SymbolTable; summary: BuildSummary }> {
   const startedAt = Date.now()
   const {
     workspaceRoot,
@@ -273,11 +250,11 @@ export async function buildIndex(
   const previousEntries = new Map<string, SymbolEntry[]>()
   if (previous && previous.version === SNAPSHOT_VERSION) {
     for (const file of previous.files) previousFiles.set(file.path, file)
-    for (const entry of previous.entries) {
+    previous.forEachEntry((entry) => {
       const list = previousEntries.get(entry.file)
       if (list) list.push(entry)
       else previousEntries.set(entry.file, [entry])
-    }
+    })
   }
 
   // 增量比对：mtimeMs + size 都没变的文件直接复用旧符号

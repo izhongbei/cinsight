@@ -31,12 +31,26 @@ export interface FileRecord {
   readonly size: number
 }
 
-export interface IndexSnapshot {
+/**
+ * 只读符号表（列式存储，替代 v1/v2 的对象数组）：
+ * 149 万符号的堆占用从约 220MB 降到约 50MB，加载更快。
+ * 调用方只通过方法访问，entryAt/forEachEntry 才 materialize 单个 SymbolEntry。
+ */
+export interface SymbolTable {
   readonly version: number
   readonly roots: readonly string[]
   readonly builtAt: number
+  readonly entryCount: number
+  readonly fileCount: number
   readonly files: readonly FileRecord[]
-  readonly entries: readonly SymbolEntry[]
+  entryAt(index: number): SymbolEntry
+  findByName(name: string): SymbolEntry[]
+  entriesInFile(file: string): SymbolEntry[]
+  forEachEntry(callback: (entry: SymbolEntry) => void): void
+  /** 遍历去重后的名字及对应条目区间（搜索用，避免逐条 materialize） */
+  forEachName(callback: (name: string, start: number, end: number) => void): void
+  /** 测试/兼容用：物化全部条目（生产路径不应调用） */
+  toArray(): SymbolEntry[]
 }
 
 /** worker 单遍解析结果：符号 + 该文件标识符哈希（供引用索引复用，避免二次读盘） */
@@ -69,7 +83,7 @@ export interface BuildOptions {
   readonly maxFileSizeKB: number
   readonly concurrency: number
   readonly followSymlinks: boolean
-  readonly previous?: IndexSnapshot
+  readonly previous?: SymbolTable
   /** 提供时 buildIndex 负责把快照写盘并回填 summary.snapshotBytes */
   readonly snapshotPath?: string
   /** 提供时 buildIndex 同时构建引用加速索引并写盘，回填 summary.nameIndexBytes */
@@ -120,7 +134,7 @@ export interface NameIndexData {
 
 export type ReadFileFn = (relativePath: string) => Promise<string>
 
-export const SNAPSHOT_VERSION = 2
+export const SNAPSHOT_VERSION = 3
 export const NAME_INDEX_VERSION = 1
 export const INDEXED_EXTENSIONS = ['.c', '.h', '.cc', '.cpp', '.hpp', '.hh', '.inl'] as const
 export const DEFAULT_EXCLUDE = [

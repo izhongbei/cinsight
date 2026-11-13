@@ -16,6 +16,7 @@ import * as vscode from 'vscode'
 
 import { callersOf, calleesOf } from '../core/callgraph'
 import { buildIndex, createSnapshot } from '../core/indexer'
+import { removeFileFromTable, upsertFileInTable } from '../core/symbol-table'
 import { entriesInFile, findByName, searchSymbols } from '../core/query'
 import { findReferences } from '../core/references'
 import { readSignature } from '../core/signature'
@@ -40,7 +41,7 @@ import {
   type CallerHit,
   type FileRecord,
   type IndexProgress,
-  type IndexSnapshot,
+  type SymbolTable,
   type NameIndexData,
   type ReadFileFn,
   type ReferenceHit,
@@ -82,7 +83,7 @@ export class SymbolService implements vscode.Disposable {
   private readonly snapshotPathValue: string | undefined
   private readonly nameIndexPathValue: string | undefined
 
-  private snapshotValue: IndexSnapshot | undefined
+  private snapshotValue: SymbolTable | undefined
   private nameIndexValue: NameIndexData | undefined
   /** 引用索引是否已加载进内存（惰性加载：只在首次查引用/调用层次时读盘） */
   private nameIndexLoaded = false
@@ -140,7 +141,7 @@ export class SymbolService implements vscode.Disposable {
 
   // ---- 状态 ----
 
-  get snapshot(): IndexSnapshot | undefined {
+  get snapshot(): SymbolTable | undefined {
     return this.snapshotValue
   }
 
@@ -153,7 +154,7 @@ export class SymbolService implements vscode.Disposable {
   }
 
   get entryCount(): number {
-    return this.snapshotValue?.entries.length ?? 0
+    return this.snapshotValue?.entryCount ?? 0
   }
 
   get fileCount(): number {
@@ -508,7 +509,7 @@ export class SymbolService implements vscode.Disposable {
           this.textCacheChars = 0
           // buildIndex 约定：snapshotPath 提供时自己写盘并回填 snapshotBytes；
           // 若 A 的实现尚未落地，这里兜底写盘，保证快照不丢。
-          if (this.snapshotPathValue && result.summary.snapshotBytes === 0 && result.snapshot.entries.length >= 0) {
+          if (this.snapshotPathValue && result.summary.snapshotBytes === 0) {
             try {
               const bytes = await saveSnapshot(this.snapshotPathValue, result.snapshot)
               this.lastSummaryValue = { ...result.summary, snapshotBytes: bytes }
@@ -679,7 +680,7 @@ export class SymbolService implements vscode.Disposable {
       const snapshot = this.snapshotValue
       const existed =
         snapshot.files.some((record) => record.path === rel) ||
-        snapshot.entries.some((entry) => entry.file === rel)
+        snapshot.entriesInFile(rel).length > 0
       if (!existed) {
         return
       }
@@ -702,13 +703,9 @@ export class SymbolService implements vscode.Disposable {
     if (!snapshot) {
       return
     }
-    let files: FileRecord[] = snapshot.files.filter((record) => record.path !== relPath)
-    if (!remove) {
-      files.push({ path: relPath, mtimeMs, size })
-    }
-    const keptEntries = snapshot.entries.filter((entry) => entry.file !== relPath)
-    const allEntries = remove ? keptEntries : [...keptEntries, ...entries]
-    this.snapshotValue = this.snapshotSafe([...snapshot.roots], files, allEntries)
+    this.snapshotValue = remove
+      ? removeFileFromTable(snapshot, relPath)
+      : upsertFileInTable(snapshot, { path: relPath, mtimeMs, size }, entries)
     this.lastSummaryValue = undefined
     this.changeEmitter.fire()
     this.scheduleSave()
@@ -719,29 +716,8 @@ export class SymbolService implements vscode.Disposable {
     roots: readonly string[],
     files: readonly FileRecord[],
     entries: readonly SymbolEntry[],
-  ): IndexSnapshot {
-    try {
-      return createSnapshot(roots, files, entries)
-    } catch (error) {
-      this.logger.warn('createSnapshot unavailable, using local fallback', error)
-    }
-    const sortedFiles = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    const sortedEntries = [...entries].sort((a, b) => {
-      if (a.file !== b.file) {
-        return a.file < b.file ? -1 : 1
-      }
-      if (a.line !== b.line) {
-        return a.line - b.line
-      }
-      return a.column - b.column
-    })
-    return {
-      version: SNAPSHOT_VERSION,
-      roots: [...roots],
-      builtAt: Date.now(),
-      files: sortedFiles,
-      entries: sortedEntries,
-    }
+  ): SymbolTable {
+    return createSnapshot(roots, files, entries)
   }
 
   /**
@@ -780,8 +756,8 @@ export class SymbolService implements vscode.Disposable {
   }
 
   /**
-   * 增量维护：只往 delta 文件追加一条 KB 级记录，不重写整个索引
-   * （旧实现每次保存重写 68MB / 362ms）。索引未加载时也无需加载，直接追加。
+   * 增量维护：只往 delta 文件追加一条 KB 级记录，不重写整个索引。
+   * 索引未加载时也无需加载，直接追加。
    */
   private async refreshNameIndexForFile(relPath: string, text: string): Promise<void> {
     const nameIndexPath = this.nameIndexPathValue
@@ -832,14 +808,12 @@ export class SymbolService implements vscode.Disposable {
     }
     try {
       const deltaBytes = await nameIndexDeltaBytes(nameIndexDeltaPath(nameIndexPath))
-      const hasDelta = deltaBytes > 0
-      if (!force && !hasDelta) {
-        return
-      }
       if (!force && deltaBytes < NAME_INDEX_COMPACT_BYTES) {
         return
       }
-      // 合并需要 base 的完整内容；未加载时惰性加载一次
+      if (deltaBytes === 0 && !force) {
+        return
+      }
       const merged = await this.ensureNameIndex()
       if (!merged) {
         return
@@ -847,7 +821,7 @@ export class SymbolService implements vscode.Disposable {
       const started = Date.now()
       await compactNameIndex(nameIndexPath, merged)
       this.logger.info(
-        `reference index compacted (${deltaBytes} delta bytes -> base) in ${Date.now() - started}ms`,
+        `reference index compacted (${deltaBytes} delta bytes) in ${Date.now() - started}ms`,
       )
     } catch (error) {
       this.logger.warn('reference index compaction failed', error)
@@ -980,7 +954,7 @@ export class SymbolService implements vscode.Disposable {
       if (!snapshot) {
         return
       }
-      if (!Array.isArray(snapshot.files) || !Array.isArray(snapshot.entries)) {
+      if (!Array.isArray(snapshot.files) || typeof snapshot.entryCount !== 'number') {
         this.logger.warn('snapshot has invalid shape; ignored')
         return
       }
@@ -989,7 +963,7 @@ export class SymbolService implements vscode.Disposable {
       this.nameIndexValue = undefined
       this.nameIndexLoaded = false
       this.logger.info(
-        `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entries.length} ` +
+        `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entryCount} ` +
           `builtAt=${new Date(snapshot.builtAt).toISOString()}`,
       )
     } catch (error) {

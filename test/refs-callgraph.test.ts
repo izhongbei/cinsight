@@ -2,14 +2,16 @@
  * Task 6 单测：引用扫描 + 调用关系。
  * 夹具 test/fixtures/refs/ 四文件小工程（行号见各断言注释），readFile 直接读盘。
  * callersOf 的函数区间来自 scanSource（A 实现）；A 尚未落地时实现会退化为
- * snapshot.entries 区间，A 落地后会补跑同一组用例验证跨模块集成。
+ * 快照区间，A 落地后会补跑同一组用例验证跨模块集成。
  */
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import type { FileRecord, ReadFileFn, SymbolEntry, IndexSnapshot } from '../src/shared/types'
+import type { FileRecord, ReadFileFn, SymbolEntry, SymbolTable } from '../src/shared/types'
+import { SNAPSHOT_VERSION } from '../src/shared/types'
+import { createSymbolTable } from '../src/core/symbol-table'
 import { findReferences } from '../src/core/references'
 import { callersOf, calleesOf } from '../src/core/callgraph'
 
@@ -35,10 +37,10 @@ function makeEntry(partial: Partial<SymbolEntry> & { name: string }): SymbolEntr
 
 let builtSeq = 0
 
-function makeSnapshot(entries: readonly SymbolEntry[], extraFiles: readonly string[] = []): IndexSnapshot {
+function makeSnapshot(entries: readonly SymbolEntry[], extraFiles: readonly string[] = []): SymbolTable {
   const paths = [...new Set([...entries.map((e) => e.file), ...extraFiles])].sort()
   const files: FileRecord[] = paths.map((p) => ({ path: p, mtimeMs: 0, size: 0 }))
-  return { version: 1, roots: ['.'], builtAt: 1_700_000_000_000 + ++builtSeq, files, entries }
+  return createSymbolTable(['.'], files, entries, 1_700_000_000_000 + ++builtSeq, SNAPSHOT_VERSION)
 }
 
 /**
@@ -50,7 +52,7 @@ function makeSnapshot(entries: readonly SymbolEntry[], extraFiles: readonly stri
  * other.c：0 void helper(void)  1 {  2 }  3 (空)  4 int standalone = foo(3);
  * impl.c： 0 int foo(int x)（定义）   api.h：3 extern int foo(int x);（声明）
  */
-function refsSnapshot(extraFiles: readonly string[] = []): IndexSnapshot {
+function refsSnapshot(extraFiles: readonly string[] = []): SymbolTable {
   return makeSnapshot(
     [
       makeEntry({ name: 'foo', file: 'impl.c', line: 0, endLine: 3, column: 4 }),
