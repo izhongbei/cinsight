@@ -4,6 +4,7 @@
 import * as vscode from 'vscode'
 
 import type { SymbolService } from '../service'
+import { clampSymbolRanges } from '../symbol-ranges'
 import { kindLabel, noopDisposable, toVscodeSymbolKind } from '../util'
 import { C_CPP_SELECTOR } from './definition'
 
@@ -21,32 +22,32 @@ class SourceInsightDocumentSymbolProvider implements vscode.DocumentSymbolProvid
       const relPath = this.service.toRelative(document.uri.fsPath)
       const entries = this.service.fileSymbols(relPath)
       const symbols: vscode.DocumentSymbol[] = []
-      for (const entry of entries) {
-        const startLine = Math.max(0, entry.line)
-        const endLine = Math.max(startLine, entry.endLine)
-        let endCharacter = entry.column + entry.name.length
+      const lineCount = document.lineCount
+      const lineLength = (line: number): number => {
         try {
-          const lineText = document.lineAt(Math.min(endLine, Math.max(0, document.lineCount - 1))).text
-          endCharacter = lineText.length
+          return document.lineAt(line).text.length
         } catch {
-          // 文档行数不足时退化为名字结束列
+          return 0
         }
-        const fullRange = new vscode.Range(startLine, 0, endLine, Math.max(0, endCharacter))
-        const selectionRange = new vscode.Range(
-          startLine,
-          Math.max(0, entry.column),
-          startLine,
-          Math.max(0, entry.column) + entry.name.length,
-        )
-        symbols.push(
-          new vscode.DocumentSymbol(
-            entry.name,
-            kindLabel(entry.kind),
-            toVscodeSymbolKind(entry.kind),
-            fullRange,
-            selectionRange,
-          ),
-        )
+      }
+      for (const entry of entries) {
+        // 索引可能比当前文档旧（文件被改动过）：clamp 后仍越界的条目直接跳过
+        const ranges = clampSymbolRanges(entry, lineCount, lineLength)
+        if (!ranges) continue
+        try {
+          symbols.push(
+            new vscode.DocumentSymbol(
+              entry.name,
+              kindLabel(entry.kind),
+              toVscodeSymbolKind(entry.kind),
+              new vscode.Range(ranges.startLine, 0, ranges.endLine, ranges.endCharacter),
+              new vscode.Range(ranges.startLine, ranges.selectionStart, ranges.startLine, ranges.selectionEnd),
+            ),
+          )
+        } catch (error) {
+          // 单条符号异常不应让整个大纲失败
+          console.error(`[code-insight] skip invalid document symbol ${entry.name}`, error)
+        }
       }
       return symbols
     } catch (error) {

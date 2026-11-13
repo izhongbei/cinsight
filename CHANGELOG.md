@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-11-13
+
+### English
+
+- **Fix**: the document outline (`Ctrl+Shift+O`) could throw `Invalid arguments` when the index was older than the open document (edited/truncated file, or a definition line beyond the document). Ranges are now clamped and invalid entries are skipped per-symbol, so the outline never fails as a whole.
+
+### 中文
+
+- **修复**：当索引比当前打开的文档旧（文件被编辑/截断，或定义行超出文档范围）时，大纲（`Ctrl+Shift+O`）会抛 `Invalid arguments`。现在对范围做 clamp，并逐条跳过非法符号，大纲不会整体失败。
+
+
 ## 0.4.0 — 2026-11-12
 
 ### English
