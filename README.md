@@ -102,7 +102,7 @@ sources ──walk──> file list ──mtime+size delta──> changed files
 ```
 
 - The parser works on bytes so line and column numbers stay stable. A single-pass state machine blanks comments, string literals and `#define` continuations, then detects definitions and declarations at file scope ("type + name + balanced parentheses + `{`/`;`") and matches braces to get each function body range.
-- The snapshot is a binary format (string table + compact integer arrays), roughly **20–30 MB per million symbols**, loaded in under 500 ms; unchanged files reuse their previous symbols.
+- The snapshot is a **columnar** binary format (format v3: string tables + typed arrays + name/file lookup tables): **~41 bytes of heap per symbol** — about **61 MB for 1.49 M symbols**, down from ~220 MB with object arrays — and loads in ~51 ms for 119k symbols. Unchanged files reuse their previous symbols.
 - A per-file **identifier hash index** (`symbols.names`, ~3.6 MB for 6,838 files) makes find-references read only the files that can contain the identifier instead of the whole tree: measured **1 candidate file vs 6,838**, 5-7 ms vs 159 ms on a warm cache (3.9 s cold). 32-bit collisions can add candidate files but never hide a reference, because each candidate is verified by exact word-boundary matching.
 - The index is built in **one pass**: the parse worker returns symbols and identifier hashes together, so each source file is read exactly once.
 - The reference index is loaded **lazily** on the first find-references / call-hierarchy request (saves ~194 ms and ~69 MB at activation on a 68k-file corpus) and updated **incrementally**: saving a file appends a <1 KB delta record instead of rewriting the index, and deltas are merged back automatically.
@@ -117,8 +117,8 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 |---|---|
 | Symbols | 118,730 (incl. 19,800 type symbols) |
 | Index build, single pass (4 workers, cold cache) | 6.1 s (each source read once) |
-| Snapshot size / load | 4.51 MB / 33 ms |
-| Symbol search (limit 50) | 11 ms |
+| Snapshot size / load (columnar v3) | 5.13 MB / 51 ms (heap ≈ 41 B/symbol) |
+| Symbol search (limit 50) | 4–7 ms |
 | Exact name lookup | 8 ms |
 | Signature reconstruction (first read) | 56 ms |
 | Find references, full scan (first call, 75 MB, cold cache) | 4.2 s |
@@ -234,7 +234,7 @@ cursor --install-extension code-insight-0.3.1.vsix
 ## 工作原理
 
 - 解析器按字节工作，行号列号稳定；单遍状态机剥离注释、字符串、`#define` 续行，在文件作用域按"类型 + 名字 + 平衡括号 + `{`/`;`"判定定义与声明，并做花括号配对得到函数体范围。
-- 快照为二进制格式，约 **20–30 MB / 100 万符号**，加载 < 500 ms；未变化的文件直接复用旧符号。
+- 快照为**列式**二进制格式（v3：字符串表 + TypedArray + 名字/文件查找表）：**每符号约 41 字节堆占用**——149 万符号约 **61 MB**（对象数组时约 220 MB），11.9 万符号加载约 51 ms。未变化的文件直接复用旧符号。
 - 每个文件的**标识符哈希倒排索引**（`symbols.names`，6,838 文件约 3.6 MB）让查找引用只读可能包含该名字的文件：实测**候选文件 1 个 vs 6,838 个**，热缓存 5–7 ms vs 全量 159 ms（冷盘全量 3.9 s）。32 位哈希碰撞只会多出候选文件，不会漏报——候选文件仍按词边界精确校验。
 - 索引**单遍构建**：解析 worker 同时返回符号与标识符哈希，每个源码文件只读一次。
 - 引用索引**惰性加载**（首次查找引用/调用层次才读盘；68k 文件语料约省 194 ms 与 69 MB），并**增量维护**：保存一个文件只追加 <1 KB 的 delta 记录，超阈值自动合并回 base。
@@ -243,7 +243,7 @@ cursor --install-extension code-insight-0.3.1.vsix
 
 ## 性能
 
-对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 **118,730**（含 19,800 个类型符号）；建索引（单遍，含倒排索引）约 6.1 s（冷盘，每文件只读一次）；快照 4.51 MB / 加载 20–48 ms；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 335–410 MB。
+对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 **118,730**（含 19,800 个类型符号）；建索引（单遍，含倒排索引）约 6.1 s（冷盘，每文件只读一次）；快照 5.13 MB / 加载约 51 ms（列式，每符号堆占用约 41 B）；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 335–410 MB。
 
 ## 已知限制
 

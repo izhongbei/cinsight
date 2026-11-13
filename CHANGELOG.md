@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.1 — 2026-11-13
+
+### English
+
+- Documentation-only release: corrected the snapshot format description, memory figures and performance table for the columnar v3 symbol table (0.5.0 shipped the code).
+
+### 中文
+
+- 仅文档更新：修正列式 v3 符号表对应的快照格式说明、内存数字与性能表（代码在 0.5.0 已发布）。
+
+## 0.5.0 — 2026-11-13
+
+### English
+
+- **Columnar symbol table**: symbols are stored as typed arrays (name ids, file ids, lines, end lines, columns, kinds) plus string/lookup tables instead of ~1.5 M JavaScript objects. Heap drops from **~220 MB to ~61 MB** for 1.49 M symbols (**~41 B/symbol**); loading 119k symbols takes ~51 ms.
+- Snapshot format v3 (self-describing, with name/file lookup tables); old snapshots are rebuilt automatically once after upgrading.
+- Symbol search faster (**4–7 ms** on 119k symbols): scans the name table with a cheap substring prefilter instead of materialising every entry.
+- Incremental single-file updates rebuild only the column arrays (no object materialisation).
+
+### 中文
+
+- **列式符号表**：符号改用 TypedArray（名字 id、文件 id、行、结束行、列、种类）+ 字符串表/查找表存储，不再创建约 150 万个 JS 对象。149 万符号的堆占用从 **约 220 MB 降到约 61 MB**（**每符号约 41 B**），11.9 万符号加载约 51 ms。
+- 快照格式升级为 v3（自描述，含名字/文件查找表）；升级后旧快照自动重建一次。
+- 符号搜索变快（11.9 万符号 **4–7 ms**）：改为扫描名字表 + 便宜的 includes 预筛，不再逐条物化。
+- 单文件增量更新只重建列数组（不物化对象）。
+
+
 ## 0.4.1 — 2026-11-13
 
 ### English
