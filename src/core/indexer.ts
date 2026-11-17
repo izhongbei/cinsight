@@ -107,6 +107,23 @@ export function createSnapshot(
   return createSymbolTable(roots, files, entries, Date.now(), SNAPSHOT_VERSION, { includes })
 }
 
+/** 扫描结果 → 索引条目（无条件条目不 materialize condition，保持旧快照形状）。 */
+function toSymbolEntries(file: FileRecord, symbols: readonly ScannedSymbol[]): SymbolEntry[] {
+  return symbols.map((symbol) => {
+    const entry: SymbolEntry = {
+      name: symbol.name,
+      kind: symbol.kind,
+      file: file.path,
+      line: symbol.line,
+      endLine: symbol.endLine,
+      column: symbol.column,
+    }
+    // 无条件条目不 materialize condition（与 SymbolEntry/快照的旧形状一致）
+    if (symbol.condition === undefined || symbol.condition === '') return entry
+    return { ...entry, condition: symbol.condition }
+  })
+}
+
 // --------------------------------------------------------------- worker pool
 
 interface WorkerReply {
@@ -381,22 +398,7 @@ export async function buildIndex(
       result.includes.map((include) => include.path),
     )
     parsedContentHashes.set(file.path, result.contentHash)
-    parsed.set(
-      file.path,
-      result.symbols.map((symbol) => {
-        const entry: SymbolEntry = {
-          name: symbol.name,
-          kind: symbol.kind,
-          file: file.path,
-          line: symbol.line,
-          endLine: symbol.endLine,
-          column: symbol.column,
-        }
-        // 无条件条目不 materialize condition（与 SymbolEntry/快照的旧形状一致）
-        if (symbol.condition === undefined || symbol.condition === '') return entry
-        return { ...entry, condition: symbol.condition }
-      }),
-    )
+    parsed.set(file.path, toSymbolEntries(file, result.symbols))
     done += 1
     reportParse(file.path)
   }
@@ -454,6 +456,44 @@ export async function buildIndex(
     if (!successfulPaths.has(oldPath)) removed += 1
   }
 
+  // I2：include 边在扫描时解析，未变更文件直接复用旧边。若上一轮的某个已解析目标不在
+  // 本次「成功文件」集合里（被删除、被 exclude、超过 maxFileSizeKB，或本轮读失败被
+  // skipped），复用旧边会在建表时被静默忽略，而且该 includer 之后永远不会重新解析。
+  // 因此把这类未变更文件当作变更重扫一次 —— 只重读 includer 本身，不读目标文件。
+  // 刻意不写日志：目标消失/重建是正常的增量场景，不是异常。
+  const rescannedPaths = new Set<string>()
+  if (previousV4) {
+    const staleIncluders: FileRecord[] = []
+    for (const file of successfulFiles) {
+      if (!unchanged.has(file.path)) continue
+      const targets = previousV4.includedFiles(file.path)
+      if (targets.some((target) => !successfulPaths.has(target))) staleIncluders.push(file)
+    }
+    for (const file of staleIncluders) {
+      throwIfAborted(signal)
+      let text: string
+      try {
+        text = String(await readFile(file.path))
+      } catch {
+        // includer 自身本轮读失败：保留旧符号与旧元数据；悬空目标在建表时被忽略，
+        // 与「未变更文件不读盘」的既有行为一致，不额外降级整次构建。
+        continue
+      }
+      const stripped = stripSources(text)
+      parsed.set(file.path, toSymbolEntries(file, scanSource(text, stripped)))
+      parsedIncludePaths.set(
+        file.path,
+        scanIncludesFromStripped(stripped, text).map((include) => include.path),
+      )
+      parsedHashes.set(file.path, collectIdentifierHashes(text, stripped))
+      parsedContentHashes.set(file.path, hashContent64(text))
+      unchanged.delete(file.path)
+      unchangedCount -= 1
+      updated += 1
+      rescannedPaths.add(file.path)
+    }
+  }
+
   // v4 元数据：未变更文件复用旧表（仅 v4 旧表、且上面的「哈希可用」判定通过才进入
   // unchanged；因此复用到的哈希/include 必然存在）；变更文件用本轮扫描结果。
   // include 只在命中「索引内文件」时建边（skipped 文件不在表里，同样丢弃）。
@@ -484,7 +524,8 @@ export async function buildIndex(
     )
   }
 
-  const entries: SymbolEntry[] = reused.slice()
+  // 被 I2 重扫的文件用本轮解析结果，旧条目不能与新条目同时进表。
+  const entries: SymbolEntry[] = reused.filter((entry) => !rescannedPaths.has(entry.file))
   for (const list of parsed.values()) entries.push(...list)
   const snapshot = createSnapshot(roots, nextFiles, entries, includesByFile)
 
@@ -497,7 +538,11 @@ export async function buildIndex(
   let nameIndexBytes = 0
   if (nameIndexPath) {
     const previousNameIndex = await loadNameIndex(nameIndexPath)
-    const changedPaths = new Set<string>(pending.map((file) => file.path))
+    // I2 重扫的文件也算变更：它们的标识符哈希已在本轮算出，直接复用，避免再读一次盘。
+    const changedPaths = new Set<string>([
+      ...pending.map((file) => file.path),
+      ...rescannedPaths,
+    ])
     onProgress?.({ phase: 'index', done: 0, total: successfulFiles.length })
     const nameIndex = await buildNameIndex({
       files: successfulFiles,

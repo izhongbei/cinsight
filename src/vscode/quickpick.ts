@@ -260,6 +260,31 @@ function toDefinitionCopyItem(entry: SymbolEntry): DefinitionCopyQuickPickItem {
 }
 
 /**
+ * 单个多副本组的副本选择（gotoDefinition 只有一个组时直接调这里，不再先弹一个
+ * 只有一行的组列表 —— 与 CHANGELOG「多副本组进入二级选择」一致）。失败只记日志。
+ */
+export async function showDefinitionCopyQuickPick(
+  service: SymbolService,
+  group: DefinitionGroup,
+  symbolName: string,
+): Promise<void> {
+  try {
+    if (typeof vscode.window.showQuickPick !== 'function') return
+    const copy = await vscode.window.showQuickPick(
+      group.entries.map(toDefinitionCopyItem),
+      {
+        placeHolder: vscode.l10n.t('Select a copy of "{0}"', symbolName),
+        matchOnDescription: true,
+      },
+    )
+    if (!copy) return
+    await openLocation(service, copy.entry.file, copy.entry.line, copy.entry.column)
+  } catch (error) {
+    console.error('[code-insight] showDefinitionCopyQuickPick failed', error)
+  }
+}
+
+/**
  * 定义候选（si.gotoDefinition / si.showDefinitionCandidates 共用）：
  * 先按组展示（label 含 included/not included、N copies、条件），
  * 选中多副本组时再弹一层副本列表；单副本组直接打开。
@@ -286,17 +311,7 @@ export async function showDefinitionGroupQuickPick(
       return
     }
     if (picked.group.copies > 1) {
-      const copy = await vscode.window.showQuickPick(
-        picked.group.entries.map(toDefinitionCopyItem),
-        {
-          placeHolder: vscode.l10n.t('Select a copy of "{0}"', symbolName),
-          matchOnDescription: true,
-        },
-      )
-      if (!copy) {
-        return
-      }
-      await openLocation(service, copy.entry.file, copy.entry.line, copy.entry.column)
+      await showDefinitionCopyQuickPick(service, picked.group, symbolName)
       return
     }
     const representative = picked.group.representative

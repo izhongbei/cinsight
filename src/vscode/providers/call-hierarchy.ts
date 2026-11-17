@@ -26,9 +26,13 @@ class SourceInsightCallHierarchyProvider implements vscode.CallHierarchyProvider
       if (!hit) {
         return undefined
       }
+      // 与 definition/hover/commands 使用同一份 include 感知上下文（I1）：
+      // 缺 `table` 时 rankDefinitions 只是不做 include 加权，调用层次会与
+      // F12/悬停的候选顺序不一致。
       const entries = rankDefinitions(this.service.definitions(hit.word), {
         sourceFile: sourceFileOf(this.service, document),
         roots: this.service.configuredRoots,
+        table: this.service.snapshot,
       })
       if (entries.length === 0) {
         return undefined

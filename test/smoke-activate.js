@@ -1611,6 +1611,37 @@ async function checkDefinitionCandidatesCommand() {
       gotoSingleCommands.dispose()
     }
 
+    // 单组多副本：必须弹副本选择（与 CHANGELOG 一致），不能直接跳到代表副本
+    const gotoCopyService = { ...service, definitions: () => [a, b] }
+    const gotoCopyCommands = registerCommands(undefined, gotoCopyService)
+    try {
+      const gotoCopyHandler = [...registrations.commands]
+        .reverse()
+        .find(([id]) => id === 'si.gotoDefinition')[1]
+      const quickPicksBeforeCopy = registrations.quickPicks.length
+      const openedBeforeCopy = registrations.openedDocuments.length
+      registrations.quickPickResponses.push((items) => items[1])
+      await gotoCopyHandler()
+      assert.equal(
+        registrations.quickPicks.length - quickPicksBeforeCopy,
+        1,
+        'gotoDefinition single multi-copy group opens exactly the copy picker',
+      )
+      const copyCall = registrations.quickPicks[quickPicksBeforeCopy]
+      assert.deepEqual(
+        copyCall.items.map((item) => item.label),
+        ['vendor/a/include/skbuff.h:11', 'vendor/b/include/skbuff.h:21'],
+        'single-group copy picker lists every identical copy',
+      )
+      assert.deepEqual(
+        registrations.openedDocuments.slice(openedBeforeCopy).map((doc) => doc.uri.fsPath),
+        [path.join(workspaceRoot, b.file)],
+        'single multi-copy group opens the picked copy, not the representative',
+      )
+    } finally {
+      gotoCopyCommands.dispose()
+    }
+
     // 无定义：保持信息提示，不弹 QuickPick
     const gotoNoneService = { ...service, definitions: () => [] }
     const gotoNoneCommands = registerCommands(undefined, gotoNoneService)
@@ -1873,6 +1904,76 @@ async function checkListAnnotations() {
   }
 }
 
+/**
+ * I1：调用层次必须与 F12/悬停共享同一份 include 感知排序。用真实的 call-hierarchy
+ * provider 验证「被当前文件包含、但路径更远」的定义排在「更近但未被包含」的定义之前。
+ * provider 漏传 `table` 时 include 键不参与，closer 会排到前面，因此这条断言能抓住回归。
+ */
+async function checkCallHierarchyIncludeAware() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { registerCallHierarchyProvider } = require(
+    path.join(dist, 'src/vscode/providers/call-hierarchy.js'),
+  )
+  const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
+  const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
+
+  const workspaceRoot = EXT_ROOT
+  const sourceFile = 'src/main.c'
+  const included = {
+    name: 'sk_buff',
+    kind: 'struct',
+    file: 'vendor/a/include/skbuff.h',
+    line: 10,
+    endLine: 10,
+    column: 0,
+  }
+  const closer = {
+    name: 'sk_buff',
+    kind: 'struct',
+    file: 'src/skbuff.h',
+    line: 3,
+    endLine: 3,
+    column: 0,
+  }
+  const table = createSymbolTable(
+    ['.'],
+    [sourceFile, included.file, closer.file].map((file) => ({ path: file, mtimeMs: 0, size: 0 })),
+    [included, closer],
+    1,
+    SNAPSHOT_VERSION,
+    { includes: new Map([[sourceFile, [included.file]]]) },
+  )
+  const service = {
+    configuredRoots: ['.'],
+    snapshot: table,
+    // 故意把「更近但未被包含」的定义放在前面：只有 include 表参与时它才会被压后
+    definitions: () => [closer, included],
+    toRelative: (absPath) => path.relative(workspaceRoot, absPath).split(path.sep).join('/'),
+    toAbsolute: (relPath) => path.join(workspaceRoot, relPath),
+  }
+  const document = new TextDocument(
+    Uri.file(path.join(workspaceRoot, sourceFile)),
+    'struct sk_buff *skb;\n',
+  )
+  const disposable = registerCallHierarchyProvider(service)
+  try {
+    const provider = registrations.providers
+      .filter(([kind]) => kind === 'callHierarchy')
+      .pop()[2]
+    const items = await provider.prepareCallHierarchy(document, new Position(0, 10), {
+      isCancellationRequested: false,
+    })
+    assert.ok(Array.isArray(items) && items.length === 2, 'call hierarchy returns both items')
+    assert.deepEqual(
+      items.map((item) => item.detail),
+      [included.file, closer.file],
+      'call hierarchy orders an included definition before a closer-but-not-included one',
+    )
+  } finally {
+    disposable.dispose()
+  }
+}
+
 async function main() {
   const extension = require(path.join(EXT_ROOT, 'dist/src/vscode/extension.js'))
   assert.equal(typeof extension.activate, 'function', 'extension.activate must be a function')
@@ -1907,6 +2008,7 @@ async function main() {
   await checkDeltaConflict()
   await checkDefinitionCandidatesCommand()
   await checkListAnnotations()
+  await checkCallHierarchyIncludeAware()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -1934,6 +2036,8 @@ async function main() {
   console.log('  hover same-file wording: "in this file", never "included by this file" OK')
   console.log('  list annotations: search/callers/callees append included/not included + conditional OK')
   console.log('  zh-cn labels: 包含/未包含/副本/条件 OK')
+  console.log('  call hierarchy include-aware: included definition ranks before a closer non-included one OK')
+  console.log('  gotoDefinition single multi-copy group: copy picker (not direct representative) OK')
 }
 
 main()

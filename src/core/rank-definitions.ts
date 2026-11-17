@@ -14,11 +14,13 @@ import { SYMBOL_KIND_ORDER, type SymbolEntry, type SymbolTable } from '../shared
  *  5. 路径层级更浅、路径更短者优先；
  *  6. 以上（include/root/前缀/种类/头文件/层级/长度）全部同层时，无条件定义压过
  *     `#ifdef` 里的定义（0.8.0 / B4）。条件键放在文件/行号稳定性键**之前**：同一层
- *     跨文件候选里，无条件的定义优先；但它仍然不能盖过任何路径远近键；
+ *     跨文件候选里，无条件的定义优先；但它仍然不能盖过任何路径远近键。该键不依赖
+ *     符号表 / 光标文件，没有 `table` 时同样生效；
  *  7. 最后按文件/行号保证稳定排序（同一文件内按行号）。
  *
- * 无上下文（没有光标文件）时退化为「种类 → 路径」的稳定顺序；没有 `table` 时
- * include 键完全不参与，排序结果与 0.7.0 一致（不劣化）。
+ * 没有光标文件时路径远近键（include/root/前缀）全部退化，排序只由「种类 → 扩展名偏好
+ * → 路径层级/长度 → 无条件优先 → 文件/行号」决定。没有 `table` 时只是 include 键不参与；
+ * 条件 tie-break **不需要** 表，仍然生效（因此无表排序并非 0.7.0 的逐字节复刻）。
  *
  * 纯函数、无 vscode 依赖：core（分组）与 vscode（QuickPick/F12）共用同一实现；
  * `src/vscode/rank-definitions.ts` 只做 re-export。
@@ -105,7 +107,8 @@ export function rankDefinitions(
   const sourceSegments = context.sourceFile ? pathSegments(context.sourceFile) : []
   const sourceRoot = context.sourceFile ? rootOf(context.sourceFile, context.roots ?? []) : undefined
   const hasRootContext = sourceRoot !== undefined
-  // include 键只在同时有源文件与表时参与：无表/无光标时完全退化为 0.7.0 的排序。
+  // include 键只在同时有源文件与表时参与；无表/无光标时只是该键不参与，
+  // 其余键（包括不需要表的条件 tie-break）保持不变。
   const hasIncludeContext = context.sourceFile !== undefined && context.table !== undefined
 
   const scored: Scored[] = entries.map((entry, index) => {

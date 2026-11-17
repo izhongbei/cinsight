@@ -161,7 +161,10 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 - Heuristic parsing, not a full C front end: functions produced by macro expansion, old K&R parameter lists and unusual function-pointer forms may be missed (header prototypes still let you jump).
 - Indexed symbols: functions, function prototypes, function-like macros, `struct`/`union`/`enum` tags and `typedef` names. **Struct members, plain variables and enum constants are not indexed** — jumping to `obj->field` would need type inference.
 - **Conditional text is not evaluated**: definitions of the same name in different `#if` branches all appear as candidates, and the annotation shows the raw `#if`/`#ifdef` stack rather than the branch a given build takes. Conventional file-level include guards (`#ifndef NAME` + `#define NAME` … final `#endif`, or `#if !defined(NAME)` / `#if !defined NAME`) are transparent; an `#ifndef` without that `#define`, with a same-depth `#else`/conditional before it, or that does not cover the whole file still counts as a condition.
+- **`#else` / `#elif` branches are not distinguished**: a definition inside such a branch displays the enclosing condition text, the same as the `#if` branch.
 - **Ranking is soft**: include-visible definitions are preferred but never filtered; a same-named definition that no indexed file includes still appears after the included ones.
+- **Include edges are resolved when a file is scanned** and reused for unchanged files: after adding or restoring headers (branch switch, `git checkout`) run **Rebuild Index** or save the includer to refresh its edges. The index cannot discover newly appearing targets for files whose mtime/size did not change, because raw `#include` directives are not stored in the snapshot.
+- **Angled includes use the same heuristic as quoted ones**: `#include <x.h>` is resolved with the same directory → as-is → `indexRoots` search (the quote/angle flag is not stored in the snapshot), so a sibling file with a matching name inside the roots can be treated as included. This only affects the **soft** ranking — no candidate is dropped.
 - **Duplicate folding only applies to identical content**: files must share the same 64-bit content hash (plus the same name and kind); the same code with different whitespace, line endings or comments keeps separate entries.
 - Reference scanning is textual (with comment/string stripping), not semantic; same-named but unrelated symbols match too; first searches on huge roots are bound by disk throughput.
 - Single-root workspaces only (the first workspace folder); `indexRoots` must be workspace-relative.
@@ -287,7 +290,10 @@ cursor --install-extension code-insight-0.8.0.vsix
 - 启发式解析：宏展开生成的函数、K&R 老式参数表、极端函数指针写法可能漏识别（头文件原型可兜底跳转）。
 - 已索引：函数、函数原型、函数式宏、`struct`/`union`/`enum` 标签与 `typedef` 名字。**结构体成员、普通变量、枚举常量暂不索引**——`obj->field` 的跳转需要类型推导。
 - **条件文本不求值**：同一名字在多个 `#if` 分支的定义都会出现在候选里，标注显示原始 `#if`/`#ifdef` 栈，而不是某次构建实际走的分支。传统文件级 include guard（`#ifndef NAME` + `#define NAME` … 文件末尾 `#endif`，或 `#if !defined(NAME)` / `#if !defined NAME`）透明；无同名 `#define`、同层提前出现其他条件、或未覆盖整个文件的 `#ifndef` 仍算条件。
+- **`#else` / `#elif` 分支不区分**：这类分支里的定义同样显示外层条件文本，与 `#if` 分支一致。
 - **排序是软排序**：已包含的定义优先，但不过滤；没有任何索引内文件包含的同名定义仍会排在后面。
+- **include 边在扫描文件时解析**，未变化的文件复用旧边：新增或恢复头文件（切分支、`git checkout`）后请执行 **重建索引** 或保存 includer 来刷新它的边。文件的 mtime/size 未变化时，索引无法发现新出现的目标，因为快照里不保存原始 `#include` 指令。
+- **尖括号 include 与引号形式使用同一套启发式**：`#include <x.h>` 同样按「相对目录 → 原样 → `indexRoots`」解析（快照不保存引号/尖括号标记），因此索引根内同名的兄弟文件可能被当作已包含。这只影响**软排序**，不会丢弃候选。
 - **重复副本折叠只对内容完全相同生效**：必须 64 位内容哈希一致（且名字/种类相同）；仅空白/换行/注释不同的相同代码不会折叠。
 - 引用扫描是文本级（已剥离注释/字符串），不是语义级；首次在大仓库上受磁盘吞吐限制。
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。

@@ -159,6 +159,74 @@ test('indexer includes: changed file re-resolves edges and recomputes its hash',
   }
 })
 
+test('indexer includes: unchanged includer re-scans when a resolved target disappears', async () => {
+  const dir = makeIncludeTree()
+  try {
+    const first = await buildIndex(makeOptions(dir))
+    assert.deepEqual(first.snapshot.includedFiles('src/a.c'), ['inc/x.h'])
+
+    // inc/x.h 从 walk 中消失（文件被删除 / 被 exclude / 超过 maxFileSizeKB 都归到这里）：
+    // a.c 的 mtime+size 没变，但它上一轮解析出的 include 目标已不在本次成功文件集合里。
+    // 直接复用旧边会在建表时被静默丢弃，而且 includer 永远不会重新解析 —— 必须重扫。
+    fs.rmSync(path.join(dir, 'inc', 'x.h'))
+    const reads: string[] = []
+    const second = await buildIndex({
+      ...makeOptions(dir),
+      previous: first.snapshot,
+      readFile: async (rel: string) => {
+        reads.push(rel)
+        return fs.readFileSync(path.join(dir, rel), 'utf8')
+      },
+    })
+    assert.ok(reads.includes('src/a.c'), 'includer with a vanished target must be re-read')
+    assert.equal(second.summary.files, 3)
+    assert.equal(second.summary.removed, 1, 'vanished target is removed from the index')
+    assert.equal(second.summary.updated, 1, 're-scanned includer counts as updated')
+    assert.equal(second.summary.unchanged, 2, 'the two unrelated files stay unchanged')
+    assert.deepEqual(
+      second.snapshot.includedFiles('src/a.c'),
+      [],
+      'edge to the vanished target is gone (re-resolved, not reused)',
+    )
+    assert.equal(second.snapshot.isReachable('src/a.c', 'inc/y.h'), false)
+    // 重扫也重新算哈希与符号：a.c 内容没变，哈希与 alpha 仍然一致
+    assert.deepEqual(second.snapshot.contentHashOf('src/a.c'), hashContent64(A_C))
+    assert.equal(second.snapshot.findByName('alpha').length, 1)
+
+    // 角落：恢复 x.h 后用「已经没有 a.c 边」的快照增量重建。a.c 的 mtime+size 仍未变，
+    // 且它上一轮的已解析目标集合为空，所以增量复用不会发现「新出现的目标」——快照里
+    // 不保存原始 #include 文本，无法重新解析。恢复头文件后需要全量重建（si.rebuildIndex）
+    // 或保存 includer 才能刷新这条边。
+    fs.writeFileSync(path.join(dir, 'inc', 'x.h'), X_H, 'utf8')
+    const readsAfterRestore: string[] = []
+    const third = await buildIndex({
+      ...makeOptions(dir),
+      previous: second.snapshot,
+      readFile: async (rel: string) => {
+        readsAfterRestore.push(rel)
+        return fs.readFileSync(path.join(dir, rel), 'utf8')
+      },
+    })
+    assert.equal(third.summary.added, 1, 'restored header is a new file')
+    assert.ok(
+      !readsAfterRestore.includes('src/a.c'),
+      'unchanged includer is not re-scanned without a stale target',
+    )
+    assert.deepEqual(
+      third.snapshot.includedFiles('src/a.c'),
+      [],
+      'incremental reuse cannot rediscover a restored target (no raw #include stored)',
+    )
+
+    // 全量重建（si.rebuildIndex 的路径）重新解析 include 文本，边恢复。
+    const full = await buildIndex(makeOptions(dir))
+    assert.deepEqual(full.snapshot.includedFiles('src/a.c'), ['inc/x.h'])
+    assert.equal(full.snapshot.isReachable('src/a.c', 'inc/y.h'), true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('indexer includes: roots change re-resolves the include graph instead of reusing previous', async () => {
   const dir = tempDir('si-indexer-roots-change-')
   try {

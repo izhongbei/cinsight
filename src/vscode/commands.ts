@@ -25,6 +25,7 @@ import { sourceFileOf } from './providers/definition'
 import { showCallGraph } from './views/call-graph-panel'
 import {
   showCallerQuickPick,
+  showDefinitionCopyQuickPick,
   showDefinitionGroupQuickPick,
   showReferenceQuickPick,
   showSymbolEntriesQuickPick,
@@ -351,16 +352,17 @@ async function gotoDefinition(service: SymbolService): Promise<void> {
     await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
     return
   }
-  if (groups.length === 1) {
-    const representative = groups[0]?.representative
-    if (representative) {
-      await openLocation(
-        service,
-        representative.file,
-        representative.line,
-        representative.column,
-      )
-    }
+  // 只有一个组且内容唯一：直接打开代表位置。
+  // 只有一个组但有多个副本时仍必须弹副本选择（与 CHANGELOG 的「多副本组进入二级
+  // 选择」一致）——否则用户永远只能跳到代表副本，无法挑另一份拷贝。
+  const onlyGroup = groups[0]
+  if (groups.length === 1 && onlyGroup && onlyGroup.copies === 1) {
+    const representative = onlyGroup.representative
+    await openLocation(service, representative.file, representative.line, representative.column)
+    return
+  }
+  if (groups.length === 1 && onlyGroup) {
+    await showDefinitionCopyQuickPick(service, onlyGroup, hit.word)
     return
   }
   await showDefinitionGroupQuickPick(service, groups, hit.word, sourceFile)
