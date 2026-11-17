@@ -534,6 +534,9 @@ export class SymbolService implements vscode.Disposable {
           this.indexEpoch += 1
           clearReferenceCache()
           clearCallGraphCache()
+          // build 期间可能有 compaction abort 补写的 delta 追加在途：先等它们落盘，
+          // 后面的 removeSnapshotDelta 才不会因为「先删后写」把旧索引记录留到新 base 上。
+          await this.appendChain
           this.appendChain = Promise.resolve()
           this.deferredDuringCompaction = []
           this.compacting = false
@@ -986,6 +989,27 @@ export class SymbolService implements vscode.Disposable {
   }
 
   /**
+   * compaction abort 路径统一收尾 deferred（**只补追加，不重放**）。
+   *
+   * deferred 里的变更在进入列表时已经 apply 到当时的 live mutable 索引内存里，只是
+   * delta 追加被 compaction 推迟。abort 后若该索引仍是 live（build 取消/失败等），
+   * 只需补一次 `enqueueAppend` 保证崩溃后不丢，**绝不能重新 apply**：旧记录可能比
+   * 已经合入新 base 的更新编辑更旧，重放会把内存/磁盘回退成旧值。
+   *
+   * 若 live 索引已被替换或清空（build 成功、clearCache、loadFromDisk、另一次 swap），
+   * 新整表快照/删除已经覆盖这些变更，直接丢弃即可。
+   */
+  private settleDeferredOnAbort(index: MutableSymbolIndex | undefined): void {
+    const deferred = this.deferredDuringCompaction
+    if (deferred.length === 0) return
+    this.deferredDuringCompaction = []
+    if (index === undefined || this.mutableValue !== index) return
+    for (const change of deferred) {
+      this.enqueueAppend(change)
+    }
+  }
+
+  /**
    * 实际 compaction。顺序很关键（否则会丢记录）：
    *   1. 等所有在途 delta 追加落盘（appendChain + flushSnapshotDeltaAppends）
    *   2. 进入 compacting 状态：新变更先入 deferred，不写 delta
@@ -1007,15 +1031,30 @@ export class SymbolService implements vscode.Disposable {
       this.indexEpoch !== epoch || this.mutableValue !== index || this.buildingValue
     try {
       await this.appendChain
-      if (stale()) return true
+      if (stale()) {
+        this.settleDeferredOnAbort(index)
+        return true
+      }
       await flushSnapshotDeltaAppends()
-      if (stale()) return true
+      if (stale()) {
+        this.settleDeferredOnAbort(index)
+        return true
+      }
       const deltaBytes = await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
-      if (stale()) return true
-      if (index.pendingChanges === 0 && deltaBytes === 0) return true
+      if (stale()) {
+        this.settleDeferredOnAbort(index)
+        return true
+      }
+      if (index.pendingChanges === 0 && deltaBytes === 0) {
+        this.settleDeferredOnAbort(index)
+        return true
+      }
       const flat = index.flatten()
       // 写 base 前最后一次校验：重建/清缓存之后不能再把旧 flat 写成 base。
-      if (stale()) return true
+      if (stale()) {
+        this.settleDeferredOnAbort(index)
+        return true
+      }
       const started = Date.now()
       const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
       // 写盘期间整表被替换（rebuild / clearCache / 再次 load）：放弃 swap，保留新索引。
@@ -1024,6 +1063,8 @@ export class SymbolService implements vscode.Disposable {
           // 索引已被清空（clearCache）：写盘可能落在删除之后，删掉这份过期 base，避免复活。
           await this.removeSnapshotFile()
         }
+        // 写盘落地后 abort 同样要排空 deferred：旧记录不能留到下一次 compaction 重放。
+        this.settleDeferredOnAbort(index)
         return true
       }
       this.logger.info(

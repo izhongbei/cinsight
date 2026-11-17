@@ -6,7 +6,7 @@ import { stripSources } from './signature'
  * 引用扫描：读快照中的每个文件，先做内容 `indexOf(name)` 预筛，只对候选文件
  * 做词法剥离 + 词边界精确定位（注释/字符串里的同名标识符不算引用），
  * 排除同名符号的定义/声明行，并发读取（默认 8），支持 AbortSignal 与进度回调。
- * 结果按 name 做小型 LRU 缓存（≤64 项，键含快照对象身份，重建索引后自动失效）。
+ * 结果按 name 做小型 LRU 缓存（≤64 项，键含快照对象身份与缓存代际，重建/清空后自动失效）。
  * 注意：overlay 索引是原地修改（对象身份不变），缓存不会自动失效；持有可变索引的
  * service 必须在每次增量提交后调用 `clearReferenceCache()`。
  */
@@ -39,11 +39,21 @@ export function snapshotIdentity(snapshot: SymbolTable): number {
   return id
 }
 
-/** 结果缓存：key = snapshotId|includeDeclaration|name → 已排序结果。 */
+/** 结果缓存：key = generation|snapshotId|includeDeclaration|name → 已排序结果。 */
 const resultCache = new Map<string, readonly ReferenceHit[]>()
+
+/**
+ * 缓存代际：clearReferenceCache() 每次 +1。
+ *
+ * 清空时把代际写进 key，清空前的旧条目从此不可命中；同时在查询开始时捕获代际、
+ * 写回前再校验一次，避免「慢读盘的在途查询」把清空前的旧结果重新写进缓存
+ * （overlay 原地修改 + 清缓存与查询并发时的写回竞态）。
+ */
+let cacheGeneration = 0
 
 /** 清空引用结果缓存（测试与压测用于对比冷启动耗时）。 */
 export function clearReferenceCache(): void {
+  cacheGeneration += 1
   resultCache.clear()
 }
 
@@ -124,7 +134,9 @@ export async function findReferences(
   if (name.length === 0) return []
 
   const includeDeclaration = options.includeDeclaration === true
-  const cacheKey = `${snapshotIdentity(snapshot)}|${includeDeclaration ? 1 : 0}|${name}`
+  // 捕获查询开始时的代际：key 含代际（清空前条目不可达），写回前再校验（防旧结果写回）。
+  const generation = cacheGeneration
+  const cacheKey = `${generation}|${snapshotIdentity(snapshot)}|${includeDeclaration ? 1 : 0}|${name}`
   const cached = cacheGet(cacheKey)
   if (cached !== undefined) return [...cached]
 
@@ -139,7 +151,7 @@ export async function findReferences(
     const nameIndex = options.nameIndex
     const candidateIndexes = candidatesForName(nameIndex, name)
     if (candidateIndexes.length === 0) {
-      cacheSet(cacheKey, [])
+      if (generation === cacheGeneration) cacheSet(cacheKey, [])
       return []
     }
     const byPath = new Map<string, FileRecord>(snapshot.files.map((record) => [record.path, record]))
@@ -226,6 +238,8 @@ export async function findReferences(
     (a, b) =>
       (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line || a.column - b.column,
   )
-  cacheSet(cacheKey, hits)
+  // 读盘期间可能已 clearReferenceCache()：代际变化时旧结果不能写回，否则下一次查询
+  // 会命中「清空之后」的缓存键却拿到清空前的旧结果。
+  if (generation === cacheGeneration) cacheSet(cacheKey, hits)
   return [...hits]
 }

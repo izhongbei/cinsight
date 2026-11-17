@@ -375,6 +375,124 @@ test('findReferences: overlay 原地编辑后 clearReferenceCache 才能看到�
   )
 })
 
+test('findReferences: 在途查询遇到 clearReferenceCache 不会把旧结果写回', async () => {
+  // 编辑前 1 处引用，编辑后 2 处；延迟第一次读盘，把「编辑 + 清缓存」塞进读盘窗口。
+  const before = ['void target(void);', 'void caller(void)', '{', '    target();', '}', ''].join('\n')
+  const after = ['void target(void);', 'void caller(void)', '{', '    target();', '    target();', '}', ''].join(
+    '\n',
+  )
+  const texts = new Map<string, string>([['race.c', before]])
+  const index = createMutableIndex(
+    makeSnapshot([
+      makeEntry({ name: 'target', file: 'race.c', line: 0 }),
+      makeEntry({ name: 'caller', file: 'race.c', line: 1, endLine: 5 }),
+    ]),
+  )
+
+  let releaseRead!: () => void
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve
+  })
+  let readStarted!: () => void
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve
+  })
+  let firstRead = true
+  const readFile: ReadFileFn = async (rel) => {
+    if (rel !== 'race.c') throw new Error(`ENOENT ${rel}`)
+    if (firstRead) {
+      firstRead = false
+      // 捕获发起读盘这一刻的文本，再在 gate 上等待，模拟慢读盘。
+      const captured = texts.get(rel)!
+      readStarted()
+      await readGate
+      return captured
+    }
+    return texts.get(rel)!
+  }
+
+  const inflight = findReferences(index, 'target', readFile)
+  await started
+  // 读盘在途时编辑 overlay 并清缓存（service 在 commitSnapshot 里正是这个顺序）。
+  texts.set('race.c', after)
+  index.applyFile({ path: 'race.c', mtimeMs: 2, size: 2 }, [
+    makeEntry({ name: 'target', file: 'race.c', line: 0 }),
+    makeEntry({ name: 'caller', file: 'race.c', line: 1, endLine: 6 }),
+  ])
+  clearReferenceCache()
+  releaseRead()
+
+  const stale = await inflight
+  assert.equal(stale.length, 1, '在途查询本身仍返回它开始时的结果（旧结果允许返回给本查询）')
+
+  // 旧实现会把上面这 1 条结果写回「清空后」的缓存（快照身份未变），下面的查询会命中旧值。
+  const fresh = await findReferences(index, 'target', readFile)
+  assert.equal(fresh.length, 2, '清缓存后的查询必须看到编辑后的 2 处引用')
+})
+
+test('callersOf: 在途查询遇到 clearCallGraphCache 不会把旧函数区间写回', async () => {
+  // 命中行不变，只改函数名 caller -> wrapper：只有 scanCache（函数区间）决定归属。
+  const before = [
+    'void target(void)',
+    '{',
+    '}',
+    'void caller(void)',
+    '{',
+    '    target();',
+    '}',
+    '',
+  ].join('\n')
+  const after = before.replace('void caller(void)', 'void wrapper(void)')
+  const texts = new Map<string, string>([['range.c', before]])
+  const index = createMutableIndex(
+    makeSnapshot([
+      makeEntry({ name: 'target', file: 'range.c', line: 0, endLine: 2 }),
+      makeEntry({ name: 'caller', file: 'range.c', line: 3, endLine: 6 }),
+    ]),
+  )
+
+  let releaseRead!: () => void
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve
+  })
+  let readStarted!: () => void
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve
+  })
+  let reads = 0
+  const readFile: ReadFileFn = async (rel) => {
+    if (rel !== 'range.c') throw new Error(`ENOENT ${rel}`)
+    reads += 1
+    // 第 1 次给 findReferences，第 2 次是 rangesForFile 前的读文本——在这里延迟。
+    if (reads === 2) {
+      const captured = texts.get(rel)!
+      readStarted()
+      await readGate
+      return captured
+    }
+    return texts.get(rel)!
+  }
+
+  const inflight = callersOf(index, 'target', readFile)
+  await started
+  texts.set('range.c', after)
+  index.applyFile({ path: 'range.c', mtimeMs: 2, size: 2 }, [
+    makeEntry({ name: 'target', file: 'range.c', line: 0, endLine: 2 }),
+    makeEntry({ name: 'wrapper', file: 'range.c', line: 3, endLine: 6 }),
+  ])
+  clearCallGraphCache()
+  releaseRead()
+
+  const stale = await inflight
+  assert.equal(stale.length, 1)
+  assert.equal(stale[0]?.from?.name, 'caller', '在途查询仍按旧文本归属')
+
+  // 旧实现会把旧文本算出的函数区间写回「清空后」的缓存（快照身份未变），归属仍然是 caller。
+  const fresh = await callersOf(index, 'target', readFile)
+  assert.equal(fresh.length, 1)
+  assert.equal(fresh[0]?.from?.name, 'wrapper', '清缓存后的查询必须按新文本归属')
+})
+
 test('callersOf: overlay 原地编辑后 clearCallGraphCache 让函数区间反映新代码', async () => {
   const before = [
     'void handler(void)', // 0

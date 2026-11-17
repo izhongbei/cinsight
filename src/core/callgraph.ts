@@ -21,8 +21,17 @@ import { stripSources } from './signature'
 
 const SCAN_CACHE_LIMIT = 500
 
-/** scanSource 结果缓存：key = snapshotId|file。 */
+/** scanSource 结果缓存：key = generation|snapshotId|file。 */
 const scanCache = new Map<string, readonly ScannedSymbol[]>()
+
+/**
+ * 缓存代际：clearCallGraphCache() 每次 +1。
+ *
+ * 清空时把代际写进 key，清空前的旧条目从此不可命中；callersOf 在开始时的代际会
+ * 一路传到 rangesForFile，写回 scanCache 前再校验一次，避免「慢读盘的在途查询」
+ * 把清空前的旧函数区间写进缓存（overlay 原地修改 + 清缓存与查询并发时的写回竞态）。
+ */
+let cacheGeneration = 0
 
 /**
  * 清空本模块所有 identity-keyed 缓存（scanCache）。
@@ -32,6 +41,7 @@ const scanCache = new Map<string, readonly ScannedSymbol[]>()
  * core 不得反向依赖 vscode，因此只导出函数、由上层决定何时清。
  */
 export function clearCallGraphCache(): void {
+  cacheGeneration += 1
   scanCache.clear()
 }
 
@@ -115,8 +125,9 @@ function rangesForFile(
   snapshot: SymbolTable,
   file: string,
   text: string,
+  generation: number,
 ): readonly ScannedSymbol[] {
-  const key = `${snapshotIdentity(snapshot)}|${file}`
+  const key = `${generation}|${snapshotIdentity(snapshot)}|${file}`
   const cached = scanCacheGet(key)
   if (cached !== undefined) return cached
 
@@ -136,7 +147,8 @@ function rangesForFile(
         column: entry.column,
       }))
   }
-  scanCacheSet(key, ranges)
+  // 文本读取期间可能已 clearCallGraphCache()：代际变化时旧区间不能写回。
+  if (generation === cacheGeneration) scanCacheSet(key, ranges)
   return ranges
 }
 
@@ -198,6 +210,8 @@ export async function callersOf(
 ): Promise<CallerHit[]> {
   throwIfAborted(options.signal)
 
+  // 在第一次 await 之前捕获代际，传给 rangesForFile：慢读盘期间清过缓存则旧区间不写回。
+  const generation = cacheGeneration
   const references: ReferenceHit[] = await findReferences(snapshot, name, readFile, {
     nameIndex: options.nameIndex,
     signal: options.signal,
@@ -217,7 +231,7 @@ export async function callersOf(
   for (const [file, hits] of byFile) {
     throwIfAborted(options.signal)
     const text = await readTextCached(readFile, file, textCache)
-    const ranges = text === undefined ? [] : rangesForFile(snapshot, file, text)
+    const ranges = text === undefined ? [] : rangesForFile(snapshot, file, text, generation)
     for (const hit of hits) {
       result.push({ ...hit, from: containingFunction(ranges, file, hit.line) })
     }
