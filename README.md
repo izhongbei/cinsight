@@ -16,6 +16,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Function` (lists signature and location) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
+| **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style relation panel: the current function in the middle, **callers on the left, callees on the right**, expandable node by node, click a name to jump |
 | **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → functions (with signature), loaded on demand |
 | **Hover signature** | Hover a function name to see `return type name(params)` and its definition/declaration location |
 | **Document outline** | `Ctrl+Shift+O` lists the functions of the current file |
@@ -68,6 +69,7 @@ Requires a host with **VS Code ≥ 1.90** (Cursor 3.x qualifies). No C/C++ exten
 | Find References | `si.findReferences` |
 | Show Callers | `si.showCallers` |
 | Show Callees | `si.showCallees` |
+| Show Call Graph | `si.showCallGraph` |
 | Clear Index Cache | `si.clearCache` |
 
 The editor context menu offers go-to-definition, find-references and callers/callees in C/C++ files; the view title bar offers search, rebuild and configure.
@@ -176,6 +178,7 @@ MIT
 | **函数搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索函数`（列出签名与位置） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
+| **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：中间当前函数，**左调用者、右被调用者**，可逐层展开、点击名字跳转 |
 | **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 函数（带签名摘要），按需加载 |
 | **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` 与定义/声明位置 |
 | **文档大纲** | `Ctrl+Shift+O` 列出当前文件函数 |

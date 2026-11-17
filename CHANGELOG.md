@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.1 — 2026-11-17
+
+### English
+
+- Documentation-only release: README/CHANGELOG entries for the call graph panel (0.6.0 shipped the code).
+
+### 中文
+
+- 仅文档更新：补上调用关系图面板的 README/CHANGELOG 说明（代码在 0.6.0 已发布）。
+
+## 0.6.0 — 2026-11-17
+
+### English
+
+- **New call graph panel** (Source Insight "Relation" style): the current function sits in the middle, **callers on the left, callees on the right**; each node expands/collapses independently and clicking a name jumps to its definition. Cycles are skipped, 100 children per direction and 300 nodes total (with a truncation marker). Expansions reuse the indexed reference scan, so they are typically milliseconds.
+- New command `si.showCallGraph` (command palette, C/C++ editor context menu, symbol-view title button).
+- 160 tests pass (graph model + generated HTML tests added).
+
+### 中文
+
+- **新增调用关系图面板**（Source Insight 的 Relation 风格）：中间是当前函数，**左边调用者、右边被调用者**；每个节点可单独展开/折叠，点击名字跳到定义。自动跳过环，单方向最多 100 个子节点、全图最多 300 个节点（超出有截断标记）。数据来自索引化引用扫描，展开通常是毫秒级。
+- 新命令 `si.showCallGraph`（命令面板、C/C++ 编辑器右键菜单、符号视图标题栏按钮）。
+- 160 个单测通过（新增图模型与 HTML 生成测试）。
+
+
 ## 0.5.1 — 2026-11-13
 
 ### English
