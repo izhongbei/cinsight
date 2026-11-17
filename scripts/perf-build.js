@@ -31,6 +31,18 @@ const {
 } = require(path.join(EXT_ROOT, 'dist/src/core/nameindex.js'))
 const { callersOf, calleesOf } = require(path.join(EXT_ROOT, 'dist/src/core/callgraph.js'))
 const { readSignature } = require(path.join(EXT_ROOT, 'dist/src/core/signature.js'))
+const {
+  createMutableIndex,
+  createMutableIndexFromDeltas,
+} = require(path.join(EXT_ROOT, 'dist/src/core/overlay-index.js'))
+const {
+  appendSnapshotDelta,
+  compactSnapshot,
+  flushSnapshotDeltaAppends,
+  readSnapshotDeltas,
+  snapshotDeltaBytes,
+  snapshotDeltaPath,
+} = require(path.join(EXT_ROOT, 'dist/src/core/snapshot-delta.js'))
 const { DEFAULT_EXCLUDE } = require(path.join(EXT_ROOT, 'dist/src/shared/types.js'))
 
 const args = process.argv.slice(2)
@@ -51,6 +63,8 @@ const nameIndexPath = path.join('/tmp', 'si-perf-names-' + Date.now() + '.names'
 
 const ms = (start) => Math.round(performance.now() - start)
 const mb = (bytes) => (bytes / 1048576).toFixed(2) + ' MB'
+const size = (bytes) =>
+  bytes >= 1048576 ? mb(bytes) : bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B'
 
 async function main() {
   console.log('workspace :', WORKSPACE_ROOT)
@@ -112,6 +126,59 @@ async function main() {
       const bytes = await appendNameIndexDelta(nameIndexDeltaPath(nameIndexPath), { kind: 'set', path: rel, hashes })
       console.log('  delta append :', mb(bytes), 'in', ms(tDelta), 'ms (per-file save, no full rewrite)')
       console.log('  delta size   :', mb(await nameIndexDeltaBytes(nameIndexDeltaPath(nameIndexPath))))
+    }
+  }
+
+  // 增量符号索引：overlay apply（O(Δ)，不重建列）+ snapshot delta 追加 + compaction
+  {
+    const target = loaded.files.find((file) => loaded.entriesInFile(file.path).length > 0)
+    if (target) {
+      const targetEntries = loaded.entriesInFile(target.path)
+      const deltaPath = snapshotDeltaPath(snapshotPath)
+      const index = createMutableIndex(loaded)
+
+      const tApply = performance.now()
+      index.applyFile({ path: target.path, mtimeMs: Date.now(), size: target.size }, targetEntries)
+      const applyMs = ms(tApply)
+
+      const tDelta = performance.now()
+      const bytes = await appendSnapshotDelta(deltaPath, {
+        kind: 'set',
+        path: target.path,
+        mtimeMs: Date.now(),
+        size: target.size,
+        entries: targetEntries,
+      })
+      const deltaMs = ms(tDelta)
+      const deltaBytes = await snapshotDeltaBytes(deltaPath)
+
+      // base + delta 重放校验：条目数必须与 overlay 一致
+      const records = await readSnapshotDeltas(deltaPath)
+      const replayed = createMutableIndexFromDeltas(loaded, records)
+
+      const tFlatten = performance.now()
+      const flat = index.flatten()
+      const flattenMs = ms(tFlatten)
+      await flushSnapshotDeltaAppends()
+
+      const tCompact = performance.now()
+      const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
+      const compactMs = ms(tCompact)
+      const afterCompact = await snapshotDeltaBytes(deltaPath)
+
+      console.log('=== incremental symbol index ===')
+      console.log('  target       :', target.path, `(${targetEntries.length} symbols)`)
+      console.log('  overlay apply:', applyMs, 'ms; pending:', index.pendingChanges,
+        applyMs < 5 ? '(✅ <5 ms)' : '(⚠️ >=5 ms)')
+      console.log('  delta append :', size(bytes), 'in', deltaMs, 'ms',
+        bytes < 10 * 1024 ? '(✅ <10 KB)' : '(⚠️ >=10 KB)')
+      console.log('  delta size   :', size(deltaBytes))
+      console.log('  replay check :', records.length, 'records; entries match:',
+        replayed.entryCount === index.entryCount ? 'yes ✅' : `NO (${replayed.entryCount} vs ${index.entryCount}) ⚠️`)
+      console.log('  flatten      :', flattenMs, 'ms; entries:', flat.entryCount)
+      console.log('  compaction   :', compactMs, 'ms; base', mb(baseBytes),
+        deltaTruncated ? '(delta cleared ✅)' : '(no delta ⚠️)')
+      console.log('  delta after  :', size(afterCompact))
     }
   }
 
