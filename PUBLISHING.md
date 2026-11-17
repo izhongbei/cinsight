@@ -12,6 +12,19 @@
 
 ---
 
+## 发布策略（重要，默认遵守）
+
+**默认只做"本地构建 + 本地安装"，不发布。**
+
+1. `npm run release -- <version>`：本地升版本、跑测试、打包 vsix（**不推送 tag**）
+2. 把 vsix 安装到用户 Cursor：`cursor --install-extension code-insight-<version>.vsix --force`
+3. **等用户明确说"OK / 可以发布"**，再执行发布：
+   - `git push origin master --tags`（推 `v*` tag 触发 CI 自动发布两个市场），或
+   - GitHub Actions → publish → Run workflow（用当前 `package.json` 版本发布）
+4. 未经确认不要推 tag、不要 `publish:ovsx` / `publish:vsce`、不要触发 workflow_dispatch。
+
+> 背景：用户要求"我先试用 OK 再发布"，避免把未验证的版本推到市场。
+
 ## 0. 发布前必须改的东西（三个渠道都要）
 
 ```bash
