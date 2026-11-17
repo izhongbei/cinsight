@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { decodeSnapshot, encodeSnapshot } from '../src/core/store'
-import { createSymbolTable } from '../src/core/symbol-table'
+import { createSymbolTable, getSymbolTableColumns } from '../src/core/symbol-table'
 import type { FileRecord, SymbolEntry } from '../src/shared/types'
 import { SNAPSHOT_VERSION } from '../src/shared/types'
 
@@ -94,4 +94,20 @@ test('store v4: snapshots with a foreign/old version are rejected', () => {
   const badMagic = Buffer.from(encoded)
   badMagic.write('XXXX', 0, 'latin1')
   assert.equal(decodeSnapshot(badMagic), undefined)
+})
+
+test('store v4: include CSR must start at offset 0', () => {
+  const table = makeTable()
+  const columns = getSymbolTableColumns(table)
+  assert.ok(columns, 'built-in table exposes columns')
+  const encoded = encodeSnapshot(table)
+  assert.ok(decodeSnapshot(encoded), 'sanity: valid include CSR decodes')
+
+  // includeOffsets/includeTargets 位于文件末尾；locate includeOffsets[0]
+  const includeOffsetsStart = encoded.length - (columns!.includeOffsets.length + columns!.includeTargets.length) * 4
+  assert.equal(encoded.readUInt32LE(includeOffsetsStart), 0, 'valid snapshot starts CSR at 0')
+
+  const patched = Buffer.from(encoded)
+  patched.writeUInt32LE(1, includeOffsetsStart)
+  assert.equal(decodeSnapshot(patched), undefined, 'offset[0] != 0 must be rejected')
 })

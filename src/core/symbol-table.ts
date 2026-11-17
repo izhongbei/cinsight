@@ -434,7 +434,12 @@ export function getSymbolTableColumns(table: SymbolTable): SymbolTableColumns | 
 }
 
 // ---------------------------------------------------------------------------
-// 增量更新：单文件增删后重建表（服务层/兼容 API；不 materialize 全部条目之外的对象）
+// 单文件增删的兼容 API（**当前无生产调用方**；服务层已改用 overlay-index）
+//
+// 实现方式是完全物化 + 整表重建：先 forEachEntry 把全部 SymbolEntry materialize 成对象
+// 数组，再交给 createSymbolTable 重算所有列、名字/文件分桶与 include CSR。时间与内存都是
+// O(n)（149 万符号约 600ms），**不是**列式增量快路径。保留导出只为兼容旧的 core 使用方；
+// 新代码请用 overlay-index 的 applyFile/removeFile + flatten（O(Δ)）。
 // ---------------------------------------------------------------------------
 
 /**
@@ -454,7 +459,10 @@ function collectIncludes(
   return includes
 }
 
-/** 用新条目替换/新增一个文件（服务层单文件保存）。 */
+/**
+ * 兼容 API（当前无生产调用方）：用新条目替换/新增一个文件。
+ * 代价：forEachEntry 物化全部条目后整表 createSymbolTable 重建，O(n) 时间 + O(n) 临时对象。
+ */
 export function upsertFileInTable(
   table: SymbolTable,
   fileRecord: FileRecord,
@@ -473,7 +481,10 @@ export function upsertFileInTable(
   })
 }
 
-/** 从表中删除一个文件（服务层删除文件）。 */
+/**
+ * 兼容 API（当前无生产调用方）：从表中删除一个文件。
+ * 代价同上：物化全部保留条目后整表重建，O(n)；文件不存在时原样返回。
+ */
 export function removeFileFromTable(table: SymbolTable, filePath: string): SymbolTable {
   if (!table.files.some((file) => file.path === filePath)) return table
   const nextFiles = table.files.filter((file) => file.path !== filePath)

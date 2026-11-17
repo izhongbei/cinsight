@@ -343,7 +343,8 @@ export function createMutableIndexFromDeltas(
             contentHashHi: record.contentHashHi,
           }
     index.applyFile(file, record.entries)
-    // v2 记录带 include 目标；v1/无元数据记录不改动 base 边
+    // v2 记录一定带 includes（空数组也是权威值：该文件现在没有 include，必须清空 base 边）；
+    // 字段缺失只可能来自 v1 记录（v1 没有 include 信息），此时不得改动 base 边。
     if (record.includes !== undefined) index.applyIncludes(record.path, record.includes)
   }
   return index

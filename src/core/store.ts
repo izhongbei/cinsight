@@ -284,6 +284,9 @@ export function decodeSnapshot(buffer: Buffer): SymbolTable | undefined {
 
   const includeOffsets = readU32Array(fileCount + 1)
   if (!includeOffsets) return undefined
+  // CSR 必须从 0 号文件开始；offset[0] > 0 说明 offset/target 数组错位（否则首文件的边会
+  // 指向错误区间，甚至把后续文件的 offset 当成 target）。
+  if (includeOffsets[0] !== 0) return undefined
   for (let index = 0; index < fileCount; index++) {
     if (includeOffsets[index]! > includeOffsets[index + 1]!) return undefined
   }

@@ -41,6 +41,7 @@ test('snapshot delta: set/remove records roundtrip', async () => {
       mtimeMs: 123.5,
       size: 42,
       entries: [entry('alpha', 'a.c', 1), entry('beta', 'a.c', 2)],
+      includes: [],
     }
     const bytes = await appendSnapshotDelta(deltaPath, set)
     assert.ok(bytes > 0)
@@ -175,6 +176,7 @@ test('snapshot delta: torn record tail is truncated before append so later recor
       mtimeMs: 1.5,
       size: 10,
       entries: [entry('alpha', 'a.c', 1), entry('beta', 'a.c', 2)],
+      includes: [],
     }
     const second = { kind: 'remove' as const, path: 'b.c' }
     await appendSnapshotDelta(deltaPath, first)
@@ -187,6 +189,7 @@ test('snapshot delta: torn record tail is truncated before append so later recor
       mtimeMs: 3.5,
       size: 30,
       entries: [entry('gamma', 'c.c', 3)],
+      includes: [],
     }
     await appendSnapshotDelta(deltaPath, third)
     // 两条「完整」记录都还能解码：残缺的 second 被截掉，third 不受影响。
@@ -207,6 +210,7 @@ test('snapshot delta: partial header is replaced by append', async () => {
       mtimeMs: 1,
       size: 1,
       entries: [entry('alpha', 'a.c', 1)],
+      includes: [],
     }
     const bytes = await appendSnapshotDelta(deltaPath, record)
     assert.equal(bytes, encodeSnapshotDeltaRecord(record).length)
@@ -248,6 +252,7 @@ test('snapshot delta: bad magic with valid length is replaced by append', async 
       mtimeMs: 2,
       size: 2,
       entries: [entry('ok', 'ok.c', 2)],
+      includes: [],
     }
     await appendSnapshotDelta(deltaPath, record)
     assert.deepEqual(await readSnapshotDeltas(deltaPath), [record])
@@ -267,6 +272,7 @@ test('snapshot delta: concurrent first appends are serialized', async () => {
       mtimeMs: index,
       size: index + 1,
       entries: [entry(`sym${index}`, `f${index}.c`, index + 1)],
+      includes: [],
     }))
     await Promise.all(records.map((record) => appendSnapshotDelta(deltaPath, record)))
     assert.deepEqual(await readSnapshotDeltas(deltaPath), records)
@@ -285,6 +291,7 @@ test('snapshot delta: flush waits for in-flight appends and leaves the lock map 
       mtimeMs: index + 0.5,
       size: index + 1,
       entries: [entry(`flushSym${index}`, `flush${index}.c`, index + 1)],
+      includes: [],
     }))
     // 不 await：全部在途，flush 必须等到它们全部落盘。
     for (const record of records) void appendSnapshotDelta(deltaPath, record)
@@ -383,6 +390,7 @@ test('snapshot delta: append over a populated delta keeps all records decodable'
       mtimeMs: index + 0.5,
       size: index,
       entries: [entry(`sym${index}`, `f${index}.c`, index)],
+      includes: [],
     }))
     for (let index = 0; index < records.length; index++) {
       const result = await appendSnapshotDeltaDetailed(deltaPath, records[index]!)

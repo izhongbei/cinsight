@@ -19,10 +19,23 @@ export interface SnapshotDeltaSetRecord {
   /** 文件内容哈希（v2 起可选；缺失按 {0,0} 读） */
   readonly contentHashLo?: number
   readonly contentHashHi?: number
-  /** 已解析到索引内的 include 目标路径（v2 起可选；缺失 = 未知，不改动 base 边） */
+  /**
+   * 该文件当前的 include 目标路径（**v2 记录里是权威值**）：
+   * - `[]` = 解析后没有任何 include：回放时必须清空该文件的 base 边；
+   * - 非空 = 完整替换该文件的 base 边；
+   * - 字段缺失只可能来自 **v1 记录**（v1 布局没有 include 信息，回放时不得改动 base 边）。
+   *
+   * v2 编码总是写 includeCount，因此从 v2 字节解码出的 set 记录一定带该字段（可能是空数组）。
+   */
   readonly includes?: readonly string[]
 }
 
+/**
+ * 一条 delta 记录。
+ *
+ * `includes` 的空数组与缺失语义不同：空数组是 v2 的权威「没有 include」；缺失只表示
+ * v1 记录「include 信息未知」，回放时保留 base 边。详见 `SnapshotDeltaSetRecord.includes`。
+ */
 export type SnapshotDeltaRecord =
   | SnapshotDeltaSetRecord
   | { readonly kind: 'remove'; readonly path: string }
@@ -278,6 +291,24 @@ function parseSnapshotDeltaBuffer(buffer: Buffer): { records: SnapshotDeltaRecor
   return { records, end }
 }
 
+/**
+ * 读取「u32 长度前缀 + utf8 正文」的内联字符串，并校验正文区间落在缓冲区范围内。
+ * 越界返回 undefined：调用方丢弃该记录及其后的尾部（与撕裂记录同一策略）。
+ *
+ * v2 delta 的 condition 与 include 路径都是内联字符串（没有字符串表 / id 引用），
+ * 因此这里的「引用」校验就是长度前缀指向的字节区间必须在 buffer 内。
+ */
+function readBoundedString(
+  buffer: Buffer,
+  offset: number,
+): { readonly value: string; readonly end: number } | undefined {
+  if (offset + 4 > buffer.length) return undefined
+  const length = buffer.readUInt32LE(offset)
+  const start = offset + 4
+  if (length > buffer.length - start) return undefined
+  return { value: buffer.toString('utf8', start, start + length), end: start + length }
+}
+
 /** 解析一条 set 记录体；结构不完整返回 undefined（调用方保留已解析记录）。 */
 function parseSetRecordBody(
   buffer: Buffer,
@@ -318,12 +349,10 @@ function parseSetRecordBody(
     offset += 1
     let condition: string | undefined
     if (layout.entryCondition) {
-      if (offset + 4 > buffer.length) return undefined
-      const conditionLength = buffer.readUInt32LE(offset)
-      offset += 4
-      if (offset + conditionLength > buffer.length) return undefined
-      if (conditionLength > 0) condition = buffer.toString('utf8', offset, offset + conditionLength)
-      offset += conditionLength
+      const parsedCondition = readBoundedString(buffer, offset)
+      if (!parsedCondition) return undefined
+      if (parsedCondition.value.length > 0) condition = parsedCondition.value
+      offset = parsedCondition.end
     }
     entries.push({
       name,
@@ -340,14 +369,14 @@ function parseSetRecordBody(
     if (offset + 4 > buffer.length) return undefined
     const includeCount = buffer.readUInt32LE(offset)
     offset += 4
-    if (includeCount > 0) includes = []
+    // v2：includeCount 是权威信息，0 也要 materialize 成 []（「该文件现在没有 include」），
+    // 否则回放时无法区分「没有 include」与 v1 的「include 未知」。
+    includes = []
     for (let index = 0; index < includeCount; index++) {
-      if (offset + 4 > buffer.length) return undefined
-      const includeLength = buffer.readUInt32LE(offset)
-      offset += 4
-      if (offset + includeLength > buffer.length) return undefined
-      includes!.push(buffer.toString('utf8', offset, offset + includeLength))
-      offset += includeLength
+      const parsedInclude = readBoundedString(buffer, offset)
+      if (!parsedInclude) return undefined
+      includes.push(parsedInclude.value)
+      offset = parsedInclude.end
     }
   }
   const record: SnapshotDeltaSetRecord = {
@@ -360,7 +389,8 @@ function parseSetRecordBody(
     ...(contentHashLo !== undefined && (contentHashLo !== 0 || contentHashHi !== 0)
       ? { contentHashLo, contentHashHi }
       : {}),
-    ...(includes !== undefined && includes.length > 0 ? { includes } : {}),
+    // v2 空 includeCount -> includes: []（权威）；v1 没有 include 信息 -> 字段缺失
+    ...(includes !== undefined ? { includes } : {}),
   }
   return { record, end: offset }
 }
