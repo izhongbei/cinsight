@@ -11,6 +11,7 @@
   "command.showCallees.title": "显示被调用者",
   "command.clearCache.title": "清除索引缓存",
   "command.openSymbolAt.title": "打开符号",
+  "command.showIndexDiagnostics.title": "索引诊断",
   "config.title": "Source Insight C",
   "config.indexRoots": "需要递归索引的目录（相对 workspace 根）。为空时不建立任何索引，需先执行 **Source Insight: 配置索引目录**。",
   "config.exclude": "索引时排除的 glob 模式。支持 `*`（单层）、`**`（任意层）、`?`（单字符）。",

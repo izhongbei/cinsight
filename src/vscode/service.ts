@@ -51,6 +51,7 @@ import {
   type CallerHit,
   type FileRecord,
   type IndexProgress,
+  type SymbolKind,
   type SymbolTable,
   type NameIndexData,
   type ReadFileFn,
@@ -209,6 +210,35 @@ export class SymbolService implements vscode.Disposable {
 
   get fileCount(): number {
     return this.snapshotValue?.files.length ?? 0
+  }
+
+  /** 引用索引文件路径（symbols.names）；无存储目录时为 undefined。 */
+  get nameIndexPath(): string | undefined {
+    return this.nameIndexPathValue
+  }
+
+  /** 引用索引是否已惰性加载进内存。 */
+  get nameIndexLoaded(): boolean {
+    return this.nameIndexLoadedValue
+  }
+
+  /** overlay 中尚未合并进 base 的文件变更数。 */
+  get pendingChanges(): number {
+    return this.mutableValue?.pendingChanges ?? 0
+  }
+
+  /** 当前快照 delta 文件字节数（诊断用，不触发写盘）。 */
+  async deltaBytes(): Promise<number> {
+    return this.snapshotPathValue ? snapshotDeltaBytes(snapshotDeltaPath(this.snapshotPathValue)) : 0
+  }
+
+  /** 按符号类型统计条目数（诊断用；仅遍历一次列式存储）。 */
+  kindCounts(): Record<SymbolKind, number> {
+    const counts: Record<SymbolKind, number> = {
+      function: 0, declaration: 0, macro: 0, struct: 0, union: 0, enum: 0, typedef: 0,
+    }
+    this.snapshotValue?.forEachEntry((entry) => { counts[entry.kind] += 1 })
+    return counts
   }
 
   get builtAt(): number | undefined {

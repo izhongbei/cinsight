@@ -10,11 +10,14 @@
  *   si.showCallees     当前函数调用的所有被调用者（QuickPick 跳转）
  *   si.openSymbolAt    内部：按 (file, line, column) 打开位置（树/QuickPick 使用）
  *   si.clearCache      清空内存索引 + 删除符号快照
+ *   si.showIndexDiagnostics  在 Markdown 编辑器里展示索引诊断报告
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 
+import { renderDiagnosticsMarkdown } from '../core/diagnostics'
+import { DEFAULT_INDEX_BUDGET, evaluateBudget } from '../core/index-budget'
 import { suppressRebuildPrompt } from './config'
 import { sourceFileOf } from './providers/definition'
 import { showCallGraph } from './views/call-graph-panel'
@@ -40,6 +43,7 @@ export const COMMAND_IDS = [
   'si.showCallees',
   'si.openSymbolAt',
   'si.clearCache',
+  'si.showIndexDiagnostics',
 ] as const
 
 const REBUILD_LABEL = vscode.l10n.t('Rebuild')
@@ -81,6 +85,9 @@ export function registerCommands(
   add('si.showCallees', async () => showCallees(service))
   add('si.openSymbolAt', async (...args: unknown[]) => openSymbolAt(service, ...args))
   add('si.clearCache', async () => clearCache(service))
+  add('si.showIndexDiagnostics', async () => {
+    await showIndexDiagnostics(service)
+  })
 
   return {
     dispose: (): void => {
@@ -464,4 +471,46 @@ async function clearCache(service: SymbolService): Promise<void> {
   }
   await service.clearCache()
   await showInformationMessage(vscode.l10n.t('Code Insight index cache cleared.'))
+}
+
+// ---- si.showIndexDiagnostics ----
+
+/** 把索引状态渲染成 Markdown 并在只读预览编辑器中打开（不写盘、不改索引）。 */
+async function showIndexDiagnostics(service: SymbolService): Promise<void> {
+  const budgetReport =
+    service.budgetReport ??
+    evaluateBudget({ symbols: service.entryCount, files: service.fileCount, budget: DEFAULT_INDEX_BUDGET })
+  const content = renderDiagnosticsMarkdown({
+    extensionVersion: extensionVersion(),
+    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    roots: service.configuredRoots,
+    snapshotPath: service.snapshotPath,
+    snapshotBytes: service.lastSummary?.snapshotBytes ?? 0,
+    deltaBytes: await service.deltaBytes(),
+    nameIndexPath: service.nameIndexPath,
+    nameIndexBytes: service.lastSummary?.nameIndexBytes ?? 0,
+    nameIndexLoaded: service.nameIndexLoaded,
+    entryCount: service.entryCount,
+    fileCount: service.fileCount,
+    builtAt: service.builtAt,
+    pendingChanges: service.pendingChanges,
+    kindCounts: service.kindCounts(),
+    lastBuild: service.lastSummary,
+    lastError: service.lastError,
+    heapUsedBytes: process.memoryUsage().heapUsed,
+    rssBytes: process.memoryUsage().rss,
+    budget: budgetReport,
+  })
+  const document = await vscode.workspace.openTextDocument({ content, language: 'markdown' })
+  await vscode.window.showTextDocument(document, { preview: false })
+}
+
+/** 扩展版本：取 package.json 的 version（mock 环境 / 未安装时退化为 unknown）。 */
+function extensionVersion(): string {
+  try {
+    const version = vscode.extensions.getExtension('cinsight.code-insight')?.packageJSON?.version
+    return typeof version === 'string' && version ? version : 'unknown'
+  } catch {
+    return 'unknown'
+  }
 }

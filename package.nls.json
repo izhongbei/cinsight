@@ -11,6 +11,7 @@
   "command.showCallees.title": "Show Callees",
   "command.clearCache.title": "Clear Index Cache",
   "command.openSymbolAt.title": "Open Symbol",
+  "command.showIndexDiagnostics.title": "Show Index Diagnostics",
   "config.title": "Source Insight C",
   "config.indexRoots": "Directories (workspace-relative) to index recursively. Empty means nothing is indexed until you run **Source Insight: Configure Index Roots**.",
   "config.exclude": "Glob patterns excluded from indexing. Supported syntax: `*` (within a path segment), `**` (any depth), `?` (single character).",

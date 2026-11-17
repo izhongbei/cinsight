@@ -81,6 +81,11 @@
         "command": "si.openSymbolAt",
         "title": "%command.openSymbolAt.title%",
         "category": "%command.category%"
+      },
+      {
+        "command": "si.showIndexDiagnostics",
+        "title": "%command.showIndexDiagnostics.title%",
+        "category": "%command.category%"
       }
     ],
     "configuration": {
