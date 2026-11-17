@@ -4,6 +4,8 @@
  *  - extension.js 可加载、activate 不抛异常
  *  - 所有 package.json 声明的命令都被注册
  *  - 语言 Provider 注册数量符合预期
+ *  - 预算状态栏（warn/exceeded 颜色）与 exceeded 一次性提示（含按钮动作）
+ *  - autoCompact=false 时 flush/dispose 只保证 delta 落盘、不写 base
  *  - deactivate() 不抛异常
  *
  * 本机没有 VS Code CLI，因此这是唯一的自动化"扩展宿主"验收。
@@ -22,7 +24,20 @@ const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf
 // ---------------------------------------------------------------------------
 // 最小 vscode mock
 // ---------------------------------------------------------------------------
-const registrations = { commands: [], providers: [], treeViews: [], statusBar: 0 }
+const registrations = {
+  commands: [],
+  providers: [],
+  treeViews: [],
+  statusBar: 0,
+  /** 创建过的状态栏 item（status.ts 会直接改这些字段，用来断言颜色/图标） */
+  statusBarItems: [],
+  /** vscode.window.showWarningMessage 调用记录 */
+  warnings: [],
+  /** vscode.commands.executeCommand 调用记录 */
+  executedCommands: [],
+  /** showWarningMessage 的返回值（模拟用户点击按钮） */
+  warningChoice: undefined,
+}
 const disposables = []
 
 function disposable(label) {
@@ -281,7 +296,14 @@ function getConfiguration(section) {
   const prefix = section ? section + '.' : ''
   const get = (key, fallback) => {
     const full = prefix + key
-    return full in configurationValues ? configurationValues[full] : fallback
+    // configurationValues 用短键（maxSymbols 等）；同时容忍完整键，模拟真实
+    // getConfiguration(section).get('maxSymbols') / getConfiguration().get('sourceInsight.maxSymbols')
+    const short = full.startsWith('sourceInsight.')
+      ? full.slice('sourceInsight.'.length)
+      : full
+    if (full in configurationValues) return configurationValues[full]
+    if (short in configurationValues) return configurationValues[short]
+    return fallback
   }
   return {
     get,
@@ -375,7 +397,10 @@ const vscode = {
       registrations.commands.push([id, handler])
       return disposable('textEditorCommand:' + id)
     },
-    executeCommand: async () => undefined,
+    executeCommand: async (command, ...args) => {
+      registrations.executedCommands.push([command, ...args])
+      return undefined
+    },
     getCommands: async () => registrations.commands.map(([id]) => id),
   },
   window: {
@@ -394,9 +419,17 @@ const vscode = {
     },
     createStatusBarItem: () => {
       registrations.statusBar += 1
-      return {
-        text: '', tooltip: undefined, command: undefined, show() {}, hide() {}, dispose() {},
+      const item = {
+        text: '',
+        tooltip: undefined,
+        command: undefined,
+        backgroundColor: undefined,
+        show() {},
+        hide() {},
+        dispose() {},
       }
+      registrations.statusBarItems.push(item)
+      return item
     },
     createOutputChannel: (name) => {
       const channel = {
@@ -421,7 +454,10 @@ const vscode = {
     },
     withProgress: async (_options, task) => task({ report: () => {} }, { isCancellationRequested: false }),
     showInformationMessage: async () => undefined,
-    showWarningMessage: async () => undefined,
+    showWarningMessage: async (message, ...items) => {
+      registrations.warnings.push({ message, items })
+      return registrations.warningChoice
+    },
     showErrorMessage: async () => undefined,
     showQuickPick: async (items) => (Array.isArray(items) ? items[0] : undefined),
     showInputBox: async () => undefined,
@@ -558,6 +594,150 @@ const context = {
   extension: { id: 'cinsight.code-insight', packageJSON: pkg },
 }
 
+const smokeLogger = { info() {}, warn() {}, error() {} }
+
+function lastStatusItem() {
+  return registrations.statusBarItems[registrations.statusBarItems.length - 1]
+}
+
+function tooltipText(item) {
+  return item.tooltip && typeof item.tooltip === 'object' ? item.tooltip.value : String(item.tooltip)
+}
+
+/**
+ * 预算状态栏 + exceeded 一次性提示。
+ * 用真实 SymbolService 模拟「已加载大快照」：直接换掉 snapshotValue，
+ * 让 budgetReport getter 按新的符号数重算（内部会触发一次性提示）。
+ */
+async function checkBudgetUi() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+  const { createStatusBar } = require(path.join(dist, 'src/vscode/status.js'))
+
+  const previousRoots = configurationValues.indexRoots
+  configurationValues.indexRoots = ['src']
+  registrations.warningChoice = 'Reconfigure Index Roots'
+  const warningBaseline = registrations.warnings.length
+  const commandBaseline = registrations.executedCommands.length
+  const service = await SymbolService.create(undefined, smokeLogger)
+  service.snapshotValue = {
+    entryCount: 2_500_000,
+    files: [],
+    builtAt: Date.now(),
+    roots: ['src'],
+  }
+  try {
+    const controller = createStatusBar(service)
+    const item = lastStatusItem()
+
+    // warn：warning 图标 + warning 背景色，且不弹提示
+    assert.match(item.text, /^\$\(warning\) /, 'warn status uses $(warning) icon')
+    assert.equal(item.backgroundColor?.id, 'statusBarItem.warningBackground')
+    assert.match(tooltipText(item), /Index is large/)
+    assert.equal(registrations.warnings.length - warningBaseline, 0, 'warn must not prompt')
+
+    // exceeded：error 图标 + error 背景色 + 恰好一次提示（带按钮）
+    service.snapshotValue.entryCount = 6_000_000
+    controller.update()
+    assert.match(item.text, /^\$\(error\) /, 'exceeded status uses $(error) icon')
+    assert.equal(item.backgroundColor?.id, 'statusBarItem.errorBackground')
+    assert.equal(registrations.warnings.length - warningBaseline, 1, 'exceeded prompts exactly once')
+    const warning = registrations.warnings[warningBaseline]
+    assert.ok(warning.items.includes('Reconfigure Index Roots'), 'prompt has reconfigure button')
+    assert.match(warning.message, /hard maximum 5,000,000/, 'prompt carries budget message')
+
+    // 再次 update（同一轮 exceeded）不应重复提示
+    controller.update()
+    assert.equal(registrations.warnings.length - warningBaseline, 1, 'no duplicate prompt')
+
+    // 点击按钮 -> 执行 si.configureRoots（非阻塞）
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.ok(
+      registrations.executedCommands
+        .slice(commandBaseline)
+        .some(([id]) => id === 'si.configureRoots'),
+      'reconfigure button executes si.configureRoots',
+    )
+
+    // 回到 ok：恢复普通图标 + 无背景色，并重置一次性标记
+    service.snapshotValue.entryCount = 100
+    controller.update()
+    assert.match(item.text, /^\$\(symbol-function\) /, 'ok status restores normal icon')
+    assert.equal(item.backgroundColor, undefined, 'ok status clears background color')
+
+    // 再次 exceeded：重置后应再次提示
+    service.snapshotValue.entryCount = 6_000_000
+    controller.update()
+    assert.equal(
+      registrations.warnings.length - warningBaseline,
+      2,
+      'prompt resets after returning to ok',
+    )
+
+    controller.dispose()
+  } finally {
+    configurationValues.indexRoots = previousRoots
+    registrations.warningChoice = undefined
+    service.dispose()
+  }
+}
+
+/**
+ * autoCompact=false：flush 只 await 已排队的 delta 追加，不写 base。
+ * 模拟 service 状态并替换 compactNow/compactNameIndexIfNeeded 计数。
+ */
+async function checkAutoCompactFlush() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+
+  const previousAutoCompact = configurationValues.autoCompact
+  const testDir = path.join(storagePath, 'auto-compact-flush')
+  const snapshotPath = path.join(testDir, 'symbols.sidx')
+  fs.rmSync(testDir, { recursive: true, force: true })
+  configurationValues.autoCompact = false
+
+  const service = await SymbolService.create(undefined, smokeLogger)
+  service.snapshotPathValue = snapshotPath
+  service.mutableValue = { pendingChanges: 3 }
+  let appendAwaited = false
+  let compactCalls = 0
+  let nameCompactCalls = 0
+  service.appendChain = Promise.resolve().then(() => {
+    appendAwaited = true
+  })
+  service.compactNow = async () => {
+    compactCalls += 1
+  }
+  service.compactNameIndexIfNeeded = async () => {
+    nameCompactCalls += 1
+  }
+
+  try {
+    await service.flush()
+    assert.equal(appendAwaited, true, 'flush awaits pending delta appends')
+    assert.equal(compactCalls, 0, 'autoCompact=false flush must not compact')
+    assert.equal(nameCompactCalls, 0, 'autoCompact=false flush must not compact name index')
+    assert.equal(fs.existsSync(snapshotPath), false, 'flush must not write a base')
+
+    // autoCompact=true：显式 flush 仍然 compaction
+    configurationValues.autoCompact = true
+    await service.flush()
+    assert.equal(compactCalls, 1, 'autoCompact=true flush compacts')
+    assert.equal(nameCompactCalls, 1, 'autoCompact=true flush compacts name index')
+
+    // dispose 同样受 autoCompact 门控：关闭后不再 compaction
+    configurationValues.autoCompact = false
+    service.mutableValue = { pendingChanges: 1 }
+    service.dispose()
+    assert.equal(compactCalls, 1, 'dispose must not compact when autoCompact=false')
+  } finally {
+    configurationValues.autoCompact = previousAutoCompact
+    service.mutableValue = undefined
+    service.dispose()
+    fs.rmSync(testDir, { recursive: true, force: true })
+  }
+}
+
 async function main() {
   const extension = require(path.join(EXT_ROOT, 'dist/src/vscode/extension.js'))
   assert.equal(typeof extension.activate, 'function', 'extension.activate must be a function')
@@ -582,6 +762,9 @@ async function main() {
   assert.ok(registrations.treeViews.some(([id]) => id === 'si.symbols'), 'si.symbols tree view')
   assert.ok(registrations.statusBar >= 1, 'status bar item')
 
+  await checkBudgetUi()
+  await checkAutoCompactFlush()
+
   await extension.deactivate()
   for (const item of context.subscriptions) {
     // VS Code 会自动 dispose；这里只验证它们可被 dispose
@@ -595,6 +778,8 @@ async function main() {
   console.log('  status bar items:', registrations.statusBar)
   console.log('  output channels:', outputChannels.map((c) => c.name).join(', '))
   console.log('  subscriptions:', context.subscriptions.length)
+  console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
+  console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
 }
 
 main()

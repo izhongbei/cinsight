@@ -40,7 +40,10 @@ export interface SiConfig {
   readonly maxSymbols: number
   /** 文件数预算：超过时状态栏警告并提示缩小索引目录 */
   readonly maxFiles: number
-  /** 空闲/关闭时自动 compaction */
+  /**
+   * 自动 compaction：空闲 / 累计变更较多 / 关闭时把 delta 合并回 base。
+   * 关闭后仍逐次追加 delta（不丢数据），但不自动合并；显式重建索引不受影响。
+   */
   readonly autoCompact: boolean
   readonly searchLimit: number
   readonly autoReindexOnSave: boolean

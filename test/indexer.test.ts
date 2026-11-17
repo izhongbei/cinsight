@@ -311,6 +311,38 @@ test('indexer: concurrency 1 and concurrency 4 produce identical results', async
   }
 })
 
+test('indexer: concurrency downgrade uses actual walked file count', async () => {
+  const dir = makeTree()
+  try {
+    // 实际 2 文件 > 阈值 0 -> 降级到 1（首次构建，没有 previous 也能生效）
+    const downgraded = await buildIndex({
+      ...makeOptions(dir),
+      concurrency: 4,
+      concurrencyDowngrade: { files: 0, concurrency: 1 },
+    })
+    assert.equal(downgraded.summary.concurrency, 1)
+
+    // 实际 2 文件 <= 阈值 100 -> 保持配置的 4
+    const kept = await buildIndex({
+      ...makeOptions(dir),
+      concurrency: 4,
+      concurrencyDowngrade: { files: 100, concurrency: 1 },
+    })
+    assert.equal(kept.summary.concurrency, 4)
+
+    // concurrencyCap 先应用，再与实际文件数降级取更小值
+    const both = await buildIndex({
+      ...makeOptions(dir),
+      concurrency: 4,
+      concurrencyCap: 3,
+      concurrencyDowngrade: { files: 0, concurrency: 2 },
+    })
+    assert.equal(both.summary.concurrency, 2)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('indexer: unreadable file is skipped and build still succeeds', async () => {
   const dir = makeTree()
   try {

@@ -232,7 +232,7 @@ export async function buildIndex(
     readFile,
   } = options
   const cap = options.concurrencyCap ?? Number.POSITIVE_INFINITY
-  const concurrency = normalizeConcurrency(Math.min(options.concurrency, cap))
+  const configuredConcurrency = normalizeConcurrency(Math.min(options.concurrency, cap))
 
   throwIfAborted(signal)
   const files = await walkFiles({
@@ -245,6 +245,15 @@ export async function buildIndex(
     onProgress,
   })
   throwIfAborted(signal)
+
+  // 大工程自动降并发：以本次实际 walk 到的文件数为准（首次构建 / 清缓存后同样生效，
+  // 不再依赖「上一轮文件数」这类外部状态）。concurrencyCap 已在上面的 configuredConcurrency
+  // 中先应用，这里按实际文件数再取更小值。
+  const downgrade = options.concurrencyDowngrade
+  const concurrency =
+    downgrade && files.length > downgrade.files
+      ? normalizeConcurrency(Math.min(configuredConcurrency, downgrade.concurrency))
+      : configuredConcurrency
 
   // 旧快照按文件建索引（版本不符视为没有旧快照）
   const previousFiles = new Map<string, FileRecord>()
@@ -392,6 +401,7 @@ export async function buildIndex(
     skipped: skipped.size,
     durationMs: Date.now() - startedAt,
     snapshotBytes,
+    concurrency,
     nameIndexBytes,
   }
   return { snapshot, summary }

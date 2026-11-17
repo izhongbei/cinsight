@@ -69,7 +69,13 @@ import {
   normalizeRoot,
   relativePath,
 } from './paths'
-import { isAbortError, withProgress, type ProgressLike } from './util'
+import {
+  executeCommand,
+  isAbortError,
+  showWarningMessage,
+  withProgress,
+  type ProgressLike,
+} from './util'
 
 const SNAPSHOT_FILE_NAME = 'symbols.sidx'
 const NAME_INDEX_FILE_NAME = 'symbols.names'
@@ -82,6 +88,11 @@ const SNAPSHOT_COMPACT_CHANGES = 500
 const SNAPSHOT_IDLE_COMPACT_MS = 60_000
 const SIGNATURE_CACHE_CHAR_BUDGET = 8 * 1024 * 1024
 const MAX_TRACKED_CACHE_FILES = 256
+/**
+ * 大工程按实际文件数自动降并发：walk 到超过 80k 文件时并发最多 2。
+ * 这是默认值，service 传给 `buildIndex` 的 `concurrencyDowngrade`。
+ */
+const CONCURRENCY_DOWNGRADE = { files: 80_000, concurrency: 2 } as const
 
 export class SymbolService implements vscode.Disposable {
   /** 索引首次构建完成 / 增量更新 / 清缓存后触发（树、状态栏、调用层次依赖它刷新）。 */
@@ -127,6 +138,8 @@ export class SymbolService implements vscode.Disposable {
   private budgetReportValue: BudgetReport | undefined
   /** 预算报告的评估输入签名：符号/文件数或阈值变化时 getter 重新评估，避免状态栏读到过期阈值 */
   private budgetReportKey: string | undefined
+  /** `exceeded` 一次性提示标记：每次「进入 exceeded」只弹一次，回到 ok / 清缓存后重置 */
+  private budgetPromptedValue = false
   private lastErrorValue: string | undefined
   private progressValue: IndexProgress | undefined
   private buildingValue = false
@@ -527,22 +540,14 @@ export class SymbolService implements vscode.Disposable {
         let lastDone = 0
         try {
           await this.ensureStorageDir()
-          // 上一轮索引超过 80k 文件时把并发降到 2，压低 build 峰值内存。
-          // 不能只看 lastSummary：增量编辑会清空它、重启后也不存在，需回退到当前快照。
-          const priorFileCount = this.lastSummaryValue?.files ?? this.snapshotValue?.fileCount ?? 0
-          const concurrencyCap = priorFileCount > 80_000 ? 2 : undefined
-          if (concurrencyCap !== undefined) {
-            this.logger.info(
-              `large index (${priorFileCount} files); build concurrency capped at ${concurrencyCap}`,
-            )
-          }
           const options: BuildOptions & { readFile: ReadFileFn } = {
             workspaceRoot,
             roots,
             exclude: config.exclude,
             maxFileSizeKB: config.maxFileSizeKB,
             concurrency: config.concurrency,
-            concurrencyCap,
+            // 按 walkFiles 的实际文件数降并发（首次构建/清缓存后也生效；summary 回填实际值）
+            concurrencyDowngrade: CONCURRENCY_DOWNGRADE,
             followSymlinks: config.followSymlinks,
             previous: this.snapshotValue,
             snapshotPath: this.snapshotPathValue,
@@ -612,8 +617,15 @@ export class SymbolService implements vscode.Disposable {
         this.logger.info(
           `index ready: files=${summary.files} entries=${summary.entries} added=${summary.added} ` +
             `updated=${summary.updated} removed=${summary.removed} skipped=${summary.skipped} ` +
+            `concurrency=${summary.concurrency ?? '?'} ` +
             `duration=${summary.durationMs}ms bytes=${summary.snapshotBytes}`,
         )
+        if (summary.concurrency !== undefined && summary.concurrency < config.concurrency) {
+          this.logger.info(
+            `build concurrency downgraded: ${config.concurrency} -> ${summary.concurrency} ` +
+              `(actual files=${summary.files})`,
+          )
+        }
         this.changeEmitter.fire()
       }
       return summary
@@ -702,7 +714,36 @@ export class SymbolService implements vscode.Disposable {
     if (log && report.level !== 'ok') {
       this.logger.warn(`index budget ${report.level}: ${report.message ?? ''}`)
     }
+    this.maybePromptExceededBudget(report)
     return report
+  }
+
+  /**
+   * `exceeded` 一次性提示：每次进入 exceeded 只弹一次（非阻塞），按钮动作执行
+   * `si.configureRoots`；`warn` 不弹（只由状态栏 tooltip / 背景色提示）。
+   * 回到 `ok` 或 clearCache 时重置，允许下一次重新提示。
+   */
+  private maybePromptExceededBudget(report: BudgetReport): void {
+    if (report.level === 'ok') {
+      this.budgetPromptedValue = false
+      return
+    }
+    if (report.level !== 'exceeded' || this.budgetPromptedValue || this.disposed) {
+      return
+    }
+    this.budgetPromptedValue = true
+    const label = vscode.l10n.t('Reconfigure Index Roots')
+    const message = report.message ?? vscode.l10n.t('The Code Insight index exceeds its size budget.')
+    void showWarningMessage(message, label)
+      .then((answer) => {
+        if (answer === label) {
+          return executeCommand('si.configureRoots')
+        }
+        return undefined
+      })
+      .catch((error) => {
+        this.logger.warn('budget warning prompt failed', error)
+      })
   }
 
   /** 预算评估输入签名（符号数/文件数 + 可配置阈值）。 */
@@ -999,7 +1040,7 @@ export class SymbolService implements vscode.Disposable {
   private async scheduleCompaction(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath || this.disposed || this.compacting) return
-    // 自动 compaction 可关闭：delta 仍逐次追加落盘（不丢数据），只在 flush/关闭时合并。
+    // autoCompact=false：停止所有自动 compaction（空闲/累计变更），delta 仍逐次 append 落盘。
     if (!readConfig().autoCompact) return
     try {
       const index = this.mutableValue
@@ -1020,8 +1061,12 @@ export class SymbolService implements vscode.Disposable {
   private armIdleCompaction(): void {
     if (this.compactTimer) clearTimeout(this.compactTimer)
     if (!this.snapshotPathValue) return
+    // autoCompact 关闭时不再排空闲合并（delta 继续逐次 append，不丢数据）。
+    if (!readConfig().autoCompact) return
     this.compactTimer = setTimeout(() => {
       this.compactTimer = undefined
+      // 定时器可能是在 autoCompact=true 时排下的：触发时重新读配置，关闭则跳过。
+      if (!readConfig().autoCompact) return
       void this.compactNow()
     }, SNAPSHOT_IDLE_COMPACT_MS)
     try {
@@ -1238,16 +1283,24 @@ export class SymbolService implements vscode.Disposable {
     this.deferredDuringCompaction = []
   }
 
-  /** deactivate 前把 overlay 合并回 base（顺带清空 delta），并把引用索引 delta 合并回 base。 */
+  /**
+   * deactivate 前把 overlay 合并回 base（顺带清空 delta），并把引用索引 delta 合并回 base。
+   *
+   * `sourceInsight.autoCompact=false` 时只等待已排队的 delta 追加落盘（不丢数据），
+   * 不发起新的快照/引用索引 compaction（合并留给用户重新启用后或显式重建）。
+   */
   async flush(): Promise<void> {
     if (this.compactTimer) {
       clearTimeout(this.compactTimer)
       this.compactTimer = undefined
     }
     await this.appendChain
-    // 先等在途 compaction：否则 compactNow 会复用它的 promise 而不是发起一次新的，
-    // 导致 flush 返回时 delta 仍可能没合并进 base。
+    // 先等在途 compaction：否则 flush 返回时仍可能有写盘在途（与 autoCompact 无关）。
     await this.compactPromise
+    if (!readConfig().autoCompact) {
+      this.logger.info('autoCompact disabled; delta appended, snapshot compaction skipped')
+      return
+    }
     await this.compactNow()
     await this.compactNameIndexIfNeeded(true)
   }
@@ -1264,6 +1317,7 @@ export class SymbolService implements vscode.Disposable {
     this.lastSummaryValue = undefined
     this.budgetReportValue = undefined
     this.budgetReportKey = undefined
+    this.budgetPromptedValue = false
     this.lastErrorValue = undefined
     this.progressValue = undefined
     this.textCache.clear()
@@ -1442,7 +1496,8 @@ export class SymbolService implements vscode.Disposable {
       this.compactTimer = undefined
     }
     // deactivate 已先 await flush()；这里只对尚未合并的变更做尽力而为的落盘（不检查 disposed）。
-    if (this.mutableValue && this.mutableValue.pendingChanges > 0) {
+    // autoCompact=false 时关闭路径同样不合并 base：delta 已由 appendChain 追加落盘。
+    if (this.mutableValue && this.mutableValue.pendingChanges > 0 && readConfig().autoCompact) {
       void this.compactNow()
     }
     for (const disposable of this.disposables) {

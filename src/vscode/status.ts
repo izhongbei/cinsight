@@ -2,7 +2,8 @@
  * 状态栏：`$(symbol-function) 123,456 symbols` / `$(sync~spin) Indexing 45%` / 未配置。
  *
  * 点击行为：未配置 -> si.configureRoots；其余 -> si.rebuildIndex。
- * 大仓库保护：service.budgetReport.level === 'exceeded' 时用警告色，并展示预算提示与建议。
+ * 大仓库保护：service.budgetReport.level !== 'ok' 时展示预算提示与建议；
+ * `warn` 用 warning 图标/背景色，`exceeded` 用 error 图标/背景色，`ok` 还原。
  */
 import * as vscode from 'vscode'
 
@@ -85,11 +86,15 @@ export class StatusBarController implements vscode.Disposable {
         const symbols = service.entryCount
         const files = service.fileCount
         const report = service.budgetReport
-        const tooManySymbols = report?.level === 'exceeded'
+        const level = report?.level ?? 'ok'
+        const exceeded = level === 'exceeded'
+        const warned = level === 'warn'
         const formatted = formatNumber(symbols)
-        this.item.text = tooManySymbols
-          ? vscode.l10n.t('$(warning) {0} symbols', formatted)
-          : vscode.l10n.t('$(symbol-function) {0} symbols', formatted)
+        this.item.text = exceeded
+          ? vscode.l10n.t('$(error) {0} symbols', formatted)
+          : warned
+            ? vscode.l10n.t('$(warning) {0} symbols', formatted)
+            : vscode.l10n.t('$(symbol-function) {0} symbols', formatted)
         const lines: string[] = [
           vscode.l10n.t('Files: {0}', formatNumber(files)),
           vscode.l10n.t('Symbols: {0}', formatted),
@@ -111,30 +116,26 @@ export class StatusBarController implements vscode.Disposable {
         lines.push(vscode.l10n.t('Click to rebuild the index.'))
         this.item.tooltip = markdown(lines.join('\n\n'))
         this.item.command = 'si.rebuildIndex'
-        this.item.backgroundColor = undefined
-        if (tooManySymbols) {
-          try {
-            const themeColor = vscode.ThemeColor as unknown as
-              | (new (id: string) => vscode.ThemeColor)
-              | undefined
-            if (typeof themeColor === 'function') {
-              this.item.backgroundColor = new themeColor('statusBarItem.warningBackground')
-            }
-          } catch {
-            // 主题色不可用时忽略
-          }
-        }
+        // 预算等级 -> 背景色：warn = warning，exceeded = error，ok = 还原。
+        this.item.backgroundColor =
+          exceeded || warned
+            ? themeColor(
+                exceeded ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground',
+              )
+            : undefined
         return
       }
       if (service.lastError) {
         this.item.text = vscode.l10n.t('$(error) Index failed')
         this.item.tooltip = markdown(service.lastError)
         this.item.command = 'si.rebuildIndex'
+        this.item.backgroundColor = undefined
         return
       }
       this.item.text = vscode.l10n.t('$(sync) Index not built')
       this.item.tooltip = markdown(vscode.l10n.t('Click to build the Code Insight index.'))
       this.item.command = 'si.rebuildIndex'
+      this.item.backgroundColor = undefined
     } catch (error) {
       console.error('[code-insight] status bar update failed', error)
     }
@@ -179,4 +180,19 @@ function markdown(text: string): string | vscode.MarkdownString {
     // ignore
   }
   return text
+}
+
+/** 主题色不可用（mock / 旧宿主）时返回 undefined，避免影响状态栏更新。 */
+function themeColor(id: string): vscode.ThemeColor | undefined {
+  try {
+    const ctor = vscode.ThemeColor as unknown as
+      | (new (colorId: string) => vscode.ThemeColor)
+      | undefined
+    if (typeof ctor === 'function') {
+      return new ctor(id)
+    }
+  } catch {
+    // ignore
+  }
+  return undefined
 }

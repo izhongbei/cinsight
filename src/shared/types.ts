@@ -84,6 +84,15 @@ export interface BuildOptions {
   readonly concurrency: number
   /** 构建并发上限（大工程自动降级用） */
   readonly concurrencyCap?: number
+  /**
+   * 按「实际 walk 到的文件数」自动降并发：文件数 > files 时把并发降到
+   * `min(options.concurrency, 降级并发)`，首次构建 / 清缓存后同样生效。
+   * 与 `concurrencyCap` 同时存在时先应用 cap、再按实际文件数降级（取更小值）。
+   */
+  readonly concurrencyDowngrade?: {
+    readonly files: number
+    readonly concurrency: number
+  }
   readonly followSymlinks: boolean
   readonly previous?: SymbolTable
   /** 提供时 buildIndex 负责把快照写盘并回填 summary.snapshotBytes */
@@ -104,6 +113,11 @@ export interface BuildSummary {
   readonly skipped: number
   readonly durationMs: number
   readonly snapshotBytes: number
+  /**
+   * 本次构建实际生效的并发（`concurrency` 经 `concurrencyCap` 与
+   * `concurrencyDowngrade` 计算后的值；构建日志用）。
+   */
+  readonly concurrency?: number
   /** 引用加速索引写入字节数；未构建时为 0/undefined */
   readonly nameIndexBytes?: number
 }
@@ -154,4 +168,3 @@ export const SYMBOL_KIND_ORDER: Record<SymbolKind, number> = {
   declaration: 5,
   macro: 6,
 }
-export const MAX_SYMBOLS_WARNING = 5_000_000
