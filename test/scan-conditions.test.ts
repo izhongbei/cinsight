@@ -117,3 +117,26 @@ test('scanConditions: #ifndef without #define or not covering the file is not a 
   assert.equal(conditionAt(scanConditions(notFinal), 2), '#ifndef PARTIAL_H')
   assert.equal(conditionAt(scanConditions(notFinal), 4), undefined)
 })
+
+test('scanConditions: strictness limits — #else or a nested conditional before #define is not a guard', () => {
+  // Same-depth #else before the guard macro definition: not a pure file-level guard.
+  const withElse = [
+    '#ifndef FOO_H',
+    '#else',
+    '#define FOO_H',
+    'int foo(void);',
+    '#endif',
+  ].join('\n')
+  assert.equal(conditionAt(scanConditions(withElse), 3), '#ifndef FOO_H')
+
+  // A nested conditional before the same-depth #define: the define is not at guard depth.
+  const withNested = [
+    '#ifndef FOO_H',
+    '#ifdef BAR',
+    '#define FOO_H',
+    'int foo(void);',
+    '#endif',
+    '#endif',
+  ].join('\n')
+  assert.equal(conditionAt(scanConditions(withNested), 3), '#ifndef FOO_H && #ifdef BAR')
+})
