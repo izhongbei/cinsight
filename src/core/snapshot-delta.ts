@@ -26,7 +26,10 @@ export function snapshotDeltaPath(basePath: string): string {
 
 /**
  * 编码一条 delta 记录，返回「头 + 记录体」的自描述块（头为 SIDD + 版本）。
- * 单独 decode 该返回值即可还原记录；append 到已有 delta 文件时只追加记录体。
+ * 单独 decode 该返回值即可还原记录。
+ *
+ * 注意：返回值自带文件头，**不能**直接 append 到非空 delta 文件（会在文件中段插入
+ * 第二个头，使其后记录不可解码）。写文件请一律使用 `appendSnapshotDelta`。
  */
 export function encodeSnapshotDeltaRecord(record: SnapshotDeltaRecord): Buffer {
   const body = encodeSnapshotDeltaBody(record)
@@ -179,8 +182,26 @@ function withSnapshotDeltaAppendLock<T>(deltaPath: string, task: () => Promise<T
   return result
 }
 
+/**
+ * 追加一条 delta 记录，返回本次实际写入的字节数（新文件为头 + 记录体，已有文件为记录体）。
+ *
+ * 并发假设：串行化只在**当前进程内**、按 resolve 后的 delta 路径生效（见 `appendChains`）。
+ * 两个扩展宿主（两个窗口 / 两个进程）不得共享同一个 delta 存储文件，否则彼此的
+ * stat/读取/截断/追加序列会交错。
+ *
+ * 每次 append 都会读取并解析当前文件（校验文件头、定位最后一个完整记录），必要时
+ * 先截断撕裂的记录尾部再追加，因此单次成本为 O(现有文件大小)；增量增长由 compaction
+ * 阈值（`compactSnapshot`）约束。
+ */
 export function appendSnapshotDelta(deltaPath: string, record: SnapshotDeltaRecord): Promise<number> {
   return withSnapshotDeltaAppendLock(deltaPath, () => appendSnapshotDeltaLocked(deltaPath, record))
+}
+
+/** 等待所有在途 appendSnapshotDelta 完成（compaction 前调用，避免删除尚未落盘的记录）。 */
+export async function flushSnapshotDeltaAppends(): Promise<void> {
+  while (appendChains.size > 0) {
+    await Promise.all([...appendChains.values()])
+  }
 }
 
 async function appendSnapshotDeltaLocked(
@@ -193,7 +214,10 @@ async function appendSnapshotDeltaLocked(
   let existing: Buffer | undefined
   try {
     existing = await readFile(deltaPath)
-  } catch {
+  } catch (error) {
+    // 只有「文件不存在」才视为空 delta 去新建；EACCES/EIO 等读错误必须上抛，
+    // 否则会把已有有效记录的文件当成空文件整体覆盖（丢失历史）或插入第二个头。
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     existing = undefined
   }
   if (!existing || existing.length === 0) {

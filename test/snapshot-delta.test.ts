@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, stat, truncate, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, stat, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -9,6 +9,7 @@ import {
   compactSnapshot,
   decodeSnapshotDeltaRecords,
   encodeSnapshotDeltaRecord,
+  flushSnapshotDeltaAppends,
   readSnapshotDeltas,
   snapshotDeltaBytes,
   snapshotDeltaPath,
@@ -218,6 +219,57 @@ test('snapshot delta: concurrent first appends are serialized', async () => {
     await Promise.all(records.map((record) => appendSnapshotDelta(deltaPath, record)))
     assert.deepEqual(await readSnapshotDeltas(deltaPath), records)
   } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: flush waits for in-flight appends and leaves the lock map empty', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'flush.delta')
+    const records = Array.from({ length: 12 }, (_, index) => ({
+      kind: 'set' as const,
+      path: `flush${index}.c`,
+      mtimeMs: index + 0.5,
+      size: index + 1,
+      entries: [entry(`flushSym${index}`, `flush${index}.c`, index + 1)],
+    }))
+    // 不 await：全部在途，flush 必须等到它们全部落盘。
+    for (const record of records) void appendSnapshotDelta(deltaPath, record)
+    await flushSnapshotDeltaAppends()
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), records)
+
+    // flush 之后锁链已清空（map 为空）：新的 append 立刻可用且可解码。
+    const extra = { kind: 'remove' as const, path: 'after-flush.c' }
+    await appendSnapshotDelta(deltaPath, extra)
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), [...records, extra])
+
+    // 没有在途 append 时 flush 也必须安全返回（不抛错）。
+    await flushSnapshotDeltaAppends()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: unreadable existing delta is not overwritten', async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip('EACCES cannot be enforced when running as root')
+    return
+  }
+  const dir = await tempDir()
+  const deltaPath = join(dir, 'eacces.delta')
+  try {
+    const first = { kind: 'remove' as const, path: 'a.c' }
+    await appendSnapshotDelta(deltaPath, first)
+    const before = await readFile(deltaPath)
+    // 0o200：不可读但可写。旧实现会把 EACCES 当成「文件不存在」而继续 append，
+    // 从而在有效记录后插入第二个头（数据不可解码）；修复后必须直接 reject。
+    await chmod(deltaPath, 0o200)
+    await assert.rejects(appendSnapshotDelta(deltaPath, { kind: 'remove', path: 'b.c' }))
+    await chmod(deltaPath, 0o600)
+    assert.deepEqual(await readFile(deltaPath), before, 'unreadable delta must not be rewritten')
+  } finally {
+    await chmod(deltaPath, 0o600).catch(() => undefined)
     await rm(dir, { recursive: true, force: true })
   }
 })
