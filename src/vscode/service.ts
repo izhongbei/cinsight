@@ -15,7 +15,9 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 
 import { callersOf, calleesOf, clearCallGraphCache } from '../core/callgraph'
+import { hashContent64 } from '../core/hash'
 import { DEFAULT_INDEX_BUDGET, evaluateBudget, type BudgetReport } from '../core/index-budget'
+import { resolveIncludePaths } from '../core/include-resolve'
 import { buildIndex } from '../core/indexer'
 import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolIndex } from '../core/overlay-index'
 import {
@@ -30,7 +32,7 @@ import {
 import { entriesInFile, findByName, searchSymbols } from '../core/query'
 import { findReferences, clearReferenceCache } from '../core/references'
 import { readSignature } from '../core/signature'
-import { scanSource } from '../core/scan'
+import { scanIncludes, scanSource } from '../core/scan'
 import {
   appendNameIndexDelta,
   collectIdentifierHashes,
@@ -95,6 +97,18 @@ const SNAPSHOT_DELTA_HARD_BYTES = 32 * 1024 * 1024
 const SNAPSHOT_IDLE_COMPACT_MS = 60_000
 const SIGNATURE_CACHE_CHAR_BUDGET = 8 * 1024 * 1024
 const MAX_TRACKED_CACHE_FILES = 256
+
+/**
+ * 一次单文件变更：overlay 内存应用与 delta v2 追加共用同一载体。
+ * `includes` 是**已解析到索引内**的目标路径，v2 set 记录里是权威值。
+ */
+interface SnapshotChange {
+  readonly path: string
+  readonly file: FileRecord
+  readonly entries: readonly SymbolEntry[]
+  readonly includes: readonly string[]
+  readonly remove: boolean
+}
 /**
  * 大工程按实际文件数自动降并发：walk 到超过 80k 文件时并发最多 2。
  * 这是默认值，service 传给 `buildIndex` 的 `concurrencyDowngrade`。
@@ -145,12 +159,7 @@ export class SymbolService implements vscode.Disposable {
    * 也不能把旧内存索引换回来）。
    */
   private indexEpoch = 0
-  private deferredDuringCompaction: Array<{
-    readonly path: string
-    readonly file: FileRecord
-    readonly entries: readonly SymbolEntry[]
-    readonly remove: boolean
-  }> = []
+  private deferredDuringCompaction: SnapshotChange[] = []
   private nameIndexValue: NameIndexData | undefined
   /** 引用索引是否已加载进内存（惰性加载：只在首次查引用/调用层次时读盘） */
   private nameIndexLoadedValue = false
@@ -181,6 +190,12 @@ export class SymbolService implements vscode.Disposable {
   /** 最近一次加载 delta 时遇到的读错误 / 被丢弃尾部字节的说明（诊断报告用）。 */
   private deltaWarningValue: string | undefined
   private excludeCache: { readonly key: string; readonly matches: (relPath: string) => boolean } | undefined
+  /**
+   * 保存路径 include 解析用的「索引内文件路径」集合缓存（B1）。
+   * 整表替换（build / load / compaction swap）时按快照身份重建（O(n) 一次），
+   * 单文件增删时由 commitSnapshot 增量维护，保证每次保存仍是 O(Δ)。
+   */
+  private indexedPathsCache: { readonly snapshot: SymbolTable; readonly paths: Set<string> } | undefined
 
   /** 签名/树视图用的文件文本缓存（按字符总量封顶，避免大仓库撑爆内存）。 */
   private readonly textCache = new Map<string, string>()
@@ -896,22 +911,66 @@ export class SymbolService implements vscode.Disposable {
       }
       const text = await this.readFile(rel)
       const symbols = scanSource(text)
-      const entries: SymbolEntry[] = symbols.map((symbol) => ({
-        name: symbol.name,
-        kind: symbol.kind,
-        file: rel,
-        line: symbol.line,
-        endLine: symbol.endLine,
-        column: symbol.column,
-      }))
-      this.commitSnapshot(rel, entries, stat.mtimeMs, stat.size)
+      const entries: SymbolEntry[] = symbols.map((symbol) => {
+        const entry: SymbolEntry = {
+          name: symbol.name,
+          kind: symbol.kind,
+          file: rel,
+          line: symbol.line,
+          endLine: symbol.endLine,
+          column: symbol.column,
+        }
+        // 无条件条目不 materialize condition（与快照/v4 契约的旧形状一致）
+        if (symbol.condition === undefined || symbol.condition === '') return entry
+        return { ...entry, condition: symbol.condition }
+      })
+      // 单遍产出：保存的文本已读入，哈希与 include 文本都从这份内存文本算，零额外 IO；
+      // include 目标只在「当前索引内」解析（不读、不扫其他文件），未命中的丢弃。
+      const contentHash = hashContent64(text)
+      const file: FileRecord = {
+        path: rel,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        contentHashLo: contentHash.lo,
+        contentHashHi: contentHash.hi,
+      }
+      const includes = this.resolveSavedIncludes(rel, text)
+      this.commitSnapshot(rel, entries, file, includes)
       await this.refreshNameIndexForFile(rel, text)
-      this.logger.info(`incremental update: ${rel} (${entries.length} symbols)`)
+      this.logger.info(`incremental update: ${rel} (${entries.length} symbols, ${includes.length} includes)`)
     } catch (error) {
       if (!isAbortError(error)) {
         this.logger.error(`updateFile failed: ${absPath}`, error)
       }
     }
+  }
+
+  /**
+   * 保存路径的 include 解析（B1）：把已扫描出的原始 include 路径映射到当前索引内文件。
+   * 只做内存查表，不读盘；替换 `indexedPathsCache` 的成本仅在整表替换后出现一次。
+   */
+  private resolveSavedIncludes(relPath: string, text: string): readonly string[] {
+    const rawIncludes = scanIncludes(text)
+    if (rawIncludes.length === 0) return []
+    const indexedPaths = this.indexedPathSet()
+    const snapshot = this.snapshotValue
+    if (!indexedPaths || !snapshot) return []
+    return resolveIncludePaths(
+      relPath,
+      rawIncludes.map((include) => include.path),
+      { indexedPaths, roots: snapshot.roots },
+    )
+  }
+
+  /** 索引内文件路径集合（按快照身份缓存；单文件增删由 commitSnapshot 增量维护）。 */
+  private indexedPathSet(): ReadonlySet<string> | undefined {
+    const snapshot = this.snapshotValue
+    if (!snapshot) return undefined
+    const cached = this.indexedPathsCache
+    if (cached && cached.snapshot === snapshot) return cached.paths
+    const paths = new Set(snapshot.files.map((file) => file.path))
+    this.indexedPathsCache = { snapshot, paths }
+    return paths
   }
 
   async removeFile(absPath: string): Promise<void> {
@@ -930,7 +989,7 @@ export class SymbolService implements vscode.Disposable {
       if (!existed) {
         return
       }
-      this.commitSnapshot(rel, [], 0, 0, true)
+      this.commitSnapshot(rel, [], { path: rel, mtimeMs: 0, size: 0 }, [], true)
       await this.removeNameIndexForFile(rel)
       this.logger.info(`incremental remove: ${rel}`)
     } catch (error) {
@@ -941,8 +1000,8 @@ export class SymbolService implements vscode.Disposable {
   private commitSnapshot(
     relPath: string,
     entries: readonly SymbolEntry[],
-    mtimeMs: number,
-    size: number,
+    file: FileRecord,
+    includes: readonly string[],
     remove = false,
   ): void {
     // 签名缓存以工作区相对路径为 key：文件刚被保存/删除，必须让下一次签名重读磁盘，
@@ -959,8 +1018,13 @@ export class SymbolService implements vscode.Disposable {
     }
     if (remove) {
       if (!index.removeFile(relPath)) return
+      this.indexedPathsCache?.paths.delete(relPath)
     } else {
-      index.applyFile({ path: relPath, mtimeMs, size }, entries)
+      index.applyFile(file, entries)
+      // v4 include 边：overlay 记录整体替换该文件的旧边（即使保存后没有任何 include，
+      // 也必须以空数组覆盖，否则查询会继续走 base 的旧边）。
+      index.applyIncludes(relPath, includes)
+      this.indexedPathsCache?.paths.add(relPath)
     }
     this.snapshotValue = index
     this.lastSummaryValue = undefined
@@ -970,10 +1034,11 @@ export class SymbolService implements vscode.Disposable {
     clearCallGraphCache()
     this.changeEmitter.fire()
 
-    const change = {
+    const change: SnapshotChange = {
       path: relPath,
-      file: { path: relPath, mtimeMs, size },
+      file,
       entries,
+      includes,
       remove,
     }
     if (this.compacting) {
@@ -985,30 +1050,31 @@ export class SymbolService implements vscode.Disposable {
   }
 
   /** 追加 delta 串行化：失败只记日志，chain 永不 reject，保证后续 append 可继续。 */
-  private enqueueAppend(change: {
-    readonly path: string
-    readonly file: FileRecord
-    readonly entries: readonly SymbolEntry[]
-    readonly remove: boolean
-  }): void {
+  private enqueueAppend(change: SnapshotChange): void {
     this.appendChain = this.appendChain
       .then(() => this.appendDelta(change))
       .catch((error) => this.logger.warn('append snapshot delta failed', error))
   }
 
-  private async appendDelta(change: {
-    readonly path: string
-    readonly file: FileRecord
-    readonly entries: readonly SymbolEntry[]
-    readonly remove: boolean
-  }): Promise<void> {
+  private async appendDelta(change: SnapshotChange): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath) return
     const result = await appendSnapshotDeltaDetailed(
       snapshotDeltaPath(snapshotPath),
       change.remove
         ? { kind: 'remove', path: change.path }
-        : { kind: 'set', path: change.path, mtimeMs: change.file.mtimeMs, size: change.file.size, entries: change.entries },
+        : {
+            kind: 'set',
+            path: change.path,
+            mtimeMs: change.file.mtimeMs,
+            size: change.file.size,
+            contentHashLo: change.file.contentHashLo,
+            contentHashHi: change.file.contentHashHi,
+            entries: change.entries,
+            // v2：include 数组是权威值（空数组表示「该文件没有任何 include」），
+            // 必须显式传数组，否则重放时无法与 v1 的「未知」区分。
+            includes: change.includes,
+          },
     )
     // 追加结果里带上了文件中的完整记录数：若比「我们已知的 + 这次」多，说明另一个窗口
     // 也追加过记录（它们的变更不在本进程内存里），之后绝不能 compaction 删掉它们。
@@ -1391,7 +1457,11 @@ export class SymbolService implements vscode.Disposable {
       this.indexEpoch += 1
       for (const change of deferred) {
         if (change.remove) next.removeFile(change.path)
-        else next.applyFile(change.file, change.entries)
+        else {
+          next.applyFile(change.file, change.entries)
+          // include 边一并回放到换表后的 overlay（flat 里没有这些迟到变更的边）
+          next.applyIncludes(change.path, change.includes)
+        }
         this.enqueueAppend(change)
       }
       await this.appendChain
@@ -1402,7 +1472,10 @@ export class SymbolService implements vscode.Disposable {
         this.deferredDuringCompaction = []
         for (const change of late) {
           if (change.remove) next.removeFile(change.path)
-          else next.applyFile(change.file, change.entries)
+          else {
+            next.applyFile(change.file, change.entries)
+            next.applyIncludes(change.path, change.includes)
+          }
           this.enqueueAppend(change)
         }
         await this.appendChain

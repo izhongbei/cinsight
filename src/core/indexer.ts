@@ -14,6 +14,7 @@ import type {
   SymbolTable,
 } from '../shared/types'
 import { hashContent64 } from './hash'
+import { resolveIncludePaths } from './include-resolve'
 import { buildNameIndex, collectIdentifierHashes, loadNameIndex, saveNameIndex } from './nameindex'
 import { createSymbolTable } from './symbol-table'
 import { scanIncludes, scanSource } from './scan'
@@ -58,8 +59,9 @@ export function createSnapshot(
   roots: readonly string[],
   files: readonly FileRecord[],
   entries: readonly SymbolEntry[],
+  includes?: ReadonlyMap<string, readonly string[]>,
 ): SymbolTable {
-  return createSymbolTable(roots, files, entries, Date.now(), SNAPSHOT_VERSION)
+  return createSymbolTable(roots, files, entries, Date.now(), SNAPSHOT_VERSION, { includes })
 }
 
 // --------------------------------------------------------------- worker pool
@@ -267,12 +269,13 @@ export async function buildIndex(
       ? normalizeConcurrency(Math.min(configuredConcurrency, downgrade.concurrency))
       : configuredConcurrency
 
-  // 旧快照按文件建索引（版本不符视为没有旧快照）
+  // 旧快照按文件建索引（版本不符视为没有旧快照：v4 元数据契约不跨版本复用）
+  const previousV4 = previous && previous.version === SNAPSHOT_VERSION ? previous : undefined
   const previousFiles = new Map<string, FileRecord>()
   const previousEntries = new Map<string, SymbolEntry[]>()
-  if (previous && previous.version === SNAPSHOT_VERSION) {
-    for (const file of previous.files) previousFiles.set(file.path, file)
-    previous.forEachEntry((entry) => {
+  if (previousV4) {
+    for (const file of previousV4.files) previousFiles.set(file.path, file)
+    previousV4.forEachEntry((entry) => {
       const list = previousEntries.get(entry.file)
       if (list) list.push(entry)
       else previousEntries.set(entry.file, [entry])
@@ -305,18 +308,32 @@ export async function buildIndex(
   }
   /** 每个文件的标识符哈希（单遍解析产出，供引用索引复用，不再二次读盘） */
   const parsedHashes = new Map<string, Uint32Array>()
+  /** 每个变更文件的原始 include 路径（解析为索引内文件要等 walk 结果与 skipped 集合齐备） */
+  const parsedIncludePaths = new Map<string, readonly string[]>()
+  /** 每个变更文件的内容哈希（worker/串行扫描同遍产出，零额外 IO） */
+  const parsedContentHashes = new Map<string, { lo: number; hi: number }>()
   const finish = (file: FileRecord, result: ScannedFileResult): void => {
     parsedHashes.set(file.path, result.hashes)
+    parsedIncludePaths.set(
+      file.path,
+      result.includes.map((include) => include.path),
+    )
+    parsedContentHashes.set(file.path, result.contentHash)
     parsed.set(
       file.path,
-      result.symbols.map((symbol) => ({
-        name: symbol.name,
-        kind: symbol.kind,
-        file: file.path,
-        line: symbol.line,
-        endLine: symbol.endLine,
-        column: symbol.column,
-      })),
+      result.symbols.map((symbol) => {
+        const entry: SymbolEntry = {
+          name: symbol.name,
+          kind: symbol.kind,
+          file: file.path,
+          line: symbol.line,
+          endLine: symbol.endLine,
+          column: symbol.column,
+        }
+        // 无条件条目不 materialize condition（与 SymbolEntry/快照的旧形状一致）
+        if (symbol.condition === undefined || symbol.condition === '') return entry
+        return { ...entry, condition: symbol.condition }
+      }),
     )
     done += 1
     reportParse(file.path)
@@ -375,9 +392,38 @@ export async function buildIndex(
     if (!successfulPaths.has(oldPath)) removed += 1
   }
 
+  // v4 元数据：未变更文件复用旧表（仅 v4 旧表被采用），变更文件用本轮扫描结果。
+  // include 只在命中「索引内文件」时建边（skipped 文件不在表里，同样丢弃）。
+  const includeContext = { indexedPaths: successfulPaths, roots }
+  const includesByFile = new Map<string, readonly string[]>()
+  const nextFiles: FileRecord[] = []
+  for (const file of successfulFiles) {
+    let contentHash: { lo: number; hi: number } | undefined
+    let targets: readonly string[]
+    if (unchanged.has(file.path) && previousV4) {
+      contentHash = previousV4.contentHashOf(file.path)
+      targets = previousV4.includedFiles(file.path)
+    } else {
+      contentHash = parsedContentHashes.get(file.path)
+      targets = resolveIncludePaths(file.path, parsedIncludePaths.get(file.path) ?? [], includeContext)
+    }
+    if (targets.length > 0) includesByFile.set(file.path, targets)
+    nextFiles.push(
+      contentHash
+        ? {
+            path: file.path,
+            mtimeMs: file.mtimeMs,
+            size: file.size,
+            contentHashLo: contentHash.lo,
+            contentHashHi: contentHash.hi,
+          }
+        : file,
+    )
+  }
+
   const entries: SymbolEntry[] = reused.slice()
   for (const list of parsed.values()) entries.push(...list)
-  const snapshot = createSnapshot(roots, successfulFiles, entries)
+  const snapshot = createSnapshot(roots, nextFiles, entries, includesByFile)
 
   onProgress?.({ phase: 'save', done: 0, total: 0 })
   let snapshotBytes = 0

@@ -761,7 +761,11 @@ function capturingLogger() {
 /**
  * 真实 service 级 round trip（不 stub 状态机）：
  * 临时 workspace + 独立 storage -> 建索引 -> 通过公开的 updateFile 保存一个改动
- * -> 断言 delta 落盘 -> flush（compaction）-> 重新 create service -> 符号仍在。
+ * -> 断言 delta 落盘（含 v4 元数据）-> 不 compaction 直接重载（delta 重放）
+ * -> flush（compaction）-> 重新 create service -> 符号/include/哈希/条件仍在。
+ *
+ * 这里也覆盖 Task 2 review 指出的时序风险：保存路径写的 delta v2 set 记录必须带
+ * includes/哈希/条件，否则「base + delta 重放」会清空 include 边或丢条件。
  */
 async function checkServiceRoundTrip() {
   const dist = path.join(EXT_ROOT, 'dist')
@@ -769,6 +773,7 @@ async function checkServiceRoundTrip() {
   const { snapshotDeltaBytes, snapshotDeltaPath, readSnapshotDeltas } = require(
     path.join(dist, 'src/core/snapshot-delta.js'),
   )
+  const { hashContent64 } = require(path.join(dist, 'src/core/hash.js'))
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-smoke-roundtrip-'))
   const workspace = path.join(dir, 'ws')
@@ -776,7 +781,11 @@ async function checkServiceRoundTrip() {
   fs.mkdirSync(workspace, { recursive: true })
   fs.mkdirSync(storage, { recursive: true })
   const sourceFile = path.join(workspace, 'a.c')
-  fs.writeFileSync(sourceFile, 'int alpha(void) { return 1; }\n', 'utf8')
+  fs.mkdirSync(path.join(workspace, 'inc'), { recursive: true })
+  fs.writeFileSync(path.join(workspace, 'inc', 'x.h'), '#ifndef X_H\n#define X_H\nstruct sk_buff { int len; };\n#endif\n', 'utf8')
+  fs.writeFileSync(path.join(workspace, 'inc', 'y.h'), '#ifndef Y_H\n#define Y_H\nstruct sock { int fd; };\n#endif\n', 'utf8')
+  const initialText = '#include "inc/x.h"\nint alpha(void) { return 1; }\n'
+  fs.writeFileSync(sourceFile, initialText, 'utf8')
 
   const previousFolders = vscode.workspace.workspaceFolders
   const previousRoots = configurationValues.indexRoots
@@ -790,6 +799,7 @@ async function checkServiceRoundTrip() {
   const deltaPath = snapshotDeltaPath(snapshotPath)
   const logger = capturingLogger()
   let service
+  let replayed
   let reloaded
   try {
     service = await SymbolService.create(context, logger)
@@ -797,28 +807,65 @@ async function checkServiceRoundTrip() {
     assert.ok(summary, 'service rebuild returns a summary')
     assert.equal(service.ready, true)
     assert.deepEqual(service.fileSymbols('a.c').map((e) => e.name), ['alpha'])
+    // 构建路径也写 v4 元数据：include 边 + 内容哈希
+    assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h'], 'build resolves include edges')
+    assert.equal(service.snapshot.isReachable('a.c', 'inc/x.h'), true)
+    assert.deepEqual(service.snapshot.contentHashOf('a.c'), hashContent64(initialText))
     assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'fresh build has no delta')
 
     // 走真实的公开保存路径（文件监听器最终也是调用 updateFile）。
-    fs.writeFileSync(sourceFile, 'int beta(void) { return 2; }\n', 'utf8')
+    // 保存后文件新增 include inc/y.h 与一个 #ifdef 符号：直接验证 applyIncludes/条件/哈希。
+    const savedText = [
+      '#include "inc/x.h"',
+      '#include "inc/y.h"',
+      'int beta(void) { return 2; }',
+      '#ifdef RTK_MODULE',
+      'int guarded(void) { return 3; }',
+      '#endif',
+      '',
+    ].join('\n')
+    fs.writeFileSync(sourceFile, savedText, 'utf8')
     const future = new Date(Date.now() + 1000)
     fs.utimesSync(sourceFile, future, future)
     await service.updateFile(sourceFile)
 
-    assert.deepEqual(service.fileSymbols('a.c').map((e) => e.name), ['beta'])
+    const savedSymbols = service.fileSymbols('a.c')
+    assert.deepEqual(savedSymbols.map((e) => e.name), ['beta', 'guarded'])
+    assert.equal(savedSymbols.find((e) => e.name === 'guarded').condition, '#ifdef RTK_MODULE', 'condition in overlay')
+    assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'save applies overlay include edges')
+    assert.equal(service.snapshot.isReachable('a.c', 'inc/y.h'), true)
+    assert.deepEqual(service.snapshot.contentHashOf('a.c'), hashContent64(savedText), 'save records content hash')
     assert.ok((await snapshotDeltaBytes(deltaPath)) > 0, 'incremental save appends a delta record')
     const records = await readSnapshotDeltas(deltaPath)
     assert.equal(records.length, 1, 'one delta record for one save')
     assert.equal(records[0]?.kind, 'set')
-    assert.deepEqual(records[0]?.entries?.map((e) => e.name), ['beta'])
+    assert.deepEqual(records[0]?.entries?.map((e) => e.name), ['beta', 'guarded'])
+    assert.deepEqual(records[0]?.includes, ['inc/x.h', 'inc/y.h'], 'delta v2 record carries include targets')
+    assert.equal(records[0]?.contentHashLo, hashContent64(savedText).lo, 'delta v2 record carries hash lo')
+    assert.equal(records[0]?.contentHashHi, hashContent64(savedText).hi, 'delta v2 record carries hash hi')
+
+    // 时序风险：不 compaction 直接重载 = base + delta 重放。元数据必须全部从 v2 记录还原。
+    replayed = await SymbolService.create(context, logger)
+    assert.equal(replayed.ready, true, 'service loads base + delta')
+    const replayedSymbols = replayed.fileSymbols('a.c')
+    assert.deepEqual(replayedSymbols.map((e) => e.name), ['beta', 'guarded'], 'symbols survive delta replay')
+    assert.equal(replayedSymbols.find((e) => e.name === 'guarded').condition, '#ifdef RTK_MODULE', 'condition survives delta replay')
+    assert.deepEqual(replayed.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'include edges survive delta replay')
+    assert.equal(replayed.snapshot.isReachable('a.c', 'inc/y.h'), true)
+    assert.deepEqual(replayed.snapshot.contentHashOf('a.c'), hashContent64(savedText), 'hash survives delta replay')
 
     await service.flush()
     assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'flush compacts the delta into the base')
 
-    // 真实重载（base，无 delta）：符号必须在重启后仍然存在。
+    // 真实重载（base，无 delta）：符号/include/哈希/条件必须在重启后仍然存在。
     reloaded = await SymbolService.create(context, logger)
     assert.equal(reloaded.ready, true, 'reloaded service loads the snapshot')
-    assert.deepEqual(reloaded.fileSymbols('a.c').map((e) => e.name), ['beta'], 'symbol survives reload')
+    const reloadedSymbols = reloaded.fileSymbols('a.c')
+    assert.deepEqual(reloadedSymbols.map((e) => e.name), ['beta', 'guarded'], 'symbols survive reload')
+    assert.equal(reloadedSymbols.find((e) => e.name === 'guarded').condition, '#ifdef RTK_MODULE', 'condition survives compaction')
+    assert.deepEqual(reloaded.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'include edges survive compaction')
+    assert.equal(reloaded.snapshot.isReachable('a.c', 'inc/y.h'), true)
+    assert.deepEqual(reloaded.snapshot.contentHashOf('a.c'), hashContent64(savedText), 'hash survives compaction')
     assert.equal(reloaded.deltaWarning, undefined, 'clean delta has no recovery warning')
 
     // 坏 magic：整个 delta 不可解码 -> 提示用 corrupted 措辞；成功 compaction 后提示清除。
@@ -842,6 +889,7 @@ async function checkServiceRoundTrip() {
   } finally {
     try {
       service?.dispose()
+      replayed?.dispose()
       reloaded?.dispose()
     } finally {
       vscode.workspace.workspaceFolders = previousFolders
@@ -990,7 +1038,7 @@ async function main() {
   console.log('  subscriptions:', context.subscriptions.length)
   console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
   console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
-  console.log('  service round trip: updateFile -> delta -> flush -> reload keeps the symbol OK')
+  console.log('  service round trip: updateFile -> delta v2 (hash/includes/condition) -> replay -> compaction -> reload OK')
   console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')
 }
 
