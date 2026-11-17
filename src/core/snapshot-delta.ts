@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, stat, truncate, unlink, writeFile } from 'node:fs/promises'
 import * as path from 'node:path'
 
 import type { SymbolEntry, SymbolTable } from '../shared/types'
@@ -84,12 +84,24 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   return buffer
 }
 
-export function decodeSnapshotDeltaRecords(buffer: Buffer): SnapshotDeltaRecord[] {
-  if (buffer.length < HEADER_BYTES) return []
-  if (buffer.toString('latin1', 0, 4) !== SNAPSHOT_DELTA_MAGIC) return []
-  if (buffer.readUInt32LE(4) !== SNAPSHOT_DELTA_VERSION) return []
+function hasSnapshotDeltaHeader(buffer: Buffer): boolean {
+  return (
+    buffer.length >= HEADER_BYTES &&
+    buffer.toString('latin1', 0, 4) === SNAPSHOT_DELTA_MAGIC &&
+    buffer.readUInt32LE(4) === SNAPSHOT_DELTA_VERSION
+  )
+}
+
+/**
+ * 解析 delta 缓冲区。`records` 与 `decodeSnapshotDeltaRecords` 的返回值一致；
+ * `end` 为最后一个完整记录的结束偏移（头部合法但无完整记录时为 HEADER_BYTES，
+ * 头部非法时为 0），`end` 之后的字节是撕裂/不可解码的尾部。
+ */
+function parseSnapshotDeltaBuffer(buffer: Buffer): { records: SnapshotDeltaRecord[]; end: number } {
+  if (!hasSnapshotDeltaHeader(buffer)) return { records: [], end: 0 }
   const records: SnapshotDeltaRecord[] = []
   let offset = HEADER_BYTES
+  let end = HEADER_BYTES
   while (offset < buffer.length) {
     const recordStart = offset
     if (offset + 5 > buffer.length) break
@@ -101,6 +113,7 @@ export function decodeSnapshotDeltaRecords(buffer: Buffer): SnapshotDeltaRecord[
     offset += pathLength
     if (kind === 1) {
       records.push({ kind: 'remove', path: filePath })
+      end = offset
       continue
     }
     if (kind !== 0) break
@@ -139,26 +152,63 @@ export function decodeSnapshotDeltaRecords(buffer: Buffer): SnapshotDeltaRecord[
     }
     if (truncated) break
     records.push({ kind: 'set', path: filePath, mtimeMs, size, entries })
+    end = offset
   }
-  return records
+  return { records, end }
 }
 
-export async function appendSnapshotDelta(
+export function decodeSnapshotDeltaRecords(buffer: Buffer): SnapshotDeltaRecord[] {
+  return parseSnapshotDeltaBuffer(buffer).records
+}
+
+/** 进程内按 delta 文件路径串行化 append，避免 stat/读头/截断/追加序列交错。 */
+const appendChains = new Map<string, Promise<void>>()
+
+function withSnapshotDeltaAppendLock<T>(deltaPath: string, task: () => Promise<T>): Promise<T> {
+  const key = path.resolve(deltaPath)
+  const previous = appendChains.get(key) ?? Promise.resolve()
+  const result = previous.then(task, task)
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  appendChains.set(key, tail)
+  void tail.then(() => {
+    if (appendChains.get(key) === tail) appendChains.delete(key)
+  })
+  return result
+}
+
+export function appendSnapshotDelta(deltaPath: string, record: SnapshotDeltaRecord): Promise<number> {
+  return withSnapshotDeltaAppendLock(deltaPath, () => appendSnapshotDeltaLocked(deltaPath, record))
+}
+
+async function appendSnapshotDeltaLocked(
   deltaPath: string,
   record: SnapshotDeltaRecord,
 ): Promise<number> {
-  let existing = 0
+  const encoded = encodeSnapshotDeltaRecord(record)
+  const body = encoded.subarray(HEADER_BYTES)
+  await mkdir(path.dirname(deltaPath), { recursive: true })
+  let existing: Buffer | undefined
   try {
-    existing = (await stat(deltaPath)).size
+    existing = await readFile(deltaPath)
   } catch {
-    existing = 0
+    existing = undefined
   }
-  const buffer = encodeSnapshotDeltaRecord(record)
-  const body = buffer.subarray(HEADER_BYTES)
-  if (existing === 0) {
-    await mkdir(path.dirname(deltaPath), { recursive: true })
-    await appendFile(deltaPath, buffer)
-    return buffer.length
+  if (!existing || existing.length === 0) {
+    await appendFile(deltaPath, encoded)
+    return encoded.length
+  }
+  if (!hasSnapshotDeltaHeader(existing)) {
+    // 撕裂的头部 / 坏 magic / 版本不符：整个文件都不可解码，直接整体覆盖（截断到 0 再写）。
+    await writeFile(deltaPath, encoded)
+    return encoded.length
+  }
+  const { end } = parseSnapshotDeltaBuffer(existing)
+  if (end < existing.length) {
+    // 尾部有未写完整的记录：先截断到最后一个完整记录边界，保证后续记录仍可解码。
+    await truncate(deltaPath, end)
   }
   await appendFile(deltaPath, body)
   return body.length

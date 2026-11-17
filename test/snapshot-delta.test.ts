@@ -112,3 +112,112 @@ test('snapshot delta: compact writes the base and removes the delta', async () =
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('snapshot delta: torn record tail is truncated before append so later records stay decodable', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'torn-tail.delta')
+    const first = {
+      kind: 'set' as const,
+      path: 'a.c',
+      mtimeMs: 1.5,
+      size: 10,
+      entries: [entry('alpha', 'a.c', 1), entry('beta', 'a.c', 2)],
+    }
+    const second = { kind: 'remove' as const, path: 'b.c' }
+    await appendSnapshotDelta(deltaPath, first)
+    await appendSnapshotDelta(deltaPath, second)
+    // 把最后一条记录撕掉 3 字节：first 完整，second 残缺。
+    await truncate(deltaPath, (await stat(deltaPath)).size - 3)
+    const third = {
+      kind: 'set' as const,
+      path: 'c.c',
+      mtimeMs: 3.5,
+      size: 30,
+      entries: [entry('gamma', 'c.c', 3)],
+    }
+    await appendSnapshotDelta(deltaPath, third)
+    // 两条「完整」记录都还能解码：残缺的 second 被截掉，third 不受影响。
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), [first, third])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: partial header is replaced by append', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'torn-header.delta')
+    await writeFile(deltaPath, Buffer.from('SID', 'latin1'))
+    const record = {
+      kind: 'set' as const,
+      path: 'a.c',
+      mtimeMs: 1,
+      size: 1,
+      entries: [entry('alpha', 'a.c', 1)],
+    }
+    const bytes = await appendSnapshotDelta(deltaPath, record)
+    assert.equal(bytes, encodeSnapshotDeltaRecord(record).length)
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), [record])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: wrong version prefix is replaced by append', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'wrong-version.delta')
+    const bogus = Buffer.alloc(16)
+    bogus.write('SIDD', 0, 'latin1')
+    bogus.writeUInt32LE(2, 4)
+    bogus.writeUInt8(0, 8)
+    bogus.writeUInt32LE(3, 9)
+    bogus.write('old', 13, 'utf8')
+    await writeFile(deltaPath, bogus)
+    const record = { kind: 'remove' as const, path: 'new.c' }
+    const bytes = await appendSnapshotDelta(deltaPath, record)
+    assert.equal(bytes, encodeSnapshotDeltaRecord(record).length)
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), [record])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: bad magic with valid length is replaced by append', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'bad-magic.delta')
+    await writeFile(deltaPath, Buffer.alloc(16, 0xab))
+    const record = {
+      kind: 'set' as const,
+      path: 'ok.c',
+      mtimeMs: 2,
+      size: 2,
+      entries: [entry('ok', 'ok.c', 2)],
+    }
+    await appendSnapshotDelta(deltaPath, record)
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), [record])
+    assert.equal(await snapshotDeltaBytes(deltaPath), encodeSnapshotDeltaRecord(record).length)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: concurrent first appends are serialized', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'race.delta')
+    const records = Array.from({ length: 8 }, (_, index) => ({
+      kind: 'set' as const,
+      path: `f${index}.c`,
+      mtimeMs: index,
+      size: index + 1,
+      entries: [entry(`sym${index}`, `f${index}.c`, index + 1)],
+    }))
+    await Promise.all(records.map((record) => appendSnapshotDelta(deltaPath, record)))
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), records)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
