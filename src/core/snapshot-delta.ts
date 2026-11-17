@@ -6,18 +6,25 @@ import { saveSnapshot } from './store'
 import { KIND_CODES } from './symbol-table'
 
 export const SNAPSHOT_DELTA_MAGIC = 'SIDD'
-export const SNAPSHOT_DELTA_VERSION = 1
+export const SNAPSHOT_DELTA_VERSION = 2
 const HEADER_BYTES = 8
 const KIND_NAMES = ['function', 'declaration', 'macro', 'struct', 'union', 'enum', 'typedef'] as const
 
+export interface SnapshotDeltaSetRecord {
+  readonly kind: 'set'
+  readonly path: string
+  readonly mtimeMs: number
+  readonly size: number
+  readonly entries: readonly SymbolEntry[]
+  /** 文件内容哈希（v2 起可选；缺失按 {0,0} 读） */
+  readonly contentHashLo?: number
+  readonly contentHashHi?: number
+  /** 已解析到索引内的 include 目标路径（v2 起可选；缺失 = 未知，不改动 base 边） */
+  readonly includes?: readonly string[]
+}
+
 export type SnapshotDeltaRecord =
-  | {
-      readonly kind: 'set'
-      readonly path: string
-      readonly mtimeMs: number
-      readonly size: number
-      readonly entries: readonly SymbolEntry[]
-    }
+  | SnapshotDeltaSetRecord
   | { readonly kind: 'remove'; readonly path: string }
 
 export function snapshotDeltaPath(basePath: string): string {
@@ -40,6 +47,11 @@ export function encodeSnapshotDeltaRecord(record: SnapshotDeltaRecord): Buffer {
   return buffer
 }
 
+/**
+ * set 记录体（v2）：path | mtime f64 | size u32 | hashLo u32 | hashHi u32 | entryCount u32
+ *   | entry*（name、line、endLine、column、kind、conditionLen u32 | condition utf8）
+ *   | includeCount u32 | include*（pathLen u32 | path utf8）
+ */
 function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   const pathBytes = Buffer.from(record.path, 'utf8')
   const header = 1 + 4 + pathBytes.length
@@ -53,10 +65,20 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   let entryBytes = 0
   const encoded = record.entries.map((entry) => {
     const nameBytes = Buffer.from(entry.name, 'utf8')
-    entryBytes += 4 + nameBytes.length + 4 + 4 + 2 + 1
-    return { entry, nameBytes }
+    const condition = entry.condition === undefined || entry.condition === '' ? undefined : entry.condition
+    const conditionBytes = condition === undefined ? undefined : Buffer.from(condition, 'utf8')
+    entryBytes += 4 + nameBytes.length + 4 + 4 + 2 + 1 + 4 + (conditionBytes?.length ?? 0)
+    return { entry, nameBytes, conditionBytes }
   })
-  const buffer = Buffer.allocUnsafe(header + 8 + 4 + 4 + entryBytes)
+  const includePaths = record.includes ?? []
+  let includeBytes = 0
+  const encodedIncludes = includePaths.map((includePath) => {
+    const bytes = Buffer.from(includePath, 'utf8')
+    includeBytes += 4 + bytes.length
+    return bytes
+  })
+
+  const buffer = Buffer.allocUnsafe(header + 8 + 4 + 4 + 4 + 4 + entryBytes + 4 + includeBytes)
   let offset = 0
   buffer.writeUInt8(0, offset)
   offset += 1
@@ -68,9 +90,13 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   offset += 8
   buffer.writeUInt32LE(Math.min(record.size ?? 0, 0xffffffff), offset)
   offset += 4
+  buffer.writeUInt32LE(record.contentHashLo ?? 0, offset)
+  offset += 4
+  buffer.writeUInt32LE(record.contentHashHi ?? 0, offset)
+  offset += 4
   buffer.writeUInt32LE(encoded.length, offset)
   offset += 4
-  for (const { entry, nameBytes } of encoded) {
+  for (const { entry, nameBytes, conditionBytes } of encoded) {
     buffer.writeUInt32LE(nameBytes.length, offset)
     offset += 4
     nameBytes.copy(buffer, offset)
@@ -83,16 +109,62 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
     offset += 2
     buffer.writeUInt8(KIND_CODES[entry.kind] ?? 0, offset)
     offset += 1
+    const conditionLength = conditionBytes?.length ?? 0
+    buffer.writeUInt32LE(conditionLength, offset)
+    offset += 4
+    if (conditionBytes) {
+      conditionBytes.copy(buffer, offset)
+      offset += conditionLength
+    }
+  }
+  buffer.writeUInt32LE(encodedIncludes.length, offset)
+  offset += 4
+  for (const bytes of encodedIncludes) {
+    buffer.writeUInt32LE(bytes.length, offset)
+    offset += 4
+    bytes.copy(buffer, offset)
+    offset += bytes.length
   }
   return buffer
 }
 
-function hasSnapshotDeltaHeader(buffer: Buffer): boolean {
-  return (
-    buffer.length >= HEADER_BYTES &&
-    buffer.toString('latin1', 0, 4) === SNAPSHOT_DELTA_MAGIC &&
-    buffer.readUInt32LE(4) === SNAPSHOT_DELTA_VERSION
-  )
+/** 读取 SIDD 文件头版本；magic/版本不认识时返回 undefined（v1 仍可读，用于兼容旧 delta）。 */
+function deltaHeaderVersion(buffer: Buffer): number | undefined {
+  if (buffer.length < HEADER_BYTES) return undefined
+  if (buffer.toString('latin1', 0, 4) !== SNAPSHOT_DELTA_MAGIC) return undefined
+  const version = buffer.readUInt32LE(4)
+  return version === 1 || version === 2 ? version : undefined
+}
+
+/** 每种 delta 版本的记录布局差异。 */
+interface DeltaLayout {
+  /** set 记录 path 之后的定长字节：mtime(8) + size(4) [+ hashLo(4) + hashHi(4)] + entryCount(4) */
+  readonly setFixedBytes: number
+  /** 每条 entry 在 name 之后的定长字节：line(4) + endLine(4) + column(2) + kind(1) [+ conditionLen(4)] */
+  readonly entryFixedBytes: number
+  /** entry 是否带 conditionLen + condition utf8 */
+  readonly entryCondition: boolean
+  /** set 记录是否带 includeCount + include* */
+  readonly entryIncludes: boolean
+}
+
+const V1_LAYOUT: DeltaLayout = {
+  setFixedBytes: 16,
+  entryFixedBytes: 4 + 4 + 2 + 1,
+  entryCondition: false,
+  entryIncludes: false,
+}
+const V2_LAYOUT: DeltaLayout = {
+  setFixedBytes: 24,
+  entryFixedBytes: 4 + 4 + 2 + 1,
+  entryCondition: true,
+  entryIncludes: true,
+}
+
+function layoutForVersion(version: number): DeltaLayout | undefined {
+  if (version === 1) return V1_LAYOUT
+  if (version === 2) return V2_LAYOUT
+  return undefined
 }
 
 export interface SnapshotDeltaScan {
@@ -112,7 +184,9 @@ export interface SnapshotDeltaScan {
  * 只需要一次 stat（见 `appendSnapshotDeltaDetailed`）。
  */
 export function scanSnapshotDeltaEnd(buffer: Buffer): SnapshotDeltaScan {
-  if (!hasSnapshotDeltaHeader(buffer)) return { end: 0, recordCount: 0, valid: false }
+  const version = deltaHeaderVersion(buffer)
+  const layout = version === undefined ? undefined : layoutForVersion(version)
+  if (!layout) return { end: 0, recordCount: 0, valid: false }
   let offset = HEADER_BYTES
   let end = HEADER_BYTES
   let recordCount = 0
@@ -129,29 +203,44 @@ export function scanSnapshotDeltaEnd(buffer: Buffer): SnapshotDeltaScan {
       continue
     }
     if (kind !== 0) break
-    // set 记录：mtime(8) + size(4) + entryCount(4)
-    if (offset + 16 > buffer.length) break
-    const entryCount = buffer.readUInt32LE(offset + 12)
-    offset += 16
-    let truncated = false
-    for (let index = 0; index < entryCount; index++) {
-      if (offset + 4 > buffer.length) {
-        truncated = true
-        break
-      }
-      const nameLength = buffer.readUInt32LE(offset)
-      const next = offset + 4 + nameLength + 4 + 4 + 2 + 1
-      if (next > buffer.length) {
-        truncated = true
-        break
-      }
-      offset = next
-    }
-    if (truncated) break
+    const next = scanSetRecordEnd(buffer, offset, layout)
+    if (next === undefined) break
+    offset = next
     recordCount += 1
     end = offset
   }
   return { end, recordCount, valid: true }
+}
+
+/** 按布局跳过一条 set 记录体，返回其结束偏移；不完整时返回 undefined。 */
+function scanSetRecordEnd(buffer: Buffer, offset: number, layout: DeltaLayout): number | undefined {
+  if (offset + layout.setFixedBytes > buffer.length) return undefined
+  const entryCount = buffer.readUInt32LE(offset + layout.setFixedBytes - 4)
+  let cursor = offset + layout.setFixedBytes
+  for (let index = 0; index < entryCount; index++) {
+    if (cursor + 4 > buffer.length) return undefined
+    const nameLength = buffer.readUInt32LE(cursor)
+    cursor += 4 + nameLength + layout.entryFixedBytes
+    if (cursor > buffer.length) return undefined
+    if (layout.entryCondition) {
+      if (cursor + 4 > buffer.length) return undefined
+      const conditionLength = buffer.readUInt32LE(cursor)
+      cursor += 4 + conditionLength
+      if (cursor > buffer.length) return undefined
+    }
+  }
+  if (layout.entryIncludes) {
+    if (cursor + 4 > buffer.length) return undefined
+    const includeCount = buffer.readUInt32LE(cursor)
+    cursor += 4
+    for (let index = 0; index < includeCount; index++) {
+      if (cursor + 4 > buffer.length) return undefined
+      const includeLength = buffer.readUInt32LE(cursor)
+      cursor += 4 + includeLength
+      if (cursor > buffer.length) return undefined
+    }
+  }
+  return cursor
 }
 
 /**
@@ -160,12 +249,13 @@ export function scanSnapshotDeltaEnd(buffer: Buffer): SnapshotDeltaScan {
  * 头部非法时为 0），`end` 之后的字节是撕裂/不可解码的尾部。
  */
 function parseSnapshotDeltaBuffer(buffer: Buffer): { records: SnapshotDeltaRecord[]; end: number } {
-  if (!hasSnapshotDeltaHeader(buffer)) return { records: [], end: 0 }
+  const version = deltaHeaderVersion(buffer)
+  const layout = version === undefined ? undefined : layoutForVersion(version)
+  if (!layout) return { records: [], end: 0 }
   const records: SnapshotDeltaRecord[] = []
   let offset = HEADER_BYTES
   let end = HEADER_BYTES
   while (offset < buffer.length) {
-    const recordStart = offset
     if (offset + 5 > buffer.length) break
     const kind = buffer.readUInt8(offset)
     const pathLength = buffer.readUInt32LE(offset + 1)
@@ -179,44 +269,100 @@ function parseSnapshotDeltaBuffer(buffer: Buffer): { records: SnapshotDeltaRecor
       continue
     }
     if (kind !== 0) break
-    if (offset + 16 > buffer.length) { offset = recordStart; break }
-    const mtimeMs = buffer.readDoubleLE(offset)
-    offset += 8
-    const size = buffer.readUInt32LE(offset)
-    offset += 4
-    const entryCount = buffer.readUInt32LE(offset)
-    offset += 4
-    const entries: SymbolEntry[] = []
-    let truncated = false
-    for (let index = 0; index < entryCount; index++) {
-      if (offset + 4 > buffer.length) { truncated = true; break }
-      const nameLength = buffer.readUInt32LE(offset)
-      offset += 4
-      if (offset + nameLength + 4 + 4 + 2 + 1 > buffer.length) { truncated = true; break }
-      const name = buffer.toString('utf8', offset, offset + nameLength)
-      offset += nameLength
-      const line = buffer.readUInt32LE(offset)
-      offset += 4
-      const endLine = buffer.readUInt32LE(offset)
-      offset += 4
-      const column = buffer.readUInt16LE(offset)
-      offset += 2
-      const kindCode = buffer.readUInt8(offset)
-      offset += 1
-      entries.push({
-        name,
-        kind: KIND_NAMES[kindCode] ?? 'function',
-        file: filePath,
-        line,
-        endLine,
-        column,
-      })
-    }
-    if (truncated) break
-    records.push({ kind: 'set', path: filePath, mtimeMs, size, entries })
+    const parsed = parseSetRecordBody(buffer, offset, filePath, layout)
+    if (!parsed) break
+    records.push(parsed.record)
+    offset = parsed.end
     end = offset
   }
   return { records, end }
+}
+
+/** 解析一条 set 记录体；结构不完整返回 undefined（调用方保留已解析记录）。 */
+function parseSetRecordBody(
+  buffer: Buffer,
+  offset: number,
+  filePath: string,
+  layout: DeltaLayout,
+): { record: SnapshotDeltaSetRecord; end: number } | undefined {
+  if (offset + layout.setFixedBytes > buffer.length) return undefined
+  const mtimeMs = buffer.readDoubleLE(offset)
+  offset += 8
+  const size = buffer.readUInt32LE(offset)
+  offset += 4
+  let contentHashLo: number | undefined
+  let contentHashHi: number | undefined
+  if (layout.entryIncludes) {
+    contentHashLo = buffer.readUInt32LE(offset)
+    offset += 4
+    contentHashHi = buffer.readUInt32LE(offset)
+    offset += 4
+  }
+  const entryCount = buffer.readUInt32LE(offset)
+  offset += 4
+  const entries: SymbolEntry[] = []
+  for (let index = 0; index < entryCount; index++) {
+    if (offset + 4 > buffer.length) return undefined
+    const nameLength = buffer.readUInt32LE(offset)
+    offset += 4
+    if (offset + nameLength + layout.entryFixedBytes > buffer.length) return undefined
+    const name = buffer.toString('utf8', offset, offset + nameLength)
+    offset += nameLength
+    const line = buffer.readUInt32LE(offset)
+    offset += 4
+    const endLine = buffer.readUInt32LE(offset)
+    offset += 4
+    const column = buffer.readUInt16LE(offset)
+    offset += 2
+    const kindCode = buffer.readUInt8(offset)
+    offset += 1
+    let condition: string | undefined
+    if (layout.entryCondition) {
+      if (offset + 4 > buffer.length) return undefined
+      const conditionLength = buffer.readUInt32LE(offset)
+      offset += 4
+      if (offset + conditionLength > buffer.length) return undefined
+      if (conditionLength > 0) condition = buffer.toString('utf8', offset, offset + conditionLength)
+      offset += conditionLength
+    }
+    entries.push({
+      name,
+      kind: KIND_NAMES[kindCode] ?? 'function',
+      file: filePath,
+      line,
+      endLine,
+      column,
+      ...(condition !== undefined ? { condition } : {}),
+    })
+  }
+  let includes: string[] | undefined
+  if (layout.entryIncludes) {
+    if (offset + 4 > buffer.length) return undefined
+    const includeCount = buffer.readUInt32LE(offset)
+    offset += 4
+    if (includeCount > 0) includes = []
+    for (let index = 0; index < includeCount; index++) {
+      if (offset + 4 > buffer.length) return undefined
+      const includeLength = buffer.readUInt32LE(offset)
+      offset += 4
+      if (offset + includeLength > buffer.length) return undefined
+      includes!.push(buffer.toString('utf8', offset, offset + includeLength))
+      offset += includeLength
+    }
+  }
+  const record: SnapshotDeltaSetRecord = {
+    kind: 'set',
+    path: filePath,
+    mtimeMs,
+    size,
+    entries,
+    // v1 记录 / 全 0 哈希：不 materialize 可选字段（与旧数据形状一致）
+    ...(contentHashLo !== undefined && (contentHashLo !== 0 || contentHashHi !== 0)
+      ? { contentHashLo, contentHashHi }
+      : {}),
+    ...(includes !== undefined && includes.length > 0 ? { includes } : {}),
+  }
+  return { record, end: offset }
 }
 
 export function decodeSnapshotDeltaRecords(buffer: Buffer): SnapshotDeltaRecord[] {
@@ -371,8 +517,9 @@ async function appendSnapshotDeltaLocked(
   }
 
   const scan = scanSnapshotDeltaEnd(existing)
-  if (!scan.valid) {
-    // 撕裂的头部 / 坏 magic / 版本不符：整个文件都不可解码，直接整体覆盖（截断到 0 再写）。
+  if (!scan.valid || deltaHeaderVersion(existing) !== SNAPSHOT_DELTA_VERSION) {
+    // 撕裂的头部 / 坏 magic / 旧版本头（v1 记录体与 v2 不同，不能在后面直接接 v2 记录）：
+    // 整个文件都不可解码，直接整体覆盖（截断到 0 再写）。
     await writeFile(deltaPath, encoded)
     await rememberDeltaState(key, deltaPath, encoded.length, 1)
     return { bytesWritten: encoded.length, size: encoded.length, recordCount: 1, reset: true }

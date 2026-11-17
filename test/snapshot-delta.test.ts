@@ -15,6 +15,7 @@ import {
   readSnapshotDeltasDetailed,
   scanSnapshotDeltaEnd,
   snapshotDeltaBytes,
+  SNAPSHOT_DELTA_VERSION,
   snapshotDeltaPath,
 } from '../src/core/snapshot-delta'
 import { loadSnapshot } from '../src/core/store'
@@ -221,7 +222,8 @@ test('snapshot delta: wrong version prefix is replaced by append', async () => {
     const deltaPath = join(dir, 'wrong-version.delta')
     const bogus = Buffer.alloc(16)
     bogus.write('SIDD', 0, 'latin1')
-    bogus.writeUInt32LE(2, 4)
+    // 未知版本：必须整体重建（不能在后半段接当前版本的记录）
+    bogus.writeUInt32LE(SNAPSHOT_DELTA_VERSION + 1, 4)
     bogus.writeUInt8(0, 8)
     bogus.writeUInt32LE(3, 9)
     bogus.write('old', 13, 'utf8')

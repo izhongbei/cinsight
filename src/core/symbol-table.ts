@@ -1,13 +1,15 @@
 import type { FileRecord, SymbolEntry, SymbolKind, SymbolTable } from '../shared/types'
 
 /**
- * 列式符号表实现：
- *   - 字符串表：文件路径、符号名（去重）
- *   - 列数组：nameId / fileIdx / line / endLine / column / kind（TypedArray）
+ * 列式符号表实现（v4）：
+ *   - 字符串表：文件路径、符号名（去重）、条件栈文本（去重，0 号为 ''）
+ *   - 列数组：nameId / fileIdx / line / endLine / column / kind / conditionId（TypedArray）
  *   - nameOffsets：按名字排序后每个名字的条目区间（findByName 二分）
  *   - fileEntryOffsets/fileEntryIndexes：按文件分组的条目索引（entriesInFile 直接切片）
+ *   - contentHashLo/Hi：按 fileIndex 的内容哈希（0/0 = 未记录）
+ *   - includeOffsets/includeTargets：include 图 CSR（已解析到索引内文件的边）
  *
- * 相比对象数组（149 万 × 约 150B），这里每符号约 19B + 字符串表，实测启发式降到 1/4 以下。
+ * 相比对象数组（149 万 × 约 150B），这里每符号约 23B + 字符串表，实测启发式降到 1/4 以下。
  */
 
 export const KIND_CODES: Record<SymbolKind, number> = {
@@ -30,6 +32,12 @@ const KIND_NAMES: readonly SymbolKind[] = [
   'typedef',
 ]
 
+/** isReachable 的 BFS 深度上限（防异常 include 环/超深链拖死查询）。 */
+const MAX_INCLUDE_DEPTH = 64
+
+/** 空 include 结果共享同一只读数组（避免每次查询分配）。 */
+const NO_INCLUDES: readonly string[] = Object.freeze([])
+
 export interface SymbolTableColumns {
   readonly names: readonly string[]
   readonly nameOffsets: Uint32Array
@@ -39,8 +47,19 @@ export interface SymbolTableColumns {
   readonly endLines: Uint32Array
   readonly columns: Uint16Array
   readonly kinds: Uint8Array
+  /** 条件字符串表：0 号固定为 ''（表示无条件） */
+  readonly conditions: readonly string[]
+  /** 每个条目的条件 id（0 = 无条件） */
+  readonly conditionIds: Uint32Array
   readonly fileEntryOffsets: Uint32Array
   readonly fileEntryIndexes: Uint32Array
+  /** 按 fileIndex 的内容哈希（lo/hi；0/0 = 未记录） */
+  readonly contentHashLo: Uint32Array
+  readonly contentHashHi: Uint32Array
+  /** include CSR：offsets[fileIndex]..offsets[fileIndex+1] 是 includeTargets 切片 */
+  readonly includeOffsets: Uint32Array
+  /** include 目标（fileIndex），按来源文件分段 */
+  readonly includeTargets: Uint32Array
 }
 
 function compareStrings(a: string, b: string): number {
@@ -71,6 +90,11 @@ class SymbolTableImpl implements SymbolTable {
   readonly columns: SymbolTableColumns
 
   private readonly fileIndexByPath: Map<string, number>
+  /**
+   * isReachable 的闭包缓存（按 fromFile 路径）：表实例不可变，缓存随表替换自然失效。
+   * 大工程里同一源文件的多次定义查询共享一次 BFS。
+   */
+  private readonly reachableCache = new Map<string, ReadonlySet<string>>()
 
   constructor(options: {
     version: number
@@ -95,6 +119,8 @@ class SymbolTableImpl implements SymbolTable {
     }
     const columns = this.columns
     const fileIndex = columns.fileIndexes[index]!
+    const conditionId = columns.conditionIds[index]!
+    const condition = conditionId === 0 ? undefined : columns.conditions[conditionId]
     return {
       name: this.nameAt(index),
       kind: KIND_NAMES[columns.kinds[index]!] ?? 'function',
@@ -102,6 +128,8 @@ class SymbolTableImpl implements SymbolTable {
       line: columns.lines[index]!,
       endLine: columns.endLines[index]!,
       column: columns.columns[index]!,
+      // 无条件条目不 materialize condition 属性（deepEqual / 序列化保持旧形状）
+      ...(condition !== undefined && condition !== '' ? { condition } : {}),
     }
   }
 
@@ -156,6 +184,76 @@ class SymbolTableImpl implements SymbolTable {
     for (let index = 0; index < this.entryCount; index++) result[index] = this.entryAt(index)
     return result
   }
+
+  includedFiles(file: string): readonly string[] {
+    const fileIndex = this.fileIndexByPath.get(file)
+    if (fileIndex === undefined) return NO_INCLUDES
+    const columns = this.columns
+    const start = columns.includeOffsets[fileIndex]!
+    const end = columns.includeOffsets[fileIndex + 1]!
+    if (start === end) return NO_INCLUDES
+    const result: string[] = []
+    for (let i = start; i < end; i++) {
+      const target = this.files[columns.includeTargets[i]!]
+      if (target) result.push(target.path)
+    }
+    return result
+  }
+
+  isReachable(fromFile: string, toFile: string): boolean {
+    const fromIndex = this.fileIndexByPath.get(fromFile)
+    if (fromIndex === undefined) return false
+    let reachable = this.reachableCache.get(fromFile)
+    if (!reachable) {
+      reachable = this.computeReachable(fromIndex)
+      this.reachableCache.set(fromFile, reachable)
+    }
+    return reachable.has(toFile)
+  }
+
+  /** 从 fileIndex 出发的 BFS 闭包（含经环回到自身的文件；深度上限 64）。 */
+  private computeReachable(fromIndex: number): ReadonlySet<string> {
+    const columns = this.columns
+    const visited = new Set<number>()
+    let frontier: number[] = [fromIndex]
+    for (let depth = 0; depth < MAX_INCLUDE_DEPTH && frontier.length > 0; depth++) {
+      const next: number[] = []
+      for (const fileIndex of frontier) {
+        const start = columns.includeOffsets[fileIndex]!
+        const end = columns.includeOffsets[fileIndex + 1]!
+        for (let i = start; i < end; i++) {
+          const target = columns.includeTargets[i]!
+          if (visited.has(target)) continue
+          visited.add(target)
+          next.push(target)
+        }
+      }
+      frontier = next
+    }
+    const paths = new Set<string>()
+    for (const fileIndex of visited) {
+      const file = this.files[fileIndex]
+      if (file) paths.add(file.path)
+    }
+    return paths
+  }
+
+  contentHashOf(file: string): { lo: number; hi: number } | undefined {
+    const fileIndex = this.fileIndexByPath.get(file)
+    if (fileIndex === undefined) return undefined
+    const lo = this.columns.contentHashLo[fileIndex]!
+    const hi = this.columns.contentHashHi[fileIndex]!
+    if (lo === 0 && hi === 0) return undefined
+    return { lo, hi }
+  }
+}
+
+export interface CreateSymbolTableOptions {
+  /**
+   * 文件 → 已解析到索引内的 include 目标路径（B1）。
+   * 不在 `files` 里的目标会被忽略（未命中不建边）。
+   */
+  readonly includes?: ReadonlyMap<string, readonly string[]>
 }
 
 /** 从对象条目构建列式符号表（构建期/测试用）。 */
@@ -165,12 +263,24 @@ export function createSymbolTable(
   entries: readonly SymbolEntry[],
   builtAt: number,
   version: number,
+  options: CreateSymbolTableOptions = {},
 ): SymbolTable {
   const sortedFiles = [...files].sort((a, b) => compareStrings(a.path, b.path))
   const fileIndexByPath = new Map(sortedFiles.map((file, index) => [file.path, index]))
 
   const names = Array.from(new Set(entries.map((entry) => entry.name))).sort(compareStrings)
   const nameIdByName = new Map(names.map((name, index) => [name, index]))
+
+  // 条件字符串表：0 号固定为 ''（无条件），其余去重升序（快照编码结果稳定）。
+  const conditionValues = new Set<string>()
+  for (const entry of entries) {
+    if (entry.condition !== undefined && entry.condition !== '') conditionValues.add(entry.condition)
+  }
+  const conditions: readonly string[] = [
+    '',
+    ...Array.from(conditionValues).sort(compareStrings),
+  ]
+  const conditionIdByValue = new Map(conditions.map((condition, index) => [condition, index]))
 
   const ordered = entries
     .map((entry) => ({
@@ -194,6 +304,7 @@ export function createSymbolTable(
   const endLines = new Uint32Array(entryCount)
   const columns = new Uint16Array(entryCount)
   const kinds = new Uint8Array(entryCount)
+  const conditionIds = new Uint32Array(entryCount)
 
   const nameOffsets = new Uint32Array(names.length + 1)
   const fileCounts = new Uint32Array(Math.max(sortedFiles.length, 1))
@@ -206,6 +317,9 @@ export function createSymbolTable(
     endLines[index] = item.entry.endLine
     columns[index] = Math.min(item.entry.column, 0xffff)
     kinds[index] = KIND_CODES[item.entry.kind] ?? 0
+    const condition = item.entry.condition
+    conditionIds[index] =
+      condition === undefined || condition === '' ? 0 : conditionIdByValue.get(condition) ?? 0
     nameOffsets[item.nameId] = nameOffsets[item.nameId]! + 1
     fileCounts[item.fileIndex] = fileCounts[item.fileIndex]! + 1
   }
@@ -249,6 +363,34 @@ export function createSymbolTable(
     }
   }
 
+  // 内容哈希列（未设置 = 0/0）
+  const contentHashLo = new Uint32Array(sortedFiles.length)
+  const contentHashHi = new Uint32Array(sortedFiles.length)
+  for (let fileIndex = 0; fileIndex < sortedFiles.length; fileIndex++) {
+    const file = sortedFiles[fileIndex]!
+    contentHashLo[fileIndex] = file.contentHashLo ?? 0
+    contentHashHi[fileIndex] = file.contentHashHi ?? 0
+  }
+
+  // include CSR：每文件去重、保持 options 中给出的顺序
+  const includeOffsets = new Uint32Array(sortedFiles.length + 1)
+  const includeTargets: number[] = []
+  if (options.includes) {
+    for (let fileIndex = 0; fileIndex < sortedFiles.length; fileIndex++) {
+      includeOffsets[fileIndex] = includeTargets.length
+      const targets = options.includes.get(sortedFiles[fileIndex]!.path)
+      if (!targets) continue
+      const seen = new Set<number>()
+      for (const targetPath of targets) {
+        const targetIndex = fileIndexByPath.get(targetPath)
+        if (targetIndex === undefined || seen.has(targetIndex)) continue
+        seen.add(targetIndex)
+        includeTargets.push(targetIndex)
+      }
+    }
+  }
+  includeOffsets[sortedFiles.length] = includeTargets.length
+
   return new SymbolTableImpl({
     version,
     roots: [...roots],
@@ -263,8 +405,14 @@ export function createSymbolTable(
       endLines,
       columns,
       kinds,
+      conditions,
+      conditionIds,
       fileEntryOffsets,
       fileEntryIndexes,
+      contentHashLo,
+      contentHashHi,
+      includeOffsets,
+      includeTargets: Uint32Array.from(includeTargets),
     },
   })
 }
@@ -286,207 +434,24 @@ export function getSymbolTableColumns(table: SymbolTable): SymbolTableColumns | 
 }
 
 // ---------------------------------------------------------------------------
-// 增量更新：在列式数据上直接重建（不 materialize 全部条目），供单文件保存/删除使用
+// 增量更新：单文件增删后重建表（服务层/兼容 API；不 materialize 全部条目之外的对象）
 // ---------------------------------------------------------------------------
 
-/** 合并旧名字表与新增名字（均升序）；remap[oldId] = newId（单调）。 */
-function mergeNameTables(
-  oldNames: readonly string[],
-  newNames: readonly string[],
-): { names: string[]; remap: Uint32Array } {
-  const extra = Array.from(new Set(newNames)).sort(compareStrings)
-  const names: string[] = []
-  const remap = new Uint32Array(oldNames.length)
-  let oldIndex = 0
-  let extraIndex = 0
-  while (oldIndex < oldNames.length || extraIndex < extra.length) {
-    const oldName = oldNames[oldIndex]
-    const extraName = extra[extraIndex]
-    if (extraName === undefined || (oldName !== undefined && compareStrings(oldName, extraName) <= 0)) {
-      remap[oldIndex] = names.length
-      names.push(oldName!)
-      if (extraName !== undefined && oldName === extraName) extraIndex++
-      oldIndex++
-    } else {
-      names.push(extraName)
-      extraIndex++
-    }
-  }
-  return { names, remap }
-}
-
-function findNameId(names: readonly string[], target: string): number {
-  let low = 0
-  let high = names.length - 1
-  while (low <= high) {
-    const mid = (low + high) >>> 1
-    const cmp = compareStrings(names[mid]!, target)
-    if (cmp === 0) return mid
-    if (cmp < 0) low = mid + 1
-    else high = mid - 1
-  }
-  return -1
-}
-
-function removeFileFromColumns(
-  oldColumns: SymbolTableColumns,
-  fileIndex: number,
-  nameRemap: Uint32Array,
-  newNamesLength: number,
-  extraEntries: readonly {
-    nameId: number
-    fileIndex: number
-    line: number
-    endLine: number
-    column: number
-    kindCode: number
-  }[],
-): {
-  nameIds: Uint32Array
-  fileIndexes: Uint32Array
-  lines: Uint32Array
-  endLines: Uint32Array
-  columns: Uint16Array
-  kinds: Uint8Array
-  counts: Uint32Array
-} {
-  const sortedExtra = [...extraEntries].sort((a, b) => a.nameId - b.nameId)
-  let oldRemaining = 0
-  for (let index = 0; index < oldColumns.nameIds.length; index++) {
-    if (oldColumns.fileIndexes[index] !== fileIndex) oldRemaining += 1
-  }
-  const total = oldRemaining + sortedExtra.length
-  const nameIds = new Uint32Array(total)
-  const fileIndexes = new Uint32Array(total)
-  const lines = new Uint32Array(total)
-  const endLines = new Uint32Array(total)
-  const columns = new Uint16Array(total)
-  const kinds = new Uint8Array(total)
-  const counts = new Uint32Array(newNamesLength)
-
-  let out = 0
-  let oldIndex = 0
-  let extraIndex = 0
-  while (out < total) {
-    while (
-      oldIndex < oldColumns.nameIds.length &&
-      oldColumns.fileIndexes[oldIndex] === fileIndex
-    ) {
-      oldIndex++
-    }
-    const oldNameId =
-      oldIndex < oldColumns.nameIds.length
-        ? nameRemap[oldColumns.nameIds[oldIndex]!]!
-        : Number.MAX_SAFE_INTEGER
-    const extra = sortedExtra[extraIndex]
-    if (extra !== undefined && extra.nameId <= oldNameId) {
-      nameIds[out] = extra.nameId
-      fileIndexes[out] = extra.fileIndex
-      lines[out] = extra.line
-      endLines[out] = extra.endLine
-      columns[out] = Math.min(extra.column, 0xffff)
-      kinds[out] = extra.kindCode
-      counts[extra.nameId] = counts[extra.nameId]! + 1
-      extraIndex++
-    } else {
-      nameIds[out] = oldNameId
-      fileIndexes[out] = oldColumns.fileIndexes[oldIndex]!
-      lines[out] = oldColumns.lines[oldIndex]!
-      endLines[out] = oldColumns.endLines[oldIndex]!
-      columns[out] = oldColumns.columns[oldIndex]!
-      kinds[out] = oldColumns.kinds[oldIndex]!
-      counts[oldNameId] = counts[oldNameId]! + 1
-      oldIndex++
-    }
-    out++
-  }
-  return { nameIds, fileIndexes, lines, endLines, columns, kinds, counts }
-}
-
-function buildLookupIndexes(
-  names: readonly string[],
-  nameIds: Uint32Array,
-  fileIndexes: Uint32Array,
-  lines: Uint32Array,
-  columns: Uint16Array,
-  fileCount: number,
-  counts: Uint32Array,
-): {
-  nameOffsets: Uint32Array
-  fileEntryOffsets: Uint32Array
-  fileEntryIndexes: Uint32Array
-} {
-  const entryCount = nameIds.length
-  const nameOffsets = new Uint32Array(names.length + 1)
-  let running = 0
-  for (let nameId = 0; nameId < names.length; nameId++) {
-    nameOffsets[nameId] = running
-    running += counts[nameId]!
-  }
-  nameOffsets[names.length] = running
-  if (running !== entryCount) throw new Error(`symbol table name offsets mismatch: ${running} != ${entryCount}`)
-
-  const fileCounts = new Uint32Array(Math.max(fileCount, 1))
-  for (let index = 0; index < entryCount; index++) {
-    fileCounts[fileIndexes[index]!] = fileCounts[fileIndexes[index]!]! + 1
-  }
-  const fileEntryOffsets = new Uint32Array(fileCount + 1)
-  let fileRunning = 0
-  for (let fileIndex = 0; fileIndex < fileCount; fileIndex++) {
-    fileEntryOffsets[fileIndex] = fileRunning
-    fileRunning += fileCounts[fileIndex]!
-  }
-  fileEntryOffsets[fileCount] = fileRunning
-
-  const buckets: number[][] = Array.from({ length: fileCount }, () => [])
-  for (let index = 0; index < entryCount; index++) buckets[fileIndexes[index]!]!.push(index)
-  const fileEntryIndexes = new Uint32Array(entryCount)
-  let cursor = 0
-  for (let fileIndex = 0; fileIndex < fileCount; fileIndex++) {
-    const bucket = buckets[fileIndex]!
-    bucket.sort(
-      (a, b) => lines[a]! - lines[b]! || columns[a]! - columns[b]! || nameIds[a]! - nameIds[b]!,
-    )
-    for (const entryIndex of bucket) {
-      fileEntryIndexes[cursor++] = entryIndex
-    }
-  }
-  return { nameOffsets, fileEntryOffsets, fileEntryIndexes }
-}
-
-function assembleTable(
+/**
+ * 收集表中的 include 边（路径 → 目标），`keep` 给定时同时过滤掉已不存在的文件/目标。
+ * v4 元数据在重建时必须随文件保留，否则单文件增删会静默丢掉 include 图。
+ */
+function collectIncludes(
   table: SymbolTable,
-  files: readonly FileRecord[],
-  names: readonly string[],
-  merged: ReturnType<typeof removeFileFromColumns>,
-): SymbolTable {
-  const indexes = buildLookupIndexes(
-    names,
-    merged.nameIds,
-    merged.fileIndexes,
-    merged.lines,
-    merged.columns,
-    files.length,
-    merged.counts,
-  )
-  return symbolTableFromColumns({
-    version: table.version,
-    roots: [...table.roots],
-    builtAt: Date.now(),
-    files: [...files],
-    columns: {
-      names: [...names],
-      nameOffsets: indexes.nameOffsets,
-      nameIds: merged.nameIds,
-      fileIndexes: merged.fileIndexes,
-      lines: merged.lines,
-      endLines: merged.endLines,
-      columns: merged.columns,
-      kinds: merged.kinds,
-      fileEntryOffsets: indexes.fileEntryOffsets,
-      fileEntryIndexes: indexes.fileEntryIndexes,
-    },
-  })
+  keep: ReadonlySet<string>,
+): Map<string, readonly string[]> {
+  const includes = new Map<string, readonly string[]>()
+  for (const file of table.files) {
+    if (!keep.has(file.path)) continue
+    const targets = table.includedFiles(file.path).filter((target) => keep.has(target))
+    if (targets.length > 0) includes.set(file.path, targets)
+  }
+  return includes
 }
 
 /** 用新条目替换/新增一个文件（服务层单文件保存）。 */
@@ -495,46 +460,29 @@ export function upsertFileInTable(
   fileRecord: FileRecord,
   entries: readonly SymbolEntry[],
 ): SymbolTable {
-  const oldColumns = getSymbolTableColumns(table)
-  if (!oldColumns) {
-    const nextFiles = table.files.filter((file) => file.path !== fileRecord.path)
-    nextFiles.push(fileRecord)
-    const nextEntries = table.toArray().filter((entry) => entry.file !== fileRecord.path)
-    nextEntries.push(...entries)
-    return createSymbolTable(table.roots, nextFiles, nextEntries, Date.now(), table.version)
-  }
-
-  const oldFileIndex = table.files.findIndex((file) => file.path === fileRecord.path)
-  const nextFiles = [...table.files]
-  let nextFileIndex: number
-  if (oldFileIndex >= 0) {
-    nextFiles[oldFileIndex] = fileRecord
-    nextFileIndex = oldFileIndex
-  } else {
-    nextFiles.push(fileRecord)
-    nextFileIndex = nextFiles.length - 1
-  }
-
-  const { names, remap } = mergeNameTables(oldColumns.names, entries.map((entry) => entry.name))
-  const extraEntries = entries.map((entry) => ({
-    nameId: findNameId(names, entry.name),
-    fileIndex: nextFileIndex,
-    line: entry.line,
-    endLine: entry.endLine,
-    column: entry.column,
-    kindCode: KIND_CODES[entry.kind] ?? 0,
-  }))
-  const merged = removeFileFromColumns(oldColumns, oldFileIndex, remap, names.length, extraEntries)
-  return assembleTable(table, nextFiles, names, merged)
+  const nextFiles = table.files.filter((file) => file.path !== fileRecord.path)
+  nextFiles.push(fileRecord)
+  const nextEntries: SymbolEntry[] = []
+  table.forEachEntry((entry) => {
+    if (entry.file !== fileRecord.path) nextEntries.push(entry)
+  })
+  nextEntries.push(...entries)
+  const keep = new Set(nextFiles.map((file) => file.path))
+  return createSymbolTable(table.roots, nextFiles, nextEntries, Date.now(), table.version, {
+    includes: collectIncludes(table, keep),
+  })
 }
 
 /** 从表中删除一个文件（服务层删除文件）。 */
 export function removeFileFromTable(table: SymbolTable, filePath: string): SymbolTable {
-  const oldColumns = getSymbolTableColumns(table)
-  const fileIndex = table.files.findIndex((file) => file.path === filePath)
-  if (!oldColumns || fileIndex < 0) return table
-  const nextFiles = table.files.filter((_, index) => index !== fileIndex)
-  const remap = new Uint32Array(oldColumns.names.length).map((_, index) => index)
-  const merged = removeFileFromColumns(oldColumns, fileIndex, remap, oldColumns.names.length, [])
-  return assembleTable(table, nextFiles, oldColumns.names, merged)
+  if (!table.files.some((file) => file.path === filePath)) return table
+  const nextFiles = table.files.filter((file) => file.path !== filePath)
+  const nextEntries: SymbolEntry[] = []
+  table.forEachEntry((entry) => {
+    if (entry.file !== filePath) nextEntries.push(entry)
+  })
+  const keep = new Set(nextFiles.map((file) => file.path))
+  return createSymbolTable(table.roots, nextFiles, nextEntries, Date.now(), table.version, {
+    includes: collectIncludes(table, keep),
+  })
 }

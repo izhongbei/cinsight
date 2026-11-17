@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { conditionAt, scanConditions } from '../src/core/scan'
+import { conditionAt, scanConditions, scanSource } from '../src/core/scan'
 
 test('scanConditions: nested ifdef with else/elif/endif', () => {
   const text = [
@@ -44,4 +44,21 @@ test('scanConditions: keeps only the innermost three nesting levels', () => {
     '#endif',
   ].join('\n')
   assert.equal(conditionAt(scanConditions(text), 4), '#if B && #if C && #if D')
+})
+
+test('scanSource: attaches condition per symbol and ignores fake directives in comments/strings', () => {
+  const text = [
+    '#ifdef REAL_CONFIG',
+    'int inside_guard(void) { return 1; }',
+    '#endif',
+    '// #ifdef COMMENT_FAKE',
+    'int after_comment(void) { return 2; }',
+    'static const char *tag = "#ifdef STRING_FAKE";',
+    'int after_string(void) { return 3; }',
+  ].join('\n')
+  const symbols = scanSource(text)
+  const byName = new Map(symbols.map((symbol) => [symbol.name, symbol]))
+  assert.equal(byName.get('inside_guard')?.condition, '#ifdef REAL_CONFIG')
+  assert.equal(byName.get('after_comment')?.condition, undefined)
+  assert.equal(byName.get('after_string')?.condition, undefined)
 })

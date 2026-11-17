@@ -23,12 +23,18 @@ export interface SymbolEntry {
   readonly endLine: number
   /** 0-based 名字起始列 */
   readonly column: number
+  /** 定义所在行生效的条件栈文本；undefined/'' = 无条件（B4） */
+  readonly condition?: string
 }
 
 export interface FileRecord {
   readonly path: string
   readonly mtimeMs: number
   readonly size: number
+  /** 64 位内容哈希的低 32 位（v4 起可用；缺失 = 未记录，按 0 读） */
+  readonly contentHashLo?: number
+  /** 64 位内容哈希的高 32 位（v4 起可用；缺失 = 未记录，按 0 读） */
+  readonly contentHashHi?: number
 }
 
 /**
@@ -51,6 +57,12 @@ export interface SymbolTable {
   forEachName(callback: (name: string) => void): void
   /** 测试/兼容用：物化全部条目（生产路径不应调用） */
   toArray(): SymbolEntry[]
+  /** 该文件直接包含的索引内文件路径（已解析；未解析的不返回）（B1） */
+  includedFiles(file: string): readonly string[]
+  /** fromFile 是否直接或传递包含 toFile（BFS + 缓存；深度上限 64）（B1） */
+  isReachable(fromFile: string, toFile: string): boolean
+  /** 该文件的内容哈希（lo/hi）；无哈希返回 undefined（B2） */
+  contentHashOf(file: string): { lo: number; hi: number } | undefined
 }
 
 /** 一条已扫描到的 `#include`（路径去掉引号/尖括号；行号为 0-based）。 */
@@ -164,7 +176,7 @@ export interface NameIndexData {
 
 export type ReadFileFn = (relativePath: string) => Promise<string>
 
-export const SNAPSHOT_VERSION = 3
+export const SNAPSHOT_VERSION = 4
 export const NAME_INDEX_VERSION = 1
 export const INDEXED_EXTENSIONS = ['.c', '.h', '.cc', '.cpp', '.hpp', '.hh', '.inl'] as const
 export const DEFAULT_EXCLUDE = [
