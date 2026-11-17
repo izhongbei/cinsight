@@ -159,6 +159,40 @@ test('indexer includes: changed file re-resolves edges and recomputes its hash',
   }
 })
 
+test('indexer includes: roots change re-resolves the include graph instead of reusing previous', async () => {
+  const dir = tempDir('si-indexer-roots-change-')
+  try {
+    writeFiles(dir, {
+      'proj/src/a.c': ['#include "inc/x.h"', 'int alpha(void) { return 0; }', ''].join('\n'),
+      'proj/inc/x.h': 'struct sk_buff { int len; };\n',
+    })
+
+    // 窄 root：只索引 proj/src，proj/inc/x.h 不在索引里，include 无法解析
+    const narrow = await buildIndex({ ...makeOptions(dir), roots: ['proj/src'] })
+    assert.equal(narrow.summary.files, 1)
+    assert.deepEqual(narrow.snapshot.includedFiles('proj/src/a.c'), [])
+
+    // root 改成 proj：a.c 本身没变（mtime/size 相同），但旧 include 图是在窄 root 下解析的。
+    // 复用旧元数据会保留空边，所以必须把 previous 当作不存在，重扫并重新解析。
+    const widened = await buildIndex({
+      ...makeOptions(dir),
+      roots: ['proj'],
+      previous: narrow.snapshot,
+    })
+    assert.equal(widened.summary.files, 2)
+    assert.equal(widened.summary.unchanged, 0, 'roots change must not reuse previous files')
+    assert.equal(widened.summary.added, 2)
+    assert.deepEqual(
+      widened.snapshot.includedFiles('proj/src/a.c'),
+      ['proj/inc/x.h'],
+      'include graph is re-resolved under the new roots',
+    )
+    assert.equal(widened.snapshot.isReachable('proj/src/a.c', 'proj/inc/x.h'), true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('indexer includes: previous snapshot of another version is not reused', async () => {
   const dir = makeIncludeTree()
   try {

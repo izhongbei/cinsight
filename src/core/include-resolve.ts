@@ -30,6 +30,9 @@ export interface IncludeResolutionContext {
 /** Windows 盘符绝对路径（`C:/x`）；posix 规则只把前导 `/` 当绝对路径。 */
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:\//
 
+/** UNC 绝对路径（`//server/share/x`，反斜杠已归一为 `/`）。 */
+const UNC_ABSOLUTE = /^\/\/[^/]/
+
 /** 反斜杠归一为 `/`（Windows 风格 include / 路径与平台无关地比较）。 */
 function toPosix(value: string): string {
   return value.replace(/\\/g, '/')
@@ -58,14 +61,24 @@ function normalizeRoot(root: string): string {
   return rel.replace(/\/+$/, '')
 }
 
-/** 只有 workspace 相对、非 `.`/`..`/绝对路径的候选才可能是索引内文件。 */
+/**
+ * 只有 workspace 相对、非 `.`/`..`/绝对路径的候选才可能是索引内文件。
+ *
+ * 候选已经过 `toPosix`（`\`→`/`）与 `path.posix.normalize`，所以这里还要显式拒绝
+ * 两种「posix 规则看不出来」的 Windows 绝对形式：
+ * - 盘符：`C:/x` 不是 posix 绝对路径，若照收会去匹配索引里恰好叫 `C:` 的目录；
+ * - UNC：`//server/share` 在部分实现里被折叠成 `/server/share`（后者已由
+ *   `path.posix.isAbsolute` 拒绝），这里再挡一次归一后仍保留双斜杠的形式。
+ */
 function isWorkspaceRelative(candidate: string): boolean {
   return (
     candidate !== '' &&
     candidate !== '.' &&
     candidate !== '..' &&
     !candidate.startsWith('../') &&
-    !path.posix.isAbsolute(candidate)
+    !path.posix.isAbsolute(candidate) &&
+    !WINDOWS_ABSOLUTE.test(candidate) &&
+    !UNC_ABSOLUTE.test(candidate)
   )
 }
 

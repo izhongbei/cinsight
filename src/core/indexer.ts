@@ -54,6 +54,28 @@ function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
 }
 
+/**
+ * 归一 indexRoot，用于「本次构建 vs 旧快照」比较（规则与 walk 的 `toRelativeRoot` 对齐）：
+ * `\`→`/`、折叠重复 `/`、去前导 `./`、`.`→空、去尾部 `/`、绝对路径相对化到 workspaceRoot。
+ */
+function normalizeRootPath(workspaceRoot: string, root: string): string {
+  let rel = root
+  if (path.isAbsolute(rel)) rel = path.relative(workspaceRoot, rel)
+  rel = rel.replace(/\\/g, '/').replace(/\/{2,}/g, '/')
+  while (rel.startsWith('./')) rel = rel.slice(2)
+  if (rel === '.') rel = ''
+  return rel.replace(/\/+$/, '')
+}
+
+function normalizeRoots(workspaceRoot: string, roots: readonly string[]): string[] {
+  return roots.map((root) => normalizeRootPath(workspaceRoot, root))
+}
+
+/** 顺序敏感：roots 顺序决定 include 的 root 前缀搜索顺序，顺序变了也要重新解析。 */
+function sameRoots(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 /** 组装符号表：文件与符号都做稳定排序，索引查询走 name/file 两个维度。 */
 export function createSnapshot(
   roots: readonly string[],
@@ -269,8 +291,21 @@ export async function buildIndex(
       ? normalizeConcurrency(Math.min(configuredConcurrency, downgrade.concurrency))
       : configuredConcurrency
 
-  // 旧快照按文件建索引（版本不符视为没有旧快照：v4 元数据契约不跨版本复用）
-  const previousV4 = previous && previous.version === SNAPSHOT_VERSION ? previous : undefined
+  // 旧快照按文件建索引（版本不符视为没有旧快照：v4 元数据契约不跨版本复用）。
+  //
+  // indexRoots 变了同样不能复用：include 边依赖 roots 做前缀解析（相对目录 → 原样 →
+  // `<root>/<include>`），复用旧 `includedFiles` 会把「旧 roots 下未命中的空图」带进新
+  // 索引。例如 roots 从 proj/src 改成 proj 后，proj/src/a.c 的 #include "inc/x.h" 本应
+  // 解析到 proj/inc/x.h，但文件本身没变（mtime/size 相同）会走复用分支。因此 roots 归一
+  // 后不一致就当作没有 previous：全部文件重扫、include 图按新 roots 重新解析。
+  const rootsChanged =
+    previous !== undefined &&
+    !sameRoots(
+      normalizeRoots(workspaceRoot, previous.roots),
+      normalizeRoots(workspaceRoot, roots),
+    )
+  const previousV4 =
+    previous && !rootsChanged && previous.version === SNAPSHOT_VERSION ? previous : undefined
   const previousFiles = new Map<string, FileRecord>()
   const previousEntries = new Map<string, SymbolEntry[]>()
   if (previousV4) {

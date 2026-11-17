@@ -933,7 +933,9 @@ async function checkServiceRoundTrip() {
 async function checkLegacySnapshotUpgrade() {
   const dist = path.join(EXT_ROOT, 'dist')
   const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
-  const { snapshotDeltaPath } = require(path.join(dist, 'src/core/snapshot-delta.js'))
+  const { snapshotDeltaPath, appendSnapshotDelta, snapshotDeltaBytes } = require(
+    path.join(dist, 'src/core/snapshot-delta.js'),
+  )
   const { encodeSnapshot } = require(path.join(dist, 'src/core/store.js'))
   const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
   const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
@@ -969,6 +971,18 @@ async function checkLegacySnapshotUpgrade() {
   assert.equal(legacy.contentHashOf('a.c'), undefined, 'legacy fixture has no content hash')
   assert.deepEqual(legacy.includedFiles('a.c'), [], 'legacy fixture has no include edges')
   fs.writeFileSync(snapshotPath, encodeSnapshot(legacy))
+
+  // 旧 delta 必须真的存在，否则下面「legacy delta deleted」断言是空的（fixture 从来没写过
+  // delta，断言永远通过）。先写一条可解码的 v2 记录，再验证 loadFromDisk 会把它一起删掉。
+  await appendSnapshotDelta(deltaPath, {
+    kind: 'set',
+    path: 'a.c',
+    mtimeMs: 1,
+    size: 2,
+    entries: [{ name: 'alpha', kind: 'function', file: 'a.c', line: 2, endLine: 2, column: 5 }],
+    includes: ['inc/x.h'],
+  })
+  assert.ok((await snapshotDeltaBytes(deltaPath)) > 0, 'legacy delta fixture is written')
 
   const previousFolders = vscode.workspace.workspaceFolders
   const previousRoots = configurationValues.indexRoots

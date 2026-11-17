@@ -144,6 +144,21 @@ test('include-resolve: absolute roots never produce workspace-relative hits', ()
   )
 })
 
+test('include-resolve: windows drive-letter and UNC candidates are rejected after normalization', () => {
+  // 盘符 root：拼出的 "C:/abs/proj/x.h" 不是 workspace 相对路径，即使索引里恰好有同名条目
+  // 也不能命中（\ 归一为 / 之后仍有盘符前缀）。
+  const paths = ['src/a.c', 'C:/abs/proj/x.h', '//server/share/x.h', 'server/share/x.h']
+  assert.equal(resolveIncludePath('src/a.c', 'x.h', context(paths, ['C:\\abs\\proj'])), undefined)
+  // 盘符 fromFile 的目录候选同理：dirname 之后仍是绝对路径形式
+  assert.equal(
+    resolveIncludePath('C:\\ws\\src\\a.c', 'x.h', context(['C:/ws/src/x.h'])),
+    undefined,
+  )
+  // UNC include（反斜杠归一后 //server/share/...）与 UNC root 都不得命中
+  assert.equal(resolveIncludePath('a.c', '\\\\server\\share\\x.h', context(paths)), undefined)
+  assert.equal(resolveIncludePath('src/a.c', 'x.h', context(paths, ['\\\\server\\share'])), undefined)
+})
+
 test('include-resolve: batch helper preserves include order and dedupes targets', () => {
   const ctx = context(['src/a.c', 'src/x.h', 'inc/y.h', 'inc/x.h'])
   assert.deepEqual(
