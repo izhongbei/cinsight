@@ -284,7 +284,7 @@ test('snapshot delta: set/remove records roundtrip', async () => {
     await appendSnapshotDelta(deltaPath, { kind: 'remove', path: 'b.c' })
     const both = await readSnapshotDeltas(deltaPath)
     assert.deepEqual(both.map((r) => r.kind), ['set', 'remove'])
-    assert.equal(await snapshotDeltaBytes(deltaPath), bytes + (await snapshotDeltaBytes(deltaPath)) - bytes)
+    assert.ok((await snapshotDeltaBytes(deltaPath)) > bytes, 'delta grows after the second record')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -1057,7 +1057,7 @@ test('index e2e: save -> delta -> reload -> compaction keeps the same symbol set
 npm run compile
 node --test dist/test/index-e2e.test.js
 ```
-Expected: FAIL —— service 尚未接入（测试文件本身在 T3 后即可通过；若通过则说明组合逻辑 OK，继续 Step 3）。**此测试在 T3 完成后即可通过，Step 3 起才是 service 改造。**
+Expected: 该测试是 core 组合的契约回归测试（T3 完成后即可通过）；若通过，记录通过结果并继续 Step 3，service 改造的正确性由 Step 7 的 smoke + 手动验证覆盖。不要为了让测试失败而修改生产代码。
 
 - [ ] **Step 3: 改造 service 字段与加载路径**
 
@@ -1749,9 +1749,7 @@ async function showIndexDiagnostics(service: SymbolService): Promise<void> {
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     roots: service.configRoots(),
     snapshotPath: service.snapshotPath,
-    snapshotBytes: (await service.deltaBytes()) >= 0 && service.lastSummaryPublic?.snapshotBytes
-      ? service.lastSummaryPublic.snapshotBytes
-      : 0,
+    snapshotBytes: service.lastSummaryPublic?.snapshotBytes ?? 0,
     deltaBytes: await service.deltaBytes(),
     nameIndexPath: service.nameIndexPath,
     nameIndexBytes: service.lastSummaryPublic?.nameIndexBytes ?? 0,
