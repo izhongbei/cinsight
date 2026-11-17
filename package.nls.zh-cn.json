@@ -19,7 +19,7 @@
   "config.concurrency": "建立索引时使用的 worker 线程数。",
   "config.maxSymbols.description": "符号数超过该值时提示缩小索引目录。",
   "config.maxFiles.description": "文件数超过该值时提示缩小索引目录。",
-  "config.autoCompact.description": "空闲、累计变更较多或关闭时自动把索引增量（delta）合并进基础快照，降低磁盘与内存占用；关闭后仍会追加 delta 保证不丢数据，但不自动合并（重建索引不受影响）。",
+  "config.autoCompact.description": "空闲、累计变更较多或关闭时自动把索引增量（delta）合并进基础快照，降低磁盘与内存占用；关闭后仍会追加 delta 保证不丢数据，但不再自动合并——到达安全上限（累计 5000 个文件变更或 32 MB delta）时仍会强制合并一次，overlay 很大时查询可能变慢（重建索引不受影响）。",
   "config.searchLimit": "单次搜索返回的最大符号数。",
   "config.autoReindexOnSave": "文件保存、新建或删除后自动重新解析该文件。",
   "config.enableCallHierarchy": "同时注册 VS Code 原生调用层次 Provider（右键函数可交互查看调用者/被调用者）。",

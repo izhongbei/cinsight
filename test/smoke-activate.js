@@ -17,6 +17,7 @@ const assert = require('node:assert/strict')
 const Module = require('node:module')
 const path = require('node:path')
 const fs = require('node:fs')
+const os = require('node:os')
 
 const EXT_ROOT = path.resolve(__dirname, '..')
 const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'))
@@ -725,16 +726,204 @@ async function checkAutoCompactFlush() {
     assert.equal(compactCalls, 1, 'autoCompact=true flush compacts')
     assert.equal(nameCompactCalls, 1, 'autoCompact=true flush compacts name index')
 
-    // dispose 同样受 autoCompact 门控：关闭后不再 compaction
+    // autoCompact=false 但到达硬安全上限：仍要强制 compaction（overlay 无界会拖慢查询）
     configurationValues.autoCompact = false
+    service.mutableValue = { pendingChanges: 5000 }
+    await service.flush()
+    assert.equal(compactCalls, 2, 'safety cap compacts even when autoCompact=false')
+
+    // dispose 同样受 autoCompact 门控：未到上限时关闭后不再 compaction
     service.mutableValue = { pendingChanges: 1 }
     service.dispose()
-    assert.equal(compactCalls, 1, 'dispose must not compact when autoCompact=false')
+    assert.equal(compactCalls, 2, 'dispose must not compact when autoCompact=false')
   } finally {
     configurationValues.autoCompact = previousAutoCompact
     service.mutableValue = undefined
     service.dispose()
     fs.rmSync(testDir, { recursive: true, force: true })
+  }
+}
+
+/** 记录日志，供 service 级检查断言 warn 内容。 */
+function capturingLogger() {
+  const entries = []
+  const logger = {
+    entries,
+    info: (message) => entries.push(['info', message]),
+    warn: (message) => entries.push(['warn', message]),
+    error: (message) => entries.push(['error', message]),
+    show() {},
+    dispose() {},
+  }
+  return logger
+}
+
+/**
+ * 真实 service 级 round trip（不 stub 状态机）：
+ * 临时 workspace + 独立 storage -> 建索引 -> 通过公开的 updateFile 保存一个改动
+ * -> 断言 delta 落盘 -> flush（compaction）-> 重新 create service -> 符号仍在。
+ */
+async function checkServiceRoundTrip() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+  const { snapshotDeltaBytes, snapshotDeltaPath, readSnapshotDeltas } = require(
+    path.join(dist, 'src/core/snapshot-delta.js'),
+  )
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-smoke-roundtrip-'))
+  const workspace = path.join(dir, 'ws')
+  const storage = path.join(dir, 'storage')
+  fs.mkdirSync(workspace, { recursive: true })
+  fs.mkdirSync(storage, { recursive: true })
+  const sourceFile = path.join(workspace, 'a.c')
+  fs.writeFileSync(sourceFile, 'int alpha(void) { return 1; }\n', 'utf8')
+
+  const previousFolders = vscode.workspace.workspaceFolders
+  const previousRoots = configurationValues.indexRoots
+  const previousAutoCompact = configurationValues.autoCompact
+  vscode.workspace.workspaceFolders = [{ uri: Uri.file(workspace), name: 'roundtrip', index: 0 }]
+  configurationValues.indexRoots = ['.']
+  configurationValues.autoCompact = true
+
+  const context = { storageUri: Uri.file(storage) }
+  const snapshotPath = path.join(storage, 'symbols.sidx')
+  const deltaPath = snapshotDeltaPath(snapshotPath)
+  const logger = capturingLogger()
+  let service
+  let reloaded
+  try {
+    service = await SymbolService.create(context, logger)
+    const summary = await service.rebuild()
+    assert.ok(summary, 'service rebuild returns a summary')
+    assert.equal(service.ready, true)
+    assert.deepEqual(service.fileSymbols('a.c').map((e) => e.name), ['alpha'])
+    assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'fresh build has no delta')
+
+    // 走真实的公开保存路径（文件监听器最终也是调用 updateFile）。
+    fs.writeFileSync(sourceFile, 'int beta(void) { return 2; }\n', 'utf8')
+    const future = new Date(Date.now() + 1000)
+    fs.utimesSync(sourceFile, future, future)
+    await service.updateFile(sourceFile)
+
+    assert.deepEqual(service.fileSymbols('a.c').map((e) => e.name), ['beta'])
+    assert.ok((await snapshotDeltaBytes(deltaPath)) > 0, 'incremental save appends a delta record')
+    const records = await readSnapshotDeltas(deltaPath)
+    assert.equal(records.length, 1, 'one delta record for one save')
+    assert.equal(records[0]?.kind, 'set')
+    assert.deepEqual(records[0]?.entries?.map((e) => e.name), ['beta'])
+
+    await service.flush()
+    assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'flush compacts the delta into the base')
+
+    // 真实重载（base，无 delta）：符号必须在重启后仍然存在。
+    reloaded = await SymbolService.create(context, logger)
+    assert.equal(reloaded.ready, true, 'reloaded service loads the snapshot')
+    assert.deepEqual(reloaded.fileSymbols('a.c').map((e) => e.name), ['beta'], 'symbol survives reload')
+    assert.equal(reloaded.deltaWarning, undefined, 'clean delta has no recovery warning')
+  } finally {
+    try {
+      service?.dispose()
+      reloaded?.dispose()
+    } finally {
+      vscode.workspace.workspaceFolders = previousFolders
+      configurationValues.indexRoots = previousRoots
+      configurationValues.autoCompact = previousAutoCompact
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/**
+ * 多窗口共享 storage 的冲突路径：另一个进程在我们加载后追加 delta，
+ * 本进程 compaction / rebuild 都不得删除对方的记录（base 保持不动、delta 保留）。
+ */
+async function checkDeltaConflict() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+  const { appendSnapshotDelta, readSnapshotDeltas, snapshotDeltaBytes, snapshotDeltaPath } = require(
+    path.join(dist, 'src/core/snapshot-delta.js'),
+  )
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-smoke-delta-conflict-'))
+  const workspace = path.join(dir, 'ws')
+  const storage = path.join(dir, 'storage')
+  fs.mkdirSync(workspace, { recursive: true })
+  fs.mkdirSync(storage, { recursive: true })
+  const sourceFile = path.join(workspace, 'a.c')
+  fs.writeFileSync(sourceFile, 'int alpha(void) { return 1; }\n', 'utf8')
+
+  const previousFolders = vscode.workspace.workspaceFolders
+  const previousRoots = configurationValues.indexRoots
+  const previousAutoCompact = configurationValues.autoCompact
+  vscode.workspace.workspaceFolders = [{ uri: Uri.file(workspace), name: 'conflict', index: 0 }]
+  configurationValues.indexRoots = ['.']
+  configurationValues.autoCompact = true
+
+  const context = { storageUri: Uri.file(storage) }
+  const snapshotPath = path.join(storage, 'symbols.sidx')
+  const deltaPath = snapshotDeltaPath(snapshotPath)
+  const logger = capturingLogger()
+  let service
+  try {
+    service = await SymbolService.create(context, logger)
+    await service.rebuild()
+    const baseBefore = fs.statSync(snapshotPath)
+
+    // 模拟另一个窗口（同一 workspace 的另一个扩展宿主）在我们加载后追加一条记录。
+    await appendSnapshotDelta(deltaPath, {
+      kind: 'set',
+      path: 'other.c',
+      mtimeMs: 1,
+      size: 2,
+      entries: [{ name: 'other', kind: 'function', file: 'other.c', line: 0, endLine: 1, column: 0 }],
+    })
+    assert.ok((await snapshotDeltaBytes(deltaPath)) > 0)
+
+    // 本进程自己的保存（走公开 updateFile），之后 flush 想 compaction。
+    fs.writeFileSync(sourceFile, 'int gamma(void) { return 3; }\n', 'utf8')
+    const future = new Date(Date.now() + 1000)
+    fs.utimesSync(sourceFile, future, future)
+    await service.updateFile(sourceFile)
+    await service.flush()
+
+    const baseAfterFlush = fs.statSync(snapshotPath)
+    assert.equal(baseAfterFlush.size, baseBefore.size, 'conflict aborts compaction: base size unchanged')
+    assert.equal(baseAfterFlush.mtimeMs, baseBefore.mtimeMs, 'conflict aborts compaction: base not rewritten')
+    const recordsAfterFlush = await readSnapshotDeltas(deltaPath)
+    assert.ok(recordsAfterFlush.length >= 2, 'foreign and local delta records are kept')
+    assert.ok(
+      recordsAfterFlush.some((record) => record.path === 'other.c'),
+      'other window record is still on disk',
+    )
+    assert.ok(
+      logger.entries.some(
+        ([level, message]) =>
+          level === 'warn' &&
+          /another (window|process)/.test(message) &&
+          /(compaction|records)/.test(message),
+      ),
+      'conflict is logged',
+    )
+
+    // rebuild 成功同样不能删掉对方的 delta（新 base 更新，但对方记录必须保留）。
+    await service.rebuild()
+    assert.ok(
+      (await snapshotDeltaBytes(deltaPath)) > 0,
+      'rebuild keeps a delta written by another window',
+    )
+    assert.ok(
+      (await readSnapshotDeltas(deltaPath)).some((record) => record.path === 'other.c'),
+      'other window record survives rebuild',
+    )
+  } finally {
+    try {
+      service?.dispose()
+    } finally {
+      vscode.workspace.workspaceFolders = previousFolders
+      configurationValues.indexRoots = previousRoots
+      configurationValues.autoCompact = previousAutoCompact
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   }
 }
 
@@ -764,6 +953,8 @@ async function main() {
 
   await checkBudgetUi()
   await checkAutoCompactFlush()
+  await checkServiceRoundTrip()
+  await checkDeltaConflict()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -780,6 +971,8 @@ async function main() {
   console.log('  subscriptions:', context.subscriptions.length)
   console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
   console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
+  console.log('  service round trip: updateFile -> delta -> flush -> reload keeps the symbol OK')
+  console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')
 }
 
 main()

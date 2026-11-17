@@ -6,11 +6,14 @@ import { join } from 'node:path'
 
 import {
   appendSnapshotDelta,
+  appendSnapshotDeltaDetailed,
   compactSnapshot,
   decodeSnapshotDeltaRecords,
   encodeSnapshotDeltaRecord,
   flushSnapshotDeltaAppends,
   readSnapshotDeltas,
+  readSnapshotDeltasDetailed,
+  scanSnapshotDeltaEnd,
   snapshotDeltaBytes,
   snapshotDeltaPath,
 } from '../src/core/snapshot-delta'
@@ -268,6 +271,136 @@ test('snapshot delta: unreadable existing delta is not overwritten', async (t) =
     await assert.rejects(appendSnapshotDelta(deltaPath, { kind: 'remove', path: 'b.c' }))
     await chmod(deltaPath, 0o600)
     assert.deepEqual(await readFile(deltaPath), before, 'unreadable delta must not be rewritten')
+  } finally {
+    await chmod(deltaPath, 0o600).catch(() => undefined)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// --------------------------------------------------- offset-only tail scanner
+
+test('snapshot delta: scanSnapshotDeltaEnd returns end/recordCount for three records', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'scan.delta')
+    const records = [
+      {
+        kind: 'set' as const,
+        path: 'a.c',
+        mtimeMs: 1.5,
+        size: 10,
+        entries: [entry('alpha', 'a.c', 1), entry('beta', 'a.c', 2)],
+      },
+      { kind: 'remove' as const, path: 'b.c' },
+      {
+        kind: 'set' as const,
+        path: 'c.c',
+        mtimeMs: 3.5,
+        size: 30,
+        entries: [entry('gamma', 'c.c', 3)],
+      },
+    ]
+    for (const record of records) await appendSnapshotDelta(deltaPath, record)
+    const buffer = await readFile(deltaPath)
+    const scan = scanSnapshotDeltaEnd(buffer)
+    assert.equal(scan.valid, true)
+    assert.equal(scan.recordCount, 3)
+    assert.equal(scan.end, buffer.length)
+
+    // 撕裂最后 3 字节：只应数出前两条完整记录，end 落在第三条之前。
+    const torn = scanSnapshotDeltaEnd(buffer.subarray(0, buffer.length - 3))
+    assert.equal(torn.valid, true)
+    assert.equal(torn.recordCount, 2)
+    assert.ok(torn.end < buffer.length - 3)
+
+    // 坏 magic / 版本不符：valid=false，end=0（整个文件都必须重建）。
+    assert.deepEqual(scanSnapshotDeltaEnd(Buffer.from('NOPE', 'latin1')), {
+      end: 0,
+      recordCount: 0,
+      valid: false,
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: append over a populated delta keeps all records decodable', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'populated.delta')
+    const records = Array.from({ length: 3 }, (_, index) => ({
+      kind: 'set' as const,
+      path: `f${index}.c`,
+      mtimeMs: index + 0.5,
+      size: index,
+      entries: [entry(`sym${index}`, `f${index}.c`, index)],
+    }))
+    for (let index = 0; index < records.length; index++) {
+      const result = await appendSnapshotDeltaDetailed(deltaPath, records[index]!)
+      assert.equal(result.reset, false)
+      assert.equal(result.recordCount, index + 1, `record count after append #${index + 1}`)
+      assert.equal(result.size, (await stat(deltaPath)).size, 'reported size matches stat')
+    }
+    // 追加后的文件仍能完整解码（offset 扫描 + 追加没有破坏前面的记录）。
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), records)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: detailed read drops the tail from the first corrupt record', async () => {
+  const dir = await tempDir()
+  try {
+    const deltaPath = join(dir, 'corrupt-middle.delta')
+    const records = [
+      { kind: 'remove' as const, path: 'a.c' },
+      { kind: 'remove' as const, path: 'b.c' },
+      { kind: 'remove' as const, path: 'c.c' },
+    ]
+    const encoded = records.map((record) => encodeSnapshotDeltaRecord(record))
+    const buffer = Buffer.concat([
+      encoded[0]!,
+      encoded[1]!.subarray(8),
+      encoded[2]!.subarray(8),
+    ])
+    // 把第二条记录的 kind 字节改成非法值：解码必须停在第一条，尾部全部丢弃。
+    buffer.writeUInt8(9, encoded[0]!.length)
+    await writeFile(deltaPath, buffer)
+
+    const detailed = await readSnapshotDeltasDetailed(deltaPath)
+    assert.equal(detailed.error, undefined)
+    assert.deepEqual(detailed.records, [records[0]])
+    assert.equal(detailed.droppedBytes, buffer.length - encoded[0]!.length)
+    assert.deepEqual(await readSnapshotDeltas(deltaPath), [records[0]])
+
+    // 坏 magic：整个文件不可解码，droppedBytes 为文件大小。
+    await writeFile(deltaPath, Buffer.alloc(32, 0xab))
+    assert.deepEqual(await readSnapshotDeltasDetailed(deltaPath), { records: [], droppedBytes: 32 })
+
+    // ENOENT 不是错误：空 delta 是正常状态。
+    assert.deepEqual(await readSnapshotDeltasDetailed(join(dir, 'missing.delta')), {
+      records: [],
+      droppedBytes: 0,
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('snapshot delta: detailed read reports unreadable file as error, not decode loss', async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip('EACCES cannot be enforced when running as root')
+    return
+  }
+  const dir = await tempDir()
+  const deltaPath = join(dir, 'unreadable.delta')
+  try {
+    await appendSnapshotDelta(deltaPath, { kind: 'remove', path: 'a.c' })
+    await chmod(deltaPath, 0o200)
+    const detailed = await readSnapshotDeltasDetailed(deltaPath)
+    assert.deepEqual(detailed.records, [])
+    assert.equal(detailed.droppedBytes, 0)
+    assert.ok(detailed.error && /EACCES|permission/i.test(detailed.error), `error=${detailed.error}`)
   } finally {
     await chmod(deltaPath, 0o600).catch(() => undefined)
     await rm(dir, { recursive: true, force: true })

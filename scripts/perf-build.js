@@ -182,6 +182,90 @@ async function main() {
     }
   }
 
+  // 快照 delta 追加成本：稳态（缓存命中，只 stat）vs 4MB 附近 vs 冷启动（读 + 只按长度扫描）
+  {
+    const scaleBase = path.join('/tmp', 'si-perf-delta-scale-' + Date.now() + '.sidx')
+    const scaleDelta = snapshotDeltaPath(scaleBase)
+    const coldBase = path.join('/tmp', 'si-perf-delta-cold-' + Date.now() + '.sidx')
+    const coldDelta = snapshotDeltaPath(coldBase)
+    const COMPACT_THRESHOLD = 4 * 1024 * 1024
+    const smallRecord = {
+      kind: 'set',
+      path: 'scale.c',
+      mtimeMs: Date.now(),
+      size: 1024,
+      entries: Array.from({ length: 22 }, (_, index) => ({
+        name: `scale_sym_${index}`,
+        kind: 'function',
+        file: 'scale.c',
+        line: index,
+        endLine: index + 1,
+        column: 0,
+      })),
+    }
+    const fillerRecord = {
+      kind: 'set',
+      path: 'filler.c',
+      mtimeMs: Date.now(),
+      size: 4096,
+      entries: Array.from({ length: 2500 }, (_, index) => ({
+        name: `filler_sym_${index}`,
+        kind: 'function',
+        file: 'filler.c',
+        line: index,
+        endLine: index + 1,
+        column: 0,
+      })),
+    }
+    try {
+      const timings = []
+      for (let index = 0; index < 10; index++) {
+        const start = performance.now()
+        await appendSnapshotDelta(scaleDelta, smallRecord)
+        timings.push(performance.now() - start)
+      }
+      const firstMs = timings[0]
+      const rest = timings.slice(1)
+      const restAvg = rest.reduce((sum, value) => sum + value, 0) / rest.length
+      const restMax = Math.max(...rest)
+
+      let size = await snapshotDeltaBytes(scaleDelta)
+      let grown = 0
+      while (size < COMPACT_THRESHOLD) {
+        await appendSnapshotDelta(scaleDelta, fillerRecord)
+        size = await snapshotDeltaBytes(scaleDelta)
+        grown += 1
+      }
+      const startWarm = performance.now()
+      await appendSnapshotDelta(scaleDelta, fillerRecord)
+      const warmNearThresholdMs = performance.now() - startWarm
+      const nearThresholdSize = await snapshotDeltaBytes(scaleDelta)
+
+      // 复制到新路径 -> 进程内没有尾部缓存 -> 必须读盘 + offset 扫描（一次性恢复成本）
+      await fsp.copyFile(scaleDelta, coldDelta)
+      const startCold = performance.now()
+      await appendSnapshotDelta(coldDelta, fillerRecord)
+      const coldScanMs = performance.now() - startCold
+      const coldSize = await snapshotDeltaBytes(coldDelta)
+
+      const fixed = (value) => value.toFixed(2)
+      console.log('=== snapshot delta append scaling ===')
+      console.log('  appends      : 10 to a fresh delta (offset scan + tail cache)')
+      console.log('  first append :', fixed(firstMs), 'ms (new file)')
+      console.log('  appends 2..10:', fixed(restAvg), 'ms avg |', fixed(restMax), 'ms max',
+        restMax < 5 ? '(✅ warm appends <5 ms)' : '(⚠️ warm appends >=5 ms)')
+      console.log('  grow to cap  :', grown, 'x 64KB records ->', size.toFixed(2), 'bytes')
+      console.log('  near threshold:', fixed(warmNearThresholdMs), 'ms for append at',
+        (nearThresholdSize / 1048576).toFixed(2), 'MB (warm cache)')
+      console.log('  cold tail scan:', fixed(coldScanMs), 'ms for append at',
+        (coldSize / 1048576).toFixed(2), 'MB (read + offset scan, no entry decode)')
+      console.log('')
+    } finally {
+      await fsp.rm(scaleDelta, { force: true })
+      await fsp.rm(coldDelta, { force: true })
+    }
+  }
+
   const tName = performance.now()
   const nameIndex = await loadNameIndexWithDelta(nameIndexPath)
   console.log('=== load reference index ===')

@@ -343,6 +343,42 @@ test('indexer: concurrency downgrade uses actual walked file count', async () =>
   }
 })
 
+test('indexer: concurrencyCap alone limits actual workers (no downgrade)', async () => {
+  const dir = tempDir('si-indexer-cap-')
+  try {
+    const files: Record<string, string> = {}
+    for (let index = 0; index < 6; index++) {
+      files[`f${index}.c`] = `int f${index}(void) { return ${index}; }\n`
+    }
+    writeFiles(dir, files)
+
+    let active = 0
+    let maxActive = 0
+    const result = await buildIndex({
+      ...makeOptions(dir),
+      concurrency: 4,
+      concurrencyCap: 3,
+      readFile: async (rel: string) => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        try {
+          // 让多个读取重叠，才能观察到 worker 上限
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          return fs.readFileSync(path.join(dir, rel), 'latin1')
+        } finally {
+          active -= 1
+        }
+      },
+    })
+    assert.equal(result.summary.files, 6)
+    assert.equal(result.summary.concurrency, 3, 'concurrencyCap applies without a downgrade')
+    assert.ok(maxActive <= 3, `cap must limit actual parallel reads (max ${maxActive})`)
+    assert.ok(maxActive >= 2, `parallel reads should be exercised (max ${maxActive})`)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('indexer: unreadable file is skipped and build still succeeds', async () => {
   const dir = makeTree()
   try {

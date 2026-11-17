@@ -506,6 +506,7 @@ async function showIndexDiagnostics(service: SymbolService): Promise<void> {
     kindCounts: service.kindCounts(),
     lastBuild: service.lastSummary,
     lastError: service.lastError,
+    deltaWarning: service.deltaWarning,
     heapUsedBytes: memory.heapUsed,
     rssBytes: memory.rss,
     budget: budgetReport,

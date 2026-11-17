@@ -40,11 +40,11 @@ code --install-extension cinsight.insight-c
 
 Or search for **Code Insight** in the Extensions view.
 
-Offline install: download `code-insight-0.3.1.vsix` and run
+Offline install: download the `code-insight-<version>.vsix` for the release you want (for example `code-insight-0.7.0.vsix`) and run
 
 ```bash
-code   --install-extension code-insight-0.3.1.vsix
-cursor --install-extension code-insight-0.3.1.vsix
+code   --install-extension code-insight-0.7.0.vsix
+cursor --install-extension code-insight-0.7.0.vsix
 # or: Ctrl+Shift+P → Extensions: Install from VSIX...
 ```
 
@@ -86,7 +86,7 @@ The editor context menu offers go-to-definition, find-references and callers/cal
 | `sourceInsight.concurrency` | `4` | Worker threads used while building the index |
 | `sourceInsight.maxSymbols` | `2000000` | Warn (status bar) when the index has more symbols than this |
 | `sourceInsight.maxFiles` | `120000` | Warn (status bar) when the index has more files than this |
-| `sourceInsight.autoCompact` | `true` | Merge index deltas back into the base snapshot on idle / after many changes / on close; when `false` deltas are still appended durably |
+| `sourceInsight.autoCompact` | `true` | Merge index deltas back into the base snapshot on idle / after many changes / on close. When `false` automatic merges are deferred (deltas are still appended durably), but a safety compaction still runs at 5,000 changed files or a 32 MB delta; queries may slow down with a large overlay |
 | `sourceInsight.searchLimit` | `200` | Maximum results per search |
 | `sourceInsight.autoReindexOnSave` | `true` | Re-parse a file when it is saved, created or deleted |
 | `sourceInsight.enableCallHierarchy` | `true` | Also register the native call hierarchy provider |
@@ -110,7 +110,7 @@ sources ──walk──> file list ──mtime+size delta──> changed files
 
 - The parser works on bytes so line and column numbers stay stable. A single-pass state machine blanks comments, string literals and `#define` continuations, then detects definitions and declarations at file scope ("type + name + balanced parentheses + `{`/`;`") and matches braces to get each function body range.
 - The snapshot is a **columnar** binary format (format v3: string tables + typed arrays + name/file lookup tables): **~41 bytes of heap per symbol** — about **61 MB for 1.49 M symbols**, down from ~220 MB with object arrays — and loads in ~51 ms for 119k symbols. Unchanged files reuse their previous symbols.
-- Saving a file is **incremental**: the extension appends a KB-sized delta record (`symbols.sidx.delta`) and applies it to an in-memory overlay in O(Δ), instead of rewriting the snapshot or rebuilding the column arrays (measured **904 B / 1 ms** appended and **<1 ms** overlay update for a 22-symbol file). At startup saved deltas are replayed on top of the base snapshot; deltas over **4 MB** or **500** changed files, after **60 s** idle, and on close are compacted back into the base (measured **47 ms** for a 5.13 MB base with 118,730 symbols). The base format stays v3, so upgrading needs no rebuild.
+- Saving a file is **incremental**: the extension appends a KB-sized delta record (`symbols.sidx.delta`) and applies it to an in-memory overlay in O(Δ), instead of rewriting the snapshot or rebuilding the column arrays (measured **904 B / 1 ms** appended and **<1 ms** overlay update for a 22-symbol file). The write is **O(Δ) in bytes**, not in time: each append validates the delta tail with an offset-only scan (no `SymbolEntry` decode), cached when only this process writes — measured **0.11 ms avg** steady-state, **0.44 ms** near a 4 MB delta, and **4.3 ms** for a cold read + scan of a 4.2 MB tail. At startup saved deltas are replayed on top of the base snapshot; deltas over **4 MB** or **500** changed files, after **60 s** idle, and on close are compacted back into the base (measured **47 ms** for a 5.13 MB base with 118,730 symbols). `sourceInsight.autoCompact=false` only defers these merges: a safety compaction still runs at **5,000** changed files or a **32 MB** delta. The base format stays v3, so upgrading needs no rebuild.
 - A per-file **identifier hash index** (`symbols.names`, ~3.6 MB for 6,838 files) makes find-references read only the files that can contain the identifier instead of the whole tree: measured **1 candidate file vs 6,838**, 5-7 ms vs 159 ms on a warm cache (3.9 s cold). 32-bit collisions can add candidate files but never hide a reference, because each candidate is verified by exact word-boundary matching.
 - The index is built in **one pass**: the parse worker returns symbols and identifier hashes together, so each source file is read exactly once.
 - The reference index is loaded **lazily** on the first find-references / call-hierarchy request (saves ~194 ms and ~69 MB at activation on a 68k-file corpus) and updated **incrementally**: saving a file appends a <1 KB delta record instead of rewriting the index, and deltas are merged back automatically.
@@ -125,8 +125,9 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 |---|---|
 | Symbols | 118,730 (incl. 19,800 type symbols) |
 | Index build, single pass (4 workers, cold cache) | 6.1 s (each source read once) |
-| Snapshot size / load (columnar v3) | 5.13 MB / 51 ms (heap ≈ 41 B/symbol) |
-| Per-file save (incremental symbol index) | 904 B / 1 ms appended; overlay update <1 ms (22-symbol file) |
+| Snapshot size / load (columnar v3) | 5.13 MB / 31 ms (heap ≈ 41 B/symbol; the 0.5.x run measured 51 ms) |
+| Per-file save (incremental symbol index) | 904 B / <1 ms appended (first append 0.47 ms, 0.11 ms avg steady-state); overlay update <1 ms (22-symbol file) |
+| Delta append tail validation | 0.44 ms at a 4.09 MB delta (warm cache); 4.32 ms cold (read + offset scan of a 4.17 MB tail, no entry decode) |
 | Delta compaction (118,730 symbols) | 47 ms to write a 5.13 MB base |
 | Symbol search (limit 50) | 4–7 ms |
 | Exact name lookup | 8 ms |
@@ -136,7 +137,7 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 | Reference index size / load (lazy, first use) | 3.57 MB / 14 ms (68k-file corpus: 69 MB / ~194 ms) |
 | Per-file save (incremental reference index) | ~1 ms, <1 KB appended |
 | Callers / callees | 14 ms / 13 ms |
-| Process memory (including index build) | ~335 MB |
+| Process memory (including index build) | ~471 MB (0.7.0 run on the 6,838-file corpus; the 0.5.x run measured ~335 MB) |
 
 - Indexing `plat` alone (5,573 files / 57.5 MB): 74,194 symbols, 0.8–1.2 s with a warm cache, 0.5 s for an unchanged incremental rebuild.
 - Incremental-index run on the same 6,838 files: build 5.7 s, snapshot load 31 ms, symbol search 5 ms, indexed find-references 2 ms (full scan 1.16 s), callers / callees 5 ms / 1 ms.
@@ -151,6 +152,7 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 - No preprocessor branch evaluation: definitions of the same name in different `#if` branches all appear as candidates (pick one in the native list).
 - Reference scanning is textual (with comment/string stripping), not semantic; same-named but unrelated symbols match too; first searches on huge roots are bound by disk throughput.
 - Single-root workspaces only (the first workspace folder); `indexRoots` must be workspace-relative.
+- **Multiple windows on the same workspace share the index** (`context.storageUri` is shared, including `symbols.sidx.delta`). If another window appends to the delta, this window skips compaction and keeps that delta, so concurrent windows may see stale results until the index is reloaded or rebuilt. **One window per workspace is recommended for now.**
 - The reference index adds roughly one third to on-disk index storage; identifiers are stored as 32-bit hashes, so collisions can only add candidate files (they are verified before reporting).
 - Requires the C/C++ language id (`.c`/`.h` opened as `c`/`cpp`, which the built-in grammar provides).
 
@@ -211,11 +213,11 @@ code --install-extension cinsight.insight-c
 
 或在扩展面板搜索 **Code Insight** 后安装。
 
-离线安装：下载 `code-insight-0.3.1.vsix` 后执行
+离线安装：下载与版本对应的 `code-insight-<version>.vsix`（例如 `code-insight-0.7.0.vsix`）后执行
 
 ```bash
-code   --install-extension code-insight-0.3.1.vsix
-cursor --install-extension code-insight-0.3.1.vsix
+code   --install-extension code-insight-0.7.0.vsix
+cursor --install-extension code-insight-0.7.0.vsix
 ```
 
 要求宿主 **VS Code ≥ 1.90**（Cursor 3.x 满足），无需另装 C/C++ 扩展。
@@ -239,7 +241,7 @@ cursor --install-extension code-insight-0.3.1.vsix
 | `sourceInsight.concurrency` | `4` | 建索引的 worker 线程数 |
 | `sourceInsight.maxSymbols` | `2000000` | 符号数超过该值时状态栏警告 |
 | `sourceInsight.maxFiles` | `120000` | 文件数超过该值时状态栏警告 |
-| `sourceInsight.autoCompact` | `true` | 空闲 / 累计变更较多 / 关闭时把索引增量合并回 base；`false` 时仍追加 delta 保证不丢数据，但不自动合并 |
+| `sourceInsight.autoCompact` | `true` | 空闲 / 累计变更较多 / 关闭时把索引增量合并回 base。`false` 时自动合并被推迟（delta 仍逐次追加，不丢数据），但到达安全上限（累计 5000 个文件变更或 32 MB delta）时仍会强制合并一次；overlay 很大时查询可能变慢 |
 | `sourceInsight.searchLimit` | `200` | 单次搜索返回上限 |
 | `sourceInsight.autoReindexOnSave` | `true` | 保存/新建/删除文件时增量重解析 |
 | `sourceInsight.enableCallHierarchy` | `true` | 注册原生调用层次 Provider |
@@ -251,7 +253,7 @@ cursor --install-extension code-insight-0.3.1.vsix
 
 - 解析器按字节工作，行号列号稳定；单遍状态机剥离注释、字符串、`#define` 续行，在文件作用域按"类型 + 名字 + 平衡括号 + `{`/`;`"判定定义与声明，并做花括号配对得到函数体范围。
 - 快照为**列式**二进制格式（v3：字符串表 + TypedArray + 名字/文件查找表）：**每符号约 41 字节堆占用**——149 万符号约 **61 MB**（对象数组时约 220 MB），11.9 万符号加载约 51 ms。未变化的文件直接复用旧符号。
-- 保存文件是**增量**的：只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录，并在内存 overlay 上做 O(Δ) 更新，不再重写快照、也不重建列数组（22 符号文件实测追加 **904 B / 1 ms**、overlay 更新 **<1 ms**）。启动时把已保存的 delta 重放在 base 快照之上；delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s** 以及关闭时合并回 base（118,730 符号实测写出 5.13 MB base 用 **47 ms**）。base 格式仍为 v3，升级后无需重建。
+- 保存文件是**增量**的：只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录，并在内存 overlay 上做 O(Δ) 更新，不再重写快照、也不重建列数组（22 符号文件实测追加 **904 B / 1 ms**、overlay 更新 **<1 ms**）。写入成本是「**O(Δ) 字节**，但不是 O(Δ) 时间」：每次追加只按记录长度偏移扫描 delta 尾部（不解码 `SymbolEntry`），且只在仅本进程写入时命中缓存——实测稳态均值 **0.11 ms**、4 MB delta 附近 **0.44 ms**、冷启动读 + 扫描 4.2 MB 尾部 **4.3 ms**。启动时把已保存的 delta 重放在 base 快照之上；delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s** 以及关闭时合并回 base（118,730 符号实测写出 5.13 MB base 用 **47 ms**）。`sourceInsight.autoCompact=false` 只推迟这些合并：到达 **5,000** 个文件变更或 **32 MB** delta 的安全上限时仍会强制合并一次。base 格式仍为 v3，升级后无需重建。
 - 每个文件的**标识符哈希倒排索引**（`symbols.names`，6,838 文件约 3.6 MB）让查找引用只读可能包含该名字的文件：实测**候选文件 1 个 vs 6,838 个**，热缓存 5–7 ms vs 全量 159 ms（冷盘全量 3.9 s）。32 位哈希碰撞只会多出候选文件，不会漏报——候选文件仍按词边界精确校验。
 - 索引**单遍构建**：解析 worker 同时返回符号与标识符哈希，每个源码文件只读一次。
 - 引用索引**惰性加载**（首次查找引用/调用层次才读盘；68k 文件语料约省 194 ms 与 69 MB），并**增量维护**：保存一个文件只追加 <1 KB 的 delta 记录，超阈值自动合并回 base。
@@ -260,7 +262,7 @@ cursor --install-extension code-insight-0.3.1.vsix
 
 ## 性能
 
-对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 **118,730**（含 19,800 个类型符号）；建索引（单遍，含倒排索引）约 6.1 s（冷盘，每文件只读一次）；快照 5.13 MB / 加载约 51 ms（列式，每符号堆占用约 41 B）；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 335–410 MB。0.7.0 增量索引实测：保存单文件追加 **904 B / 1 ms**（overlay 更新 <1 ms），compaction **47 ms** 写出 5.13 MB base；同语料构建 5.7 s、加载 31 ms、搜索 5 ms、倒排引用 2 ms、调用者/被调用者 5 ms / 1 ms。
+对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测：符号 **118,730**（含 19,800 个类型符号）；建索引（单遍，含倒排索引）约 6.1 s（冷盘，每文件只读一次）；快照 5.13 MB / 加载约 **31 ms**（0.7.0 增量索引实测；0.5.x 那次为 51 ms；列式，每符号堆占用约 41 B）；倒排索引 3.57 MB / 加载 10–38 ms；函数搜索 6–11 ms；按名查找 3–8 ms；签名重建 56 ms；**查找引用：全量扫描冷盘 4.2 s → 倒排索引 5 ms（候选文件 1 个，加速约 30 倍）**；调用者/被调用者 5–14 ms / 7–13 ms；进程内存约 **471 MB**（0.7.0 同语料实测；0.5.x 那次约 335 MB）。0.7.0 增量索引实测：保存单文件追加 **904 B / 1 ms**（overlay 更新 <1 ms；追加稳态 **0.11 ms**、4 MB delta 附近 **0.44 ms**、冷启动扫描 4.2 MB 尾部 **4.3 ms**），compaction **47 ms** 写出 5.13 MB base；同语料构建 5.7 s、加载 31 ms、搜索 5 ms、倒排引用 2 ms、调用者/被调用者 5 ms / 1 ms。
 
 ## 已知限制
 
@@ -269,6 +271,7 @@ cursor --install-extension code-insight-0.3.1.vsix
 - 不做预处理分支求值，同一名字在多个 `#if` 分支的定义都会出现在候选里。
 - 引用扫描是文本级（已剥离注释/字符串），不是语义级；首次在大仓库上受磁盘吞吐限制。
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。
+- **同一个工作区打开多个窗口会共享同一份索引**（`context.storageUri` 共享，含 `symbols.sidx.delta`）。若另一个窗口也在追加 delta，本窗口会放弃 compaction 并保留该 delta，因此并发窗口可能看到过期结果，直到重新加载或重建索引。目前建议**一个工作区只开一个窗口**。
 - 倒排索引会让索引占用增加约三分之一；标识符以 32 位哈希存储，碰撞只会增加候选文件（命中前仍精确校验），不会漏报。
 
 ## 隐私与安全

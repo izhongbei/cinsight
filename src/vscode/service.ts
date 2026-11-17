@@ -19,10 +19,10 @@ import { DEFAULT_INDEX_BUDGET, evaluateBudget, type BudgetReport } from '../core
 import { buildIndex } from '../core/indexer'
 import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolIndex } from '../core/overlay-index'
 import {
-  appendSnapshotDelta,
+  appendSnapshotDeltaDetailed,
   compactSnapshot,
   flushSnapshotDeltaAppends,
-  readSnapshotDeltas,
+  readSnapshotDeltasDetailed,
   removeSnapshotDelta,
   snapshotDeltaBytes,
   snapshotDeltaPath,
@@ -85,6 +85,12 @@ const NAME_INDEX_COMPACT_BYTES = 4 * 1024 * 1024
 /** 符号表 delta 超过 4MB 或累计 500 个文件变更时 compaction */
 const SNAPSHOT_COMPACT_BYTES = 4 * 1024 * 1024
 const SNAPSHOT_COMPACT_CHANGES = 500
+/**
+ * 硬安全上限：`sourceInsight.autoCompact=false` 时也强制 compaction。
+ * 关闭自动合并只应「推迟」合并，不能让 overlay/delta 无限增长拖慢所有查询。
+ */
+const SNAPSHOT_OVERLAY_HARD_CHANGES = 5_000
+const SNAPSHOT_DELTA_HARD_BYTES = 32 * 1024 * 1024
 /** 空闲 60s 后 compaction（unref，不阻止退出） */
 const SNAPSHOT_IDLE_COMPACT_MS = 60_000
 const SIGNATURE_CACHE_CHAR_BUDGET = 8 * 1024 * 1024
@@ -163,6 +169,17 @@ export class SymbolService implements vscode.Disposable {
   private generation = 0
   private compactTimer: ReturnType<typeof setTimeout> | undefined
   private clearRequested = false
+  /**
+   * 本进程预期的 delta 大小 / 完整记录数（load、append、compaction、clear 时更新）。
+   * 两个窗口共享 `context.storageUri` 时，另一个进程可能也在追加；compaction 写 base
+   * 前先 stat 对比，大小不符就放弃本次 compaction，避免删掉对方尚未重放的记录。
+   */
+  private expectedDeltaBytes: number | undefined
+  private expectedDeltaRecords = 0
+  /** 本次进程已确认 delta 里混入其他进程的记录：不再自动 compaction（必须重载后才会重放它们）。 */
+  private deltaConflict = false
+  /** 最近一次加载 delta 时遇到的读错误 / 被丢弃尾部字节的说明（诊断报告用）。 */
+  private deltaWarningValue: string | undefined
   private excludeCache: { readonly key: string; readonly matches: (relPath: string) => boolean } | undefined
 
   /** 签名/树视图用的文件文本缓存（按字符总量封顶，避免大仓库撑爆内存）。 */
@@ -245,6 +262,11 @@ export class SymbolService implements vscode.Disposable {
   /** 当前快照 delta 文件字节数（诊断用，不触发写盘）。 */
   async deltaBytes(): Promise<number> {
     return this.snapshotPathValue ? snapshotDeltaBytes(snapshotDeltaPath(this.snapshotPathValue)) : 0
+  }
+
+  /** 上次加载 delta 时的恢复警告（读失败 / 丢弃损坏尾部）；正常时为 undefined。 */
+  get deltaWarning(): string | undefined {
+    return this.deltaWarningValue
   }
 
   /** 快照 base 文件（symbols.sidx）字节数；文件缺失或未配置存储路径时为 0。 */
@@ -643,7 +665,27 @@ export class SymbolService implements vscode.Disposable {
           this.deferredDuringCompaction = []
           this.compacting = false
           if (this.snapshotPathValue) {
-            await removeSnapshotDelta(snapshotDeltaPath(this.snapshotPathValue))
+            const deltaPath = snapshotDeltaPath(this.snapshotPathValue)
+            const actualDeltaBytes = await snapshotDeltaBytes(deltaPath)
+            const ours =
+              !this.deltaConflict &&
+              (this.expectedDeltaBytes === undefined || actualDeltaBytes === this.expectedDeltaBytes)
+            if (actualDeltaBytes > 0 && !ours) {
+              // 另一个窗口在本进程加载后追加过记录：新 base 虽然更新，但对方尚未重放的记录
+              // 不能删（保留后下次加载会重放；对已存在于新 base 的文件是幂等的）。
+              this.logger.warn(
+                `snapshot delta changed by another window (${actualDeltaBytes} B, expected ` +
+                  `${this.expectedDeltaBytes} B); keeping it after rebuild`,
+              )
+              this.expectedDeltaBytes = actualDeltaBytes
+              this.deltaConflict = true
+            } else {
+              await removeSnapshotDelta(deltaPath)
+              this.expectedDeltaBytes = 0
+              this.expectedDeltaRecords = 0
+              this.deltaConflict = false
+              this.deltaWarningValue = undefined
+            }
           }
           // 构建已经写出新的 base；丢弃内存副本，下次查引用时惰性加载
           this.nameIndexValue = undefined
@@ -903,6 +945,13 @@ export class SymbolService implements vscode.Disposable {
     size: number,
     remove = false,
   ): void {
+    // 签名缓存以工作区相对路径为 key：文件刚被保存/删除，必须让下一次签名重读磁盘，
+    // 否则 hover / 树视图会继续显示旧函数签名（缓存命中时不会校验 mtime）。
+    const cachedText = this.textCache.get(relPath)
+    if (cachedText !== undefined) {
+      this.textCache.delete(relPath)
+      this.textCacheChars -= cachedText.length
+    }
     const index = this.mutableValue
     if (!index) {
       this.snapshotValue = undefined
@@ -955,12 +1004,30 @@ export class SymbolService implements vscode.Disposable {
   }): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath) return
-    await appendSnapshotDelta(
+    const result = await appendSnapshotDeltaDetailed(
       snapshotDeltaPath(snapshotPath),
       change.remove
         ? { kind: 'remove', path: change.path }
         : { kind: 'set', path: change.path, mtimeMs: change.file.mtimeMs, size: change.file.size, entries: change.entries },
     )
+    // 追加结果里带上了文件中的完整记录数：若比「我们已知的 + 这次」多，说明另一个窗口
+    // 也追加过记录（它们的变更不在本进程内存里），之后绝不能 compaction 删掉它们。
+    if (
+      this.expectedDeltaBytes !== undefined &&
+      !result.reset &&
+      result.recordCount !== this.expectedDeltaRecords + 1
+    ) {
+      if (!this.deltaConflict) {
+        this.logger.warn(
+          `snapshot delta contains records from another window ` +
+            `(expected ${this.expectedDeltaRecords + 1}, found ${result.recordCount}); ` +
+            'automatic compaction disabled until reload',
+        )
+      }
+      this.deltaConflict = true
+    }
+    this.expectedDeltaBytes = result.size
+    this.expectedDeltaRecords = result.recordCount
   }
 
   /**
@@ -1091,18 +1158,39 @@ export class SymbolService implements vscode.Disposable {
     }
   }
 
+  /** 硬安全上限：overlay 变更数或 delta 字节数过大时必须合并（与 autoCompact 无关）。 */
+  private exceedsSafetyCap(pendingChanges: number, deltaBytes: number): boolean {
+    return (
+      pendingChanges >= SNAPSHOT_OVERLAY_HARD_CHANGES ||
+      deltaBytes >= SNAPSHOT_DELTA_HARD_BYTES
+    )
+  }
+
   /** 阈值/空闲触发 compaction（写 base + 清 delta），不再每次保存全量写盘。 */
   private async scheduleCompaction(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath || this.disposed || this.compacting) return
-    // autoCompact=false：停止所有自动 compaction（空闲/累计变更），delta 仍逐次 append 落盘。
-    if (!readConfig().autoCompact) return
+    const config = readConfig()
+    if (this.deltaConflict) return
     try {
       const index = this.mutableValue
       if (!index) return
       const deltaBytes = await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
+      const pendingChanges = index.pendingChanges
+      const safety = this.exceedsSafetyCap(pendingChanges, deltaBytes)
+      if (!config.autoCompact) {
+        // autoCompact=false：关闭空闲/累计变更合并，delta 仍逐次 append 落盘；
+        // 但到达硬安全上限时必须强制合并，避免 overlay 无限增长拖慢所有查询。
+        if (!safety) return
+        this.logger.warn(
+          `autoCompact disabled: safety compaction at ${pendingChanges} changed files / ` +
+            `${deltaBytes} delta bytes`,
+        )
+        await this.compactNow()
+        return
+      }
       const shouldCompact =
-        deltaBytes >= SNAPSHOT_COMPACT_BYTES || index.pendingChanges >= SNAPSHOT_COMPACT_CHANGES
+        safety || deltaBytes >= SNAPSHOT_COMPACT_BYTES || pendingChanges >= SNAPSHOT_COMPACT_CHANGES
       if (!shouldCompact) {
         this.armIdleCompaction()
         return
@@ -1219,10 +1307,28 @@ export class SymbolService implements vscode.Disposable {
         this.settleDeferredOnAbort(index)
         return true
       }
-      const deltaBytes = await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
+      const deltaPath = snapshotDeltaPath(snapshotPath)
+      const deltaBytes = await snapshotDeltaBytes(deltaPath)
       if (stale()) {
         this.settleDeferredOnAbort(index)
         return true
+      }
+      // 共享 storage 的另一个窗口可能刚追加了记录：大小与预期不符（或已经确认混入对方
+      // 记录）时，绝不能写 base 后删除 delta——那会静默丢掉对方尚未重放的变更。
+      if (
+        this.deltaConflict ||
+        (this.expectedDeltaBytes !== undefined && deltaBytes !== this.expectedDeltaBytes)
+      ) {
+        if (!this.deltaConflict) {
+          this.deltaConflict = true
+          this.logger.warn(
+            `snapshot delta changed by another window (${deltaBytes} B, expected ` +
+              `${this.expectedDeltaBytes} B); compaction skipped to keep its records`,
+          )
+          this.armIdleCompaction()
+        }
+        this.settleDeferredOnAbort(index)
+        return false
       }
       if (index.pendingChanges === 0 && deltaBytes === 0) {
         // 无内容可合并，但仍走统一收尾（空列表时是 no-op），与其余 abort 分支语义一致。
@@ -1237,6 +1343,10 @@ export class SymbolService implements vscode.Disposable {
       }
       const started = Date.now()
       const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
+      // delta 已被合并进新 base 并删除：本进程的预期归零；后续 deferred 追加会重新累计。
+      this.expectedDeltaBytes = 0
+      this.expectedDeltaRecords = 0
+      this.deltaConflict = false
       // 写盘期间整表被替换（rebuild / clearCache / 再次 load）：放弃 swap，保留新索引。
       if (stale()) {
         if (this.mutableValue === undefined) {
@@ -1331,11 +1441,18 @@ export class SymbolService implements vscode.Disposable {
   /** 删除快照文件与 delta（清缓存 / 构建期间清缓存的竞态兜底），并清空内存索引状态。 */
   private async removeSnapshotFile(): Promise<void> {
     if (!this.snapshotPathValue) return
+    // 先等在途 append 落盘再删文件：否则删除后落地的 append 会在磁盘上「复活」一条
+    // 属于旧索引的 delta（下次启动被重放到已清空的 base 上）。
+    await this.appendChain
     await this.removeSnapshotFilesOnly()
+    this.appendChain = Promise.resolve()
     this.snapshotValue = undefined
     this.mutableValue = undefined
-    this.appendChain = Promise.resolve()
     this.deferredDuringCompaction = []
+    this.expectedDeltaBytes = 0
+    this.expectedDeltaRecords = 0
+    this.deltaConflict = false
+    this.deltaWarningValue = undefined
   }
 
   /**
@@ -1353,8 +1470,20 @@ export class SymbolService implements vscode.Disposable {
     // 先等在途 compaction：否则 flush 返回时仍可能有写盘在途（与 autoCompact 无关）。
     await this.compactPromise
     if (!readConfig().autoCompact) {
-      this.logger.info('autoCompact disabled; delta appended, snapshot compaction skipped')
-      return
+      const snapshotPath = this.snapshotPathValue
+      const pendingChanges = this.mutableValue?.pendingChanges ?? 0
+      const deltaBytes = snapshotPath
+        ? await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
+        : 0
+      if (!this.exceedsSafetyCap(pendingChanges, deltaBytes)) {
+        this.logger.info('autoCompact disabled; delta appended, snapshot compaction skipped')
+        return
+      }
+      // 关闭自动合并只推迟合并：到达硬上限时关闭路径也要合并，避免下次启动重放超大 delta。
+      this.logger.warn(
+        `autoCompact disabled: safety compaction at ${pendingChanges} changed files / ` +
+          `${deltaBytes} delta bytes`,
+      )
     }
     await this.compactNow()
     await this.compactNameIndexIfNeeded(true)
@@ -1379,9 +1508,16 @@ export class SymbolService implements vscode.Disposable {
     this.textCacheChars = 0
     this.excludeCache = undefined
     this.mutableValue = undefined
+    // 等在途 delta 追加落盘后再重置 chain：否则删除文件后到达的 append 会把旧记录写回，
+    // 形成下次启动会被重放的「幽灵 delta」。
+    await this.appendChain
     this.appendChain = Promise.resolve()
     this.deferredDuringCompaction = []
     this.compacting = false
+    this.expectedDeltaBytes = 0
+    this.expectedDeltaRecords = 0
+    this.deltaConflict = false
+    this.deltaWarningValue = undefined
     if (this.compactTimer) {
       clearTimeout(this.compactTimer)
       this.compactTimer = undefined
@@ -1399,17 +1535,36 @@ export class SymbolService implements vscode.Disposable {
     if (!snapshotPath) {
       return
     }
+    const deltaPath = snapshotDeltaPath(snapshotPath)
     try {
       const snapshot = await loadSnapshot(snapshotPath)
       if (!snapshot) {
+        // 没有 base 时 delta 无法重放：只记录当前大小，交给下一次 build 正常清理。
+        this.expectedDeltaBytes = await snapshotDeltaBytes(deltaPath)
+        this.expectedDeltaRecords = 0
         return
       }
       if (!Array.isArray(snapshot.files) || typeof snapshot.entryCount !== 'number') {
         this.logger.warn('snapshot has invalid shape; ignored')
+        this.expectedDeltaBytes = await snapshotDeltaBytes(deltaPath)
+        this.expectedDeltaRecords = 0
         return
       }
-      const records = await readSnapshotDeltas(snapshotDeltaPath(snapshotPath))
-      this.mutableValue = createMutableIndexFromDeltas(snapshot, records)
+      const deltaResult = await readSnapshotDeltasDetailed(deltaPath)
+      // 记录本进程看到的 delta 状态：之后 compaction 写 base 前用它判断文件是否被另一个窗口改过。
+      this.expectedDeltaBytes = await snapshotDeltaBytes(deltaPath)
+      this.expectedDeltaRecords = deltaResult.records.length
+      this.deltaConflict = false
+      if (deltaResult.error || deltaResult.droppedBytes > 0) {
+        const detail = deltaResult.error
+          ? `cannot read snapshot delta: ${deltaResult.error}`
+          : `dropped ${deltaResult.droppedBytes} bytes of an incomplete snapshot delta tail`
+        this.deltaWarningValue = detail
+        this.logger.warn(`snapshot delta recovery: ${detail}`)
+      } else {
+        this.deltaWarningValue = undefined
+      }
+      this.mutableValue = createMutableIndexFromDeltas(snapshot, deltaResult.records)
       this.snapshotValue = this.mutableValue
       // 新载入的整表：代际 +1，并清掉可能仍指向旧表身份的查询缓存
       this.indexEpoch += 1
@@ -1422,16 +1577,21 @@ export class SymbolService implements vscode.Disposable {
       this.evaluateIndexBudget(this.entryCount, this.fileCount)
       this.logger.info(
         `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entryCount} ` +
-          `delta=${records.length} records builtAt=${new Date(snapshot.builtAt).toISOString()}`,
+          `delta=${deltaResult.records.length} records builtAt=${new Date(snapshot.builtAt).toISOString()}`,
       )
     } catch (error) {
-      // 快照损坏/版本不符：删除后等待重建，不弹错误（spec §8）
+      // 快照损坏/版本不符：删除 base 和无法重放的 orphan delta，等待重建，不弹错误（spec §8）
       this.logger.warn('snapshot load failed; will rebuild on demand', error)
-      try {
-        await fs.promises.unlink(snapshotPath)
-      } catch {
-        // ignore
+      for (const target of [snapshotPath, deltaPath]) {
+        try {
+          await fs.promises.unlink(target)
+        } catch {
+          // ignore
+        }
       }
+      this.expectedDeltaBytes = 0
+      this.expectedDeltaRecords = 0
+      this.deltaConflict = false
     }
   }
 

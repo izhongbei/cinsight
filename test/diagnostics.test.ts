@@ -148,6 +148,18 @@ test('diagnostics: roots-changed note appears only when the flag is set', () => 
   assert.doesNotMatch(mdUnchanged, /roots changed since the last build/)
 })
 
+test('diagnostics: delta recovery warning renders only when present', () => {
+  const md = renderDiagnosticsMarkdown({
+    ...input,
+    deltaWarning: 'dropped 12 bytes of an incomplete snapshot delta tail\n(retry after reload)',
+  })
+  assert.match(md, /- warning \(delta recovery\): dropped 12 bytes of an incomplete snapshot delta tail \(retry after reload\)/)
+  // 换行被压平，不会破坏后续章节的列表结构
+  assert.doesNotMatch(md, /delta tail\n\(/)
+  const clean = renderDiagnosticsMarkdown(input)
+  assert.doesNotMatch(clean, /delta recovery/)
+})
+
 test('diagnostics: includes last build summary when present', () => {
   const md = renderDiagnosticsMarkdown({
     ...input,

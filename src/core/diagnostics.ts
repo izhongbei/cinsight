@@ -21,6 +21,8 @@ export interface DiagnosticsInput {
   readonly kindCounts: Readonly<Record<SymbolKind, number>>
   readonly lastBuild: BuildSummary | undefined
   readonly lastError: string | undefined
+  /** 加载 delta 时的恢复警告（读失败或丢弃损坏尾部）；正常时为 undefined。 */
+  readonly deltaWarning?: string
   readonly heapUsedBytes: number
   readonly rssBytes: number
   readonly budget: BudgetReport
@@ -119,6 +121,10 @@ export function renderDiagnosticsMarkdown(input: DiagnosticsInput): string {
   lines.push('')
   lines.push(storageLine('snapshot', input.snapshotPath, input.snapshotBytes))
   lines.push(`- snapshot delta: ${bytes(input.deltaBytes)}`)
+  if (input.deltaWarning) {
+    // 单行渲染：fs 错误文本可能带换行，压平避免破坏 Markdown 列表结构。
+    lines.push(`- warning (delta recovery): ${input.deltaWarning.replace(/\s+/g, ' ').trim()}`)
+  }
   lines.push(
     storageLine(
       'reference index',

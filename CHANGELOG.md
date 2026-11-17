@@ -4,23 +4,25 @@
 
 ### English
 
-- **Incremental symbol index**: saving a file no longer rewrites the whole snapshot. The save path appends a KB-sized delta record to `symbols.sidx.delta` (measured **904 B / 1 ms** for a 22-symbol file) and applies it to an in-memory overlay in **O(Δ)** — the column arrays are not rebuilt (measured **<1 ms**, reported as 0 ms). Startup replays `base + delta`; the perf run replayed 1 record with an identical entry count.
-- **Automatic compaction** merges deltas back into the base snapshot: above **4 MB** of delta or **500** changed files, after **60 s** idle, and on close. Measured on 118,730 symbols: **47 ms** to write the 5.13 MB base (plus 65 ms to flatten the overlay). `sourceInsight.autoCompact=false` disables the automatic merges; deltas are still appended durably.
+- **Incremental symbol index**: saving a file no longer rewrites the whole snapshot. The save path appends a KB-sized delta record to `symbols.sidx.delta` (measured **904 B / 1 ms** for a 22-symbol file) and applies it to an in-memory overlay in **O(Δ)** — the column arrays are not rebuilt (measured **<1 ms**). The write is **O(Δ) in bytes, not in time**: each append validates the delta tail with an offset-only scan (no `SymbolEntry` decode), cached when only this process writes. Measured appends: first **0.47 ms**, **0.11 ms avg** steady-state, **0.44 ms** at a 4.09 MB delta (warm cache), and **4.32 ms** cold (read + scan of a 4.17 MB tail). Startup replays `base + delta`; the perf run replayed 1 record with an identical entry count.
+- **Automatic compaction** merges deltas back into the base snapshot: above **4 MB** of delta or **500** changed files, after **60 s** idle, and on close. Measured on 118,730 symbols: **47 ms** to write the 5.13 MB base (plus 65 ms to flatten the overlay). `sourceInsight.autoCompact=false` only defers the automatic merges; deltas are still appended durably, and a **safety compaction** still runs at **5,000** changed files or a **32 MB** delta (queries may slow down with a large overlay).
 - **Index size budget**: new `sourceInsight.maxSymbols` (default 2,000,000) and `sourceInsight.maxFiles` (default 120,000) settings. Exceeding either turns the status bar into a warning; beyond the hard limit of 5,000,000 symbols it turns into an error and a one-shot prompt offers to reconfigure the index roots. Builds over 80,000 actual files automatically downgrade concurrency to 2 workers.
-- New command **`Code Insight: Show Index Diagnostics`** (`si.showIndexDiagnostics`): a Markdown report with base/delta sizes, pending changes, per-kind symbol counts, the last build summary, budget status and process memory.
-- **Compatibility**: the base snapshot format is still **v3** and unchanged; 0.6.x deltas are replayed after the upgrade, so **no rebuild is needed**. 0.6.x extensions simply ignore the new `.delta` sidecar.
-- 206 tests pass.
+- New command **`Code Insight: Show Index Diagnostics`** (`si.showIndexDiagnostics`): a Markdown report with base/delta sizes, pending changes, per-kind symbol counts, the last build summary, budget status and process memory. Delta read errors / dropped corrupt tails now produce a recovery warning there (and in the log).
+- **Shared storage safety**: multiple windows on the same workspace share one index. The service tracks the delta size/record count it expects; if another window appended to it, compaction and post-rebuild cleanup are skipped so the other window's records are kept (concurrent windows may show stale results until reload/rebuild — one window per workspace is recommended for now).
+- **Compatibility**: the base snapshot format is still **v3** and unchanged. The "deltas are replayed" note refers only to the **reference index** (`symbols.names.delta`, already written by 0.6.x). 0.6.x wrote no symbol delta (`symbols.sidx.delta`), so a 0.6.x v3 symbol base loads as-is and **no rebuild is needed**; 0.6.x extensions simply ignore the new sidecar.
+- 212 tests pass.
 
 Measured on 6,838 C/H files / 118,730 symbols (same module set as 0.6.x): build 5.7 s, snapshot load 31 ms, symbol search 5 ms, indexed find-references 2 ms (full scan 1.16 s), callers / callees 5 ms / 1 ms — no regression versus 0.6.x.
 
 ### 中文
 
-- **符号索引增量更新**：保存文件不再重写整个快照。保存路径只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录（22 符号的文件实测 **904 B / 1 ms**），并把它应用到内存 overlay，单文件更新为 **O(Δ)**——不重建列数组（实测 **<1 ms**，输出取整显示为 0 ms）。启动时按 `base + delta` 重放；压测中重放 1 条记录后条目数一致。
-- **自动 compaction**：delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s**、以及关闭扩展时，把增量合并回 base 快照。118,730 符号实测：写出 5.13 MB base 用 **47 ms**（overlay flatten 另计 65 ms）。`sourceInsight.autoCompact=false` 可关闭自动合并；delta 仍会逐次追加落盘，不丢数据。
+- **符号索引增量更新**：保存文件不再重写整个快照。保存路径只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录（22 符号的文件实测 **904 B / 1 ms**），并把它应用到内存 overlay，单文件更新为 **O(Δ)**——不重建列数组（实测 **<1 ms**）。写入成本是「**O(Δ) 字节**，但不是 O(Δ) 时间」：每次追加只按长度偏移扫描 delta 尾部（不解码 `SymbolEntry`），且只在仅本进程写入时命中缓存。实测追加：首次 **0.47 ms**、稳态均值 **0.11 ms**、4.09 MB delta 且缓存命中 **0.44 ms**、冷启动（读 + 扫描 4.17 MB 尾部）**4.32 ms**。启动时按 `base + delta` 重放；压测中重放 1 条记录后条目数一致。
+- **自动 compaction**：delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s**、以及关闭扩展时，把增量合并回 base 快照。118,730 符号实测：写出 5.13 MB base 用 **47 ms**（overlay flatten 另计 65 ms）。`sourceInsight.autoCompact=false` 只推迟自动合并：delta 仍会逐次追加落盘，但到达**硬安全上限**（累计 **5,000** 个文件变更或 **32 MB** delta）时仍会强制合并一次（overlay 很大时查询可能变慢）。
 - **索引规模预算**：新增 `sourceInsight.maxSymbols`（默认 2,000,000）与 `sourceInsight.maxFiles`（默认 120,000）。超过任一阈值状态栏变为警告；超过 5,000,000 符号的硬上限时变为错误，并一次性提示重新配置索引目录。实际文件数超过 80,000 时构建并发自动降到 2。
-- 新命令 **`Code Insight: 索引诊断`**（`si.showIndexDiagnostics`）：Markdown 报告，含 base/delta 体积、待合并变更数、各类符号数、上次构建摘要、预算状态与进程内存。
-- **兼容性**：base 快照格式仍为 **v3** 且未改动；0.6.x 的 delta 在升级后会被重放，**无需重建索引**。0.6.x 旧版扩展会忽略新增的 `.delta` 旁路文件。
-- 206 个单测通过。
+- 新命令 **`Code Insight: 索引诊断`**（`si.showIndexDiagnostics`）：Markdown 报告，含 base/delta 体积、待合并变更数、各类符号数、上次构建摘要、预算状态与进程内存。delta 读失败 / 损坏尾部被丢弃时，报告与日志会显示恢复警告。
+- **共享存储安全**：同一工作区的多个窗口共享同一份索引。service 会记录预期的 delta 大小/记录数；若另一个窗口追加过记录，compaction 与 rebuild 后的清理都会跳过，保留对方记录（并发窗口可能看到过期结果，直到重新加载/重建——目前建议一个工作区只开一个窗口）。
+- **兼容性**：base 快照格式仍为 **v3** 且未改动。「delta 会被重放」只针对**引用索引**（`symbols.names.delta`，0.6.x 已存在）。0.6.x 没有写过符号 delta（`symbols.sidx.delta`），因此 0.6.x 的 v3 符号 base 可直接加载，**无需重建索引**；0.6.x 旧版扩展会忽略新增的旁路文件。
+- 212 个单测通过。
 
 对 6,838 个 C/H 文件 / 118,730 符号实测（与 0.6.x 同一模块集合）：构建 5.7 s、快照加载 31 ms、函数搜索 5 ms、倒排索引查找引用 2 ms（全量扫描 1.16 s）、调用者/被调用者 5 ms / 1 ms——相对 0.6.x 无劣化。
 

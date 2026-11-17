@@ -113,21 +113,61 @@ test('overlay: property-ish randomized updates always match a full rebuild', () 
     const base = createSymbolTable(['root'], files, entries, 1, SNAPSHOT_VERSION)
     const index = createMutableIndex(base)
     const expectedEntries = new Map(entries.map((e) => [`${e.file}:${e.name}:${e.line}`, e]))
+    const expectedFiles = new Map(files.map((file) => [file.path, file]))
+    const dropFile = (file: string): void => {
+      expectedFiles.delete(file)
+      for (const key of [...expectedEntries.keys()]) {
+        if (key.startsWith(file + ':')) expectedEntries.delete(key)
+      }
+    }
     for (let step = 0; step < 5; step++) {
-      const target = `f${Math.floor(random() * 6)}.c`
+      // 0..6：目标可以是不在 base 里的 f6.c（新文件），也覆盖删除后再新建。
+      const target = `f${Math.floor(random() * 7)}.c`
       if (random() < 0.3) {
         index.removeFile(target)
-        for (const key of [...expectedEntries.keys()]) if (key.startsWith(target + ':')) expectedEntries.delete(key)
+        dropFile(target)
       } else {
-        const next = [entry(names[Math.floor(random() * names.length)]!, target, Math.floor(random() * 5))]
+        const count = 1 + Math.floor(random() * 2)
+        const next: SymbolEntry[] = []
+        for (let index = 0; index < count; index++) {
+          next.push(entry(names[Math.floor(random() * names.length)]!, target, index))
+        }
         index.applyFile({ path: target, mtimeMs: step, size: step }, next)
-        for (const key of [...expectedEntries.keys()]) if (key.startsWith(target + ':')) expectedEntries.delete(key)
+        dropFile(target)
+        expectedFiles.set(target, { path: target, mtimeMs: step, size: step })
         for (const e of next) expectedEntries.set(`${e.file}:${e.name}:${e.line}`, e)
       }
     }
     const flat = index.flatten()
+    const expected = createSymbolTable(
+      ['root'],
+      [...expectedFiles.values()],
+      [...expectedEntries.values()],
+      flat.builtAt,
+      flat.version,
+    )
+    // 逐条比较内容（不只是计数）：flatten 必须与全量重建完全一致。
     assert.equal(flat.entryCount, expectedEntries.size, `round ${round}`)
-    assert.deepEqual(flat.files.map((f) => f.path), [...new Set([...expectedEntries.values()].map((e) => e.file))].sort())
+    assert.deepEqual(flat.files, expected.files, `round ${round} file records`)
+    assert.deepEqual(
+      flat.toArray().sort(compareSymbolEntries),
+      expected.toArray().sort(compareSymbolEntries),
+      `round ${round} entries`,
+    )
+    for (const name of new Set(expected.toArray().map((e) => e.name))) {
+      assert.deepEqual(
+        flat.findByName(name).sort(compareSymbolEntries),
+        expected.findByName(name).sort(compareSymbolEntries),
+        `round ${round} name ${name}`,
+      )
+    }
+    for (const file of new Set([...expectedFiles.keys(), ...flat.files.map((f) => f.path)])) {
+      assert.deepEqual(
+        flat.entriesInFile(file),
+        expected.entriesInFile(file),
+        `round ${round} entriesInFile(${file})`,
+      )
+    }
   }
 })
 
