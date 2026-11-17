@@ -131,6 +131,48 @@ test('overlay: property-ish randomized updates always match a full rebuild', () 
   }
 })
 
+test('overlay: entriesInFile orders overlay slots by line, column, then name', () => {
+  const { base } = makeBase()
+  const index = createMutableIndex(base)
+  // 故意乱序：line 10 在最前、line 2 在后；同一行内含列 / 名字并列。
+  const withColumn = (name: string, file: string, line: number, column: number): SymbolEntry => ({
+    name,
+    kind: 'function',
+    file,
+    line,
+    endLine: line + 1,
+    column,
+  })
+  const overlayEntries = [
+    withColumn('alpha', 'x.c', 10, 2),
+    withColumn('zeta', 'x.c', 2, 5),
+    withColumn('mid', 'x.c', 5, 7),
+    withColumn('omega', 'x.c', 5, 3),
+    withColumn('beta', 'x.c', 5, 3),
+  ]
+  index.applyFile({ path: 'x.c', mtimeMs: 1, size: 1 }, overlayEntries)
+
+  const expected = ['zeta', 'beta', 'omega', 'mid', 'alpha']
+  assert.deepEqual(index.entriesInFile('x.c').map((e) => e.name), expected)
+  // 与 flatten / 全量重建产出的顺序一致（同一个 SymbolTable 契约）。
+  const flat = index.flatten()
+  assert.deepEqual(index.entriesInFile('x.c'), flat.entriesInFile('x.c'))
+  const rebuilt = createSymbolTable(flat.roots, flat.files, flat.toArray(), flat.builtAt, flat.version)
+  assert.deepEqual(index.entriesInFile('x.c'), rebuilt.entriesInFile('x.c'))
+})
+
+test('overlay: applyFile snapshots the caller entries array', () => {
+  const { base } = makeBase()
+  const index = createMutableIndex(base)
+  const overlayEntries = [entry('omega', 'a.c', 4)]
+  index.applyFile({ path: 'a.c', mtimeMs: 9, size: 99 }, overlayEntries)
+  overlayEntries.push(entry('alpha', 'a.c', 1))
+
+  assert.equal(index.entryCount, 4) // 仍按 apply 时的 1 条条目计数
+  assert.deepEqual(index.entriesInFile('a.c').map((e) => e.name), ['omega'])
+  assert.deepEqual(index.flatten().entriesInFile('a.c').map((e) => e.name), ['omega'])
+})
+
 test('overlay: createMutableIndexFromDeltas replays records', () => {
   const { base } = makeBase()
   const index = createMutableIndexFromDeltas(base, [

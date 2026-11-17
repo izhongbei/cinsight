@@ -108,7 +108,7 @@ class MutableIndex implements MutableSymbolIndex {
     } else {
       this.removedBaseEntryCount += this.hideBaseEntries(file.path)
     }
-    this.changed.set(file.path, { file, entries })
+    this.changed.set(file.path, { file, entries: [...entries] })
     this.overlayEntryCount += entries.length
     this.invalidate()
   }
@@ -130,7 +130,8 @@ class MutableIndex implements MutableSymbolIndex {
   entriesInFile(file: string): SymbolEntry[] {
     const slot = this.changed.get(file)
     if (slot === 'removed') return []
-    if (slot) return [...slot.entries].sort(compareSymbolEntries)
+    // 与 SymbolTableImpl.entriesInFile 保持同一顺序：行 → 列 → 名字。
+    if (slot) return [...slot.entries].sort((a, b) => a.line - b.line || a.column - b.column || compareStrings(a.name, b.name))
     return this.base.entriesInFile(file)
   }
 
