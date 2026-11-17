@@ -8,13 +8,15 @@ import type {
   FileRecord,
   ReadFileFn,
   ScannedFileResult,
+  ScannedInclude,
   ScannedSymbol,
   SymbolEntry,
   SymbolTable,
 } from '../shared/types'
+import { hashContent64 } from './hash'
 import { buildNameIndex, collectIdentifierHashes, loadNameIndex, saveNameIndex } from './nameindex'
 import { createSymbolTable } from './symbol-table'
-import { scanSource } from './scan'
+import { scanIncludes, scanSource } from './scan'
 import { saveSnapshot } from './store'
 import { walkFiles } from './walk'
 
@@ -66,6 +68,8 @@ interface WorkerReply {
   id: number
   symbols?: ScannedSymbol[]
   hashes?: Uint32Array
+  contentHash?: { lo: number; hi: number }
+  includes?: ScannedInclude[]
   error?: string
 }
 
@@ -108,6 +112,9 @@ class WorkerPool {
       item.resolve({
         symbols: message.symbols ?? [],
         hashes: message.hashes ?? new Uint32Array(0),
+        // worker 始终回传；缺省值仅为协议异常时的防御（数据仅供 0.8.0 后续任务使用）
+        contentHash: message.contentHash ?? { lo: 0, hi: 0 },
+        includes: message.includes ?? [],
       })
     }
   }
@@ -206,7 +213,12 @@ async function parseRemainingSerial(job: PendingParser): Promise<void> {
       continue
     }
     throwIfAborted(job.signal)
-    job.finish(file, { symbols: scanSource(text), hashes: collectIdentifierHashes(text) })
+    job.finish(file, {
+      symbols: scanSource(text),
+      hashes: collectIdentifierHashes(text),
+      contentHash: hashContent64(text),
+      includes: scanIncludes(text),
+    })
   }
 }
 

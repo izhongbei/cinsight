@@ -53,10 +53,22 @@ export interface SymbolTable {
   toArray(): SymbolEntry[]
 }
 
-/** worker 单遍解析结果：符号 + 该文件标识符哈希（供引用索引复用，避免二次读盘） */
+/** 一条已扫描到的 `#include`（路径去掉引号/尖括号；行号为 0-based）。 */
+export interface ScannedInclude {
+  readonly path: string
+  readonly line: number
+  /** true = `#include <...>`，false = `#include "..."` */
+  readonly angled: boolean
+}
+
+/** worker 单遍解析结果：符号 + 该文件标识符哈希 + 内容哈希 + include 列表（避免二次读盘） */
 export interface ScannedFileResult {
   readonly symbols: readonly ScannedSymbol[]
   readonly hashes: Uint32Array
+  /** 64 位内容哈希（两个 32 位分量），用于多副本折叠与增量复用 */
+  readonly contentHash: { readonly lo: number; readonly hi: number }
+  /** 文件内的 `#include` 原始路径（未解析；Task 3 再映射到索引内文件） */
+  readonly includes: readonly ScannedInclude[]
 }
 
 export interface ScannedSymbol {
@@ -65,6 +77,8 @@ export interface ScannedSymbol {
   readonly line: number
   readonly endLine: number
   readonly column: number
+  /** 定义所在行生效的条件栈文本；undefined = 无条件（B4） */
+  readonly condition?: string
 }
 
 export type IndexPhase = 'walk' | 'parse' | 'index' | 'save'

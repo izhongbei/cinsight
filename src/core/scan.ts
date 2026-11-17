@@ -1,4 +1,6 @@
-import type { ScannedSymbol } from '../shared/types'
+import type { ScannedInclude, ScannedSymbol } from '../shared/types'
+
+export type { ScannedInclude } from '../shared/types'
 
 /**
  * C 词法剥离 + 符号提取（A）。
@@ -194,6 +196,104 @@ export function stripSources(text: string): string {
   }
   pushCode(n)
   return pieces.join('')
+}
+
+// ---------------------------------------------------------------------------
+// include 与条件栈扫描（只认行首预处理指令；注释/字符串内的伪指令忽略）
+// ---------------------------------------------------------------------------
+
+const INCLUDE_RE = /^#\s*include\s*(["<])([^">\s]+)[">]/
+
+/**
+ * 扫描文件内的 `#include`，返回去掉引号/尖括号的原始路径与 0-based 行号。
+ *
+ * `stripSources` 会把字符串内容（包括 include 的引号与路径）涂白，不能直接在剥离结果上取路径；
+ * 因此先用剥离结果判断该行的「代码位置」是否真的以 `#` 开头（注释/字符串内的伪指令被涂白后不会命中），
+ * 再从原始行的同一列解析真实路径（列号在剥离前后一致）。
+ * `#elif/#else` 等条件不影响 include 收集。
+ */
+export function scanIncludes(text: string): ScannedInclude[] {
+  const strippedLines = stripSources(text).split('\n')
+  const originalLines = text.split('\n')
+  const result: ScannedInclude[] = []
+  for (let line = 0; line < strippedLines.length; line++) {
+    const strippedLine = strippedLines[line]!
+    let hash = 0
+    while (hash < strippedLine.length && isWsCode(strippedLine.charCodeAt(hash))) hash++
+    if (hash >= strippedLine.length || strippedLine.charCodeAt(hash) !== CH_HASH) continue
+    const originalLine = originalLines[line]
+    if (originalLine === undefined) continue
+    const match = INCLUDE_RE.exec(originalLine.slice(hash))
+    if (!match) continue
+    result.push({ path: match[2]!, line, angled: match[1] === '<' })
+  }
+  return result
+}
+
+export interface ConditionTimeline {
+  /** 按行升序：从 line 起 condition 生效；condition undefined = 无条件 */
+  readonly changes: ReadonlyArray<{ readonly line: number; readonly condition: string | undefined }>
+}
+
+const CONDITION_DIRECTIVE_RE = /^#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$/
+const MAX_CONDITION_DEPTH = 3
+const MAX_CONDITION_LENGTH = 120
+
+/** 记录 #if/#ifdef/#ifndef 条件栈的时间线（不求值；未配对 #endif 忽略）。 */
+export function scanConditions(text: string): ConditionTimeline {
+  return collectConditions(stripSources(text))
+}
+
+/**
+ * 已剥离注释/字符串的文本 → 条件时间线。
+ * `scanSource` 复用同一份剥离结果，避免为条件再整文件扫描一遍。
+ */
+function collectConditions(stripped: string): ConditionTimeline {
+  const lines = stripped.split('\n')
+  const stack: string[] = []
+  const changes: Array<{ line: number; condition: string | undefined }> = []
+  for (let line = 0; line < lines.length; line++) {
+    const match = CONDITION_DIRECTIVE_RE.exec(lines[line]!.trim())
+    if (!match) continue
+    const directive = match[1]!
+    const expression = match[2]!.trim()
+    if (directive === 'endif') {
+      stack.pop()
+      changes.push({ line, condition: formatCondition(stack) })
+      continue
+    }
+    // #else/#elif 只切换同一层内的分支，不改变嵌套层级；0.8.0 只标注「处于哪个条件块」，
+    // 因而条件文本保留 enclosing #if（与需求中的示例一致：else 分支仍显示外层 #ifdef）。
+    if (directive === 'else' || directive === 'elif') continue
+    stack.push(`#${directive} ${expression}`.trim())
+    changes.push({ line, condition: formatCondition(stack) })
+  }
+  return { changes }
+}
+
+/** 条件栈文本：只保留最内层 MAX_CONDITION_DEPTH 层，超长截断。 */
+function formatCondition(stack: readonly string[]): string | undefined {
+  if (stack.length === 0) return undefined
+  const joined = stack.slice(Math.max(0, stack.length - MAX_CONDITION_DEPTH)).join(' && ')
+  return joined.length > MAX_CONDITION_LENGTH ? `${joined.slice(0, MAX_CONDITION_LENGTH - 1)}…` : joined
+}
+
+/** 返回某行生效的条件（时间线二分）。 */
+export function conditionAt(timeline: ConditionTimeline, line: number): string | undefined {
+  const changes = timeline.changes
+  let low = 0
+  let high = changes.length - 1
+  let condition: string | undefined
+  while (low <= high) {
+    const mid = (low + high) >>> 1
+    if (changes[mid]!.line <= line) {
+      condition = changes[mid]!.condition
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+  return condition
 }
 
 function computeLineStarts(text: string): number[] {
@@ -779,6 +879,7 @@ export function scanSource(text: string): ScannedSymbol[] {
   if (text.length === 0) return []
   const prepared = blankExternCAfterStrip(stripSources(blankExternCBlocks(text)))
   const lineStarts = computeLineStarts(prepared)
+  const timeline = collectConditions(prepared)
   const { clean, macros } = extractMacros(prepared, lineStarts)
   const functions = scanFunctions(clean, lineStarts)
   const types = scanTypes(clean, lineStarts)
@@ -788,5 +889,7 @@ export function scanSource(text: string): ScannedSymbol[] {
     if (a.column !== b.column) return a.column - b.column
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
   })
-  return all
+  // 绝大多数文件没有条件编译：无变化时直接返回原数组，避免为每个符号额外分配对象。
+  if (timeline.changes.length === 0) return all
+  return all.map((symbol) => ({ ...symbol, condition: conditionAt(timeline, symbol.line) }))
 }
