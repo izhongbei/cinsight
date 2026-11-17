@@ -468,6 +468,19 @@ export class SymbolService implements vscode.Disposable {
     this.progressEmitter.fire(this.progressValue)
     this.changeEmitter.fire()
 
+    // 串行化 base 写者：build 自己的 base 写在 buildIndex 里，若此时还有 compaction 在
+    // compactSnapshot 中，它的 rename/清 delta 可能落在 build 的写之后，用旧 flat 覆盖新 base。
+    // compaction 从不等待 build（只通过 stale() 观察 buildingValue 提前放弃），不会死锁；
+    // 失败仅记日志，不能阻断本次重建。
+    const inFlightCompaction = this.compactPromise
+    if (inFlightCompaction) {
+      try {
+        await inFlightCompaction
+      } catch (error) {
+        this.logger.warn('in-flight compaction failed before rebuild', error)
+      }
+    }
+
     const generation = this.generation
     const title = forced
       ? vscode.l10n.t('Rebuilding Code Insight index…')
@@ -970,6 +983,11 @@ export class SymbolService implements vscode.Disposable {
     }
     const settled = this.runCompaction()
     const promise: Promise<void> = settled
+      // 终止性 catch：compactPromise 永不 reject，idle timer / dispose 里的 `void compactNow()`
+      // 以及 flush 的 await 都不会产生 unhandled rejection（runCompaction 内部已记录日志）。
+      .catch((error) => {
+        this.logger.warn('snapshot compaction failed', error)
+      })
       .finally(() => {
         if (this.compactPromise === promise) {
           this.compactPromise = undefined
@@ -1046,6 +1064,7 @@ export class SymbolService implements vscode.Disposable {
         return true
       }
       if (index.pendingChanges === 0 && deltaBytes === 0) {
+        // 无内容可合并，但仍走统一收尾（空列表时是 no-op），与其余 abort 分支语义一致。
         this.settleDeferredOnAbort(index)
         return true
       }
@@ -1061,7 +1080,9 @@ export class SymbolService implements vscode.Disposable {
       if (stale()) {
         if (this.mutableValue === undefined) {
           // 索引已被清空（clearCache）：写盘可能落在删除之后，删掉这份过期 base，避免复活。
-          await this.removeSnapshotFile()
+          // 只能删文件：unlink 的 await 窗口里 rebuild 可能已装回新的 live 索引，
+          // 复用 removeSnapshotFile() 会把新索引/deferred 一起清空。
+          await this.removeSnapshotFilesOnly()
         }
         // 写盘落地后 abort 同样要排空 deferred：旧记录不能留到下一次 compaction 重放。
         this.settleDeferredOnAbort(index)
@@ -1100,13 +1121,9 @@ export class SymbolService implements vscode.Disposable {
       return true
     } catch (error) {
       this.logger.warn('snapshot compaction failed', error)
-      // 失败时不静默丢弃 deferred：这些变更仍在旧 mutable 索引内存里，只是 delta 写盘被推迟，
-      // 重新入队成普通 append（内存索引不动），否则崩溃/重启后会丢记录。
-      const deferred = this.deferredDuringCompaction
-      this.deferredDuringCompaction = []
-      for (const change of deferred) {
-        this.enqueueAppend(change)
-      }
+      // 与 settleDeferredOnAbort 语义对齐：只有捕获的索引仍 live 时才重新入队为普通 append
+      //（内存索引不动），整表已被替换/清空时直接丢弃，避免旧索引记录被追加到新 base 的 delta。
+      this.settleDeferredOnAbort(index)
       return false
     } finally {
       this.compacting = false
@@ -1136,8 +1153,8 @@ export class SymbolService implements vscode.Disposable {
       .catch(() => undefined)
   }
 
-  /** 删除快照文件与 delta（清缓存 / 构建期间清缓存的竞态兜底）。 */
-  private async removeSnapshotFile(): Promise<void> {
+  /** 只删除 base + delta 文件，不动内存状态（stale-abort 路径专用）。 */
+  private async removeSnapshotFilesOnly(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath) return
     for (const target of [snapshotPath, snapshotDeltaPath(snapshotPath)]) {
@@ -1148,6 +1165,12 @@ export class SymbolService implements vscode.Disposable {
         if (code !== 'ENOENT') this.logger.warn(`cannot remove index file ${target}`, error)
       }
     }
+  }
+
+  /** 删除快照文件与 delta（清缓存 / 构建期间清缓存的竞态兜底），并清空内存索引状态。 */
+  private async removeSnapshotFile(): Promise<void> {
+    if (!this.snapshotPathValue) return
+    await this.removeSnapshotFilesOnly()
     this.snapshotValue = undefined
     this.mutableValue = undefined
     this.appendChain = Promise.resolve()
