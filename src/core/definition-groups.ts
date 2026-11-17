@@ -1,34 +1,25 @@
 import type { SymbolEntry, SymbolTable } from '../shared/types'
-import { rankDefinitions } from '../vscode/rank-definitions'
+import { rankDefinitions, type RankContext } from './rank-definitions'
 
 /**
  * 定义候选分组（0.8.0 / B2 + B4，纯逻辑，无 vscode 依赖）。
  *
  * 大仓里同一个函数/结构体有多份内核/驱动副本，内容完全相同的副本对用户没有区分意义。
- * 这里先按 `rankDefinitions` 排序，再按「文件内容哈希（lo:hi）」把内容相同的副本折叠成
- * 一组：组的代表就是排名最高的副本，`included` / `conditional` 也都按代表计算；组内副本
- * 全部保留（折叠只影响展示，不丢定义）。
+ * 这里先按 `rankDefinitions` 排序，再把「同一个定义在内容相同的文件里的副本」折叠成一组：
+ * 分组键同时包含文件内容哈希与符号身份（`名字 + 种类`），因此：
+ *   - 内容相同但符号不同（例如同一文件里的 `struct Foo` 前置声明与定义、或
+ *     `typedef struct Bar {} Bar;`）不会被折叠；
+ *   - 同一文件里的同名同种类条目（退化输入）永远不会被折叠进一组（guard）；
+ *   - 没有内容哈希（旧快照/未知文件/无表）时退化为按文件路径 + 身份分组。
  *
- * 没有内容哈希（旧快照/未知文件/无表）时退化为「按文件路径」分组，语义与 0.7.0 一致。
+ * 组的代表是组内排名最高的副本，`included` / `conditional` 也都按代表计算；组内副本
+ * 全部保留（折叠只影响展示，不丢定义）。`copies` 是组内**不同文件**的数量。
  */
 
-/**
- * 分组/排序上下文。
- *
- * 注意：`rankDefinitions` 自己的 `RankContext` 允许省略 `roots`（无上下文排序），这里
- * 要求显式给出（分组总是发生在有配置上下文的 UI 路径上）。
- */
-export interface RankContext {
-  /** 光标所在文件的 workspace 相对 posix 路径 */
-  readonly sourceFile?: string
-  /** 配置的索引根（workspace 相对 posix 路径） */
-  readonly roots: readonly string[]
-  /** 符号表（include 图 / 内容哈希）；缺省时不做 include 加权、按文件分组 */
-  readonly table?: SymbolTable
-}
+export type { RankContext } from './rank-definitions'
 
 export interface DefinitionGroup {
-  /** 同内容哈希的副本，按 rank 排序 */
+  /** 同内容哈希 + 同一符号身份 + 不同文件的副本，按 rank 排序 */
   readonly entries: readonly SymbolEntry[]
   /** 组内排名最高的副本（QuickPick/F12 用它定位） */
   readonly representative: SymbolEntry
@@ -36,7 +27,7 @@ export interface DefinitionGroup {
   readonly included: boolean
   /** 代表副本是否位于条件编译块（#ifdef 等）中 */
   readonly conditional: boolean
-  /** 内容相同的副本数（1 = 唯一） */
+  /** 副本覆盖的不同文件数（1 = 唯一） */
   readonly copies: number
 }
 
@@ -50,49 +41,83 @@ function isIncluded(context: RankContext, file: string): boolean {
 }
 
 /**
- * 分组键：内容哈希相同 → 同一组；没有哈希 → 按文件路径，避免把不同内容的文件错误折叠。
- * 哈希的 lo/hi 拼成字符串（两段各自无 `:`，不存在歧义）。
+ * 分组键：内容哈希 + 符号身份；没有哈希时按文件路径 + 符号身份。
+ * 哈希的 lo/hi 与 kind 都是无 `:` 的整数/枚举字面量，两段各自无歧义。
  */
 function groupKey(entry: SymbolEntry, table: SymbolTable | undefined): string {
   const hash = table?.contentHashOf(entry.file)
-  return hash ? `${hash.lo}:${hash.hi}` : `file:${entry.file}`
+  const identity = `${entry.name}:${entry.kind}`
+  return hash ? `${hash.lo}:${hash.hi}:${identity}` : `file:${entry.file}:${identity}`
+}
+
+interface PendingGroup {
+  readonly entries: SymbolEntry[]
+}
+
+/** 折叠结果 -> 对外 DefinitionGroup（代表 = 组内排名最高者）。 */
+function toDefinitionGroup(context: RankContext, pending: PendingGroup): DefinitionGroup {
+  const representative: SymbolEntry = pending.entries[0]!
+  return {
+    entries: pending.entries,
+    representative,
+    included: isIncluded(context, representative.file),
+    conditional: Boolean(representative.condition),
+    copies: new Set(pending.entries.map((entry) => entry.file)).size,
+  }
 }
 
 /**
- * 排序 + 按内容哈希分组。组顺序 = 代表副本的排名顺序（Map 保持首次插入顺序）。
+ * 排序 + 按内容哈希/符号身份分组。组顺序 = 代表副本的排名顺序。
+ *
+ * 同一文件的两个条目绝不进入同一组（即使内容哈希与符号身份都相同）：`copies` 语义是
+ * 「内容相同的不同文件数」，同一文件内的重复条目不是副本，不能虚增计数。
  */
 export function groupDefinitions(
   entries: readonly SymbolEntry[],
   context: RankContext,
 ): DefinitionGroup[] {
   const ranked = rankDefinitions(entries, context)
-  const groups = new Map<string, SymbolEntry[]>()
+  // 同一分组键下可能有多个组（同一文件的退化重复只靠 guard 分开），用桶做查找。
+  const buckets = new Map<string, PendingGroup[]>()
+  // 组在首次创建时按 rank 递增追加，因此 groups 的顺序就是代表副本的排名顺序。
+  const groups: PendingGroup[] = []
   for (const entry of ranked) {
     const key = groupKey(entry, context.table)
-    const list = groups.get(key)
-    if (list) list.push(entry)
-    else groups.set(key, [entry])
-  }
-  return [...groups.values()].map((groupEntries) => {
-    const representative: SymbolEntry = groupEntries[0]!
-    return {
-      entries: groupEntries,
-      representative,
-      included: isIncluded(context, representative.file),
-      conditional: Boolean(representative.condition),
-      copies: groupEntries.length,
+    let bucket = buckets.get(key)
+    if (bucket === undefined) {
+      bucket = []
+      buckets.set(key, bucket)
     }
-  })
+    // guard：选择第一个「尚未包含该文件」的组；没有则新开一组。
+    let target = bucket.find((group) =>
+      group.entries.every((item) => item.file !== entry.file),
+    )
+    if (target === undefined) {
+      target = { entries: [] }
+      bucket.push(target)
+      groups.push(target)
+    }
+    target.entries.push(entry)
+  }
+  return groups.map((group) => toDefinitionGroup(context, group))
 }
 
 /**
  * QuickPick / Hover 复用的纯文本标签：`name  ·  included  ·  3 copies  ·  #ifdef FOO`。
- * 缺省部分直接省略（唯一且无条件时只剩名字）。
+ * 缺省部分直接省略（唯一且无条件时只剩名字）；空条件文本视为没有条件，不产生分隔符。
  */
 export function formatDefinitionLabel(group: DefinitionGroup): string {
   const parts = [group.representative.name]
   if (group.included) parts.push('included')
   if (group.copies > 1) parts.push(`${group.copies} copies`)
-  if (group.conditional) parts.push(group.representative.condition ?? 'conditional')
+  if (group.conditional) {
+    const condition = group.representative.condition
+    if (condition === undefined) {
+      // 防御外部构造的 group：conditional 为 true 但条件文本缺失
+      parts.push('conditional')
+    } else if (condition !== '') {
+      parts.push(condition)
+    }
+  }
   return parts.join('  ·  ')
 }

@@ -181,6 +181,17 @@ test('rank: unconditional definition breaks an exact location tie', () => {
   assert.deepEqual(rankDefinitions([plain, conditional], context), [plain, conditional])
 })
 
+test('rank: unconditional definition beats a conditional one in a cross-file same layer', () => {
+  // 同一层（同 root / 同前缀 / 同 kind / 都是头文件 / 同深度 / 同长度），只有文件与行号
+  // 不同：条件键必须在 file/line 稳定性键之前，因此无条件的 b.h 排在条件 a.h 前面。
+  const conditional = entry('component/switch/drv/a.h', 10, 'struct', 'sk_buff', '#ifdef RTK_MODULE')
+  const plain = entry('component/switch/drv/b.h', 20)
+  const context = { sourceFile: 'component/switch/drv/forward.c', roots: ['component/switch'] }
+
+  assert.deepEqual(rankDefinitions([conditional, plain], context), [plain, conditional])
+  assert.deepEqual(rankDefinitions([plain, conditional], context), [plain, conditional])
+})
+
 test('rank: conditional info never outranks path proximity', () => {
   const nearConditional = entry(
     'component/switch/drv/skb.h',
@@ -211,10 +222,15 @@ test('rank: no table keeps the 0.7.0 ordering', () => {
   const context = { sourceFile: 'component/switch/drv/forward.c', roots: ['component/switch', 'datapath/kernel'] }
 
   const withoutTable = rankDefinitions(entries, context)
+  const expected = [nearConditional.file, sameRootOther.file, KERNEL]
   assert.deepEqual(
     withoutTable.map((item) => item.file),
-    [nearConditional.file, sameRootOther.file, KERNEL],
+    expected,
   )
-  // 显式 table: undefined 与「没有 table」等价（无表路径不引入新键改变既有排序）
-  assert.deepEqual(rankDefinitions(entries, { ...context, table: undefined }), withoutTable)
+  // 显式 table: undefined 与「没有 table」等价（无表路径不引入新键改变既有排序）：
+  // 直接断言实际排序结果，而不是把同一个调用和自己比较。
+  assert.deepEqual(
+    rankDefinitions(entries, { ...context, table: undefined }).map((item) => item.file),
+    expected,
+  )
 })

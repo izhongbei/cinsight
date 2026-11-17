@@ -18,7 +18,7 @@ import { callersOf, calleesOf, clearCallGraphCache } from '../core/callgraph'
 import { hashContent64 } from '../core/hash'
 import { DEFAULT_INDEX_BUDGET, evaluateBudget, type BudgetReport } from '../core/index-budget'
 import { resolveIncludePaths } from '../core/include-resolve'
-import { buildIndex } from '../core/indexer'
+import { buildIndex, indexRootsChanged } from '../core/indexer'
 import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolIndex } from '../core/overlay-index'
 import {
   appendSnapshotDeltaDetailed,
@@ -354,15 +354,22 @@ export class SymbolService implements vscode.Disposable {
     return readConfig()
   }
 
-  /** 快照里的 roots 和当前配置是否不一致（配置改了但尚未重建）。 */
+  /**
+   * 快照里的 roots 和当前配置是否不一致（配置改了但尚未重建）。
+   *
+   * 与 indexer 共用同一份归一 + 顺序敏感比较：
+   * - 归一等价（`proj/` / `./proj` / `proj`、绝对 root 相对化）不算变化，不提示重建；
+   * - 仅顺序变化算变化：roots 顺序决定 include 的 root 前缀搜索顺序。
+   * 比较对象是「下一次 build 实际会用的 roots」（`resolveBuildRoots`：去重 + 绝对路径相对化），
+   * 而不是原始配置串，避免无意义的重建提示。
+   */
   rootsChanged(): boolean {
     const snapshot = this.snapshotValue
     if (!snapshot) {
       return true
     }
-    const current = [...this.configuredRoots].sort().join('\u0000')
-    const stored = [...snapshot.roots].map(normalizeRoot).sort().join('\u0000')
-    return current !== stored
+    const current = this.resolveBuildRoots(readConfig())
+    return indexRootsChanged(this.workspaceRootValue, snapshot.roots, current)
   }
 
   // ---- 查询入口（Provider / 命令使用） ----

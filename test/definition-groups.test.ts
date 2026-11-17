@@ -1,8 +1,9 @@
 /**
  * 定义候选分组（B2 + B4）：
- *   - 内容哈希相同的文件视为同一份定义的多副本，折叠为一组（组内保持 rank 顺序）；
+ *   - 分组 = 同一符号（name + kind）在内容哈希相同的文件里的副本，折叠为一组
+ *     （组内保持 rank 顺序）；同一文件的两个条目永不折叠，`copies` = 不同文件数；
  *   - 代表 = 组内排名最高者；included / conditional 都按代表计算；
- *   - 无表时退化为「按文件」分组，不引入 include / 条件让排序或分组劣化。
+ *   - 无哈希时回退键为 `file:<path>:<name>:<kind>`，不引入 include / 条件让排序或分组劣化。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -161,7 +162,7 @@ test('definition groups: a definition in the source file is included without an 
   assert.equal(otherGroup?.included, false, 'no include edge means not included')
 })
 
-test('definition groups: without a table groups fall back to one group per file', () => {
+test('definition groups: without a table every entry is its own group', () => {
   const line5 = entry('a/skb.h', 5)
   const line9 = entry('a/skb.h', 9)
   const elsewhere = entry('b/skb.h', 3)
@@ -170,27 +171,158 @@ test('definition groups: without a table groups fall back to one group per file'
     roots: ['a'],
   })
 
-  assert.equal(groups.length, 2, 'no hash information: file path is the fallback key')
-  assert.equal(groups[0]!.copies, 2)
+  // 无哈希 → 回退键是 file:<path>:<name>:<kind>；同一文件的同名同种类条目也不会折叠
+  // （guard），所以没有哈希时不可能出现 copies > 1。
+  assert.equal(groups.length, 3)
   assert.deepEqual(
-    groups[0]!.entries.map((item) => `${item.file}:${item.line}`),
-    ['a/skb.h:5', 'a/skb.h:9'],
+    groups.map((group) => `${group.representative.file}:${group.representative.line}`),
+    ['a/skb.h:5', 'a/skb.h:9', 'b/skb.h:3'],
     'fallback groups still follow rank order',
   )
+  assert.deepEqual(
+    groups.map((group) => group.copies),
+    [1, 1, 1],
+    'no hash means no copy folding',
+  )
   assert.equal(groups[0]!.included, false, 'no table never claims included')
-  assert.equal(groups[1]!.representative.file, 'b/skb.h')
 })
 
-test('definition groups: files with an unknown hash also group by path', () => {
+test('definition groups: files with an unknown hash also group one entry each', () => {
   const a5 = entry('a/x.h', 5)
   const a9 = entry('a/x.h', 9)
   const b = entry('b/y.h', 5)
   const table = makeTable([file('a/x.h'), file('b/y.h')], [a5, a9, b])
 
   const groups = groupDefinitions([a5, a9, b], { roots: ['.'], table })
-  assert.equal(groups.length, 2)
-  assert.equal(groups[0]!.copies, 2)
+  assert.equal(groups.length, 3)
+  assert.deepEqual(
+    groups.map((group) => group.copies),
+    [1, 1, 1],
+  )
   assert.equal(groups[0]!.representative.file, 'a/x.h')
+})
+
+test('definition groups: forward declaration and definition in one file are two groups', () => {
+  // 同一文件的同一内容哈希，但种类不同（declaration vs struct）：是不同的定义，不能折叠
+  const declaration = entry('a/foo.h', 1, 'declaration', 'Foo')
+  const definition = entry('a/foo.h', 5, 'struct', 'Foo')
+  const table = makeTable(
+    [file('a/main.c', { lo: 1, hi: 1 }), file('a/foo.h', { lo: 9, hi: 9 })],
+    [declaration, definition],
+  )
+
+  const groups = groupDefinitions([declaration, definition], {
+    sourceFile: 'a/main.c',
+    roots: ['a'],
+    table,
+  })
+  assert.equal(groups.length, 2, 'kind is part of the definition identity')
+  assert.deepEqual(groups.map((group) => group.representative.kind).sort(), ['declaration', 'struct'])
+  assert.deepEqual(groups.map((group) => group.copies), [1, 1])
+})
+
+test('definition groups: typedef and the struct it names are two groups', () => {
+  // typedef struct Bar {} Bar; 在同一个文件里同时产生 struct Bar 与 typedef Bar
+  const struct = entry('a/bar.h', 1, 'struct', 'Bar')
+  const typedef = entry('a/bar.h', 1, 'typedef', 'Bar')
+  const table = makeTable(
+    [file('a/main.c', { lo: 1, hi: 1 }), file('a/bar.h', { lo: 5, hi: 5 })],
+    [struct, typedef],
+  )
+
+  const groups = groupDefinitions([typedef, struct], {
+    sourceFile: 'a/main.c',
+    roots: ['a'],
+    table,
+  })
+  assert.equal(groups.length, 2, 'struct Bar and typedef Bar are different definitions')
+  assert.deepEqual(groups.map((group) => group.representative.kind).sort(), ['struct', 'typedef'])
+})
+
+test('definition groups: identical-content files with the same function are one group of 2', () => {
+  const source = 'vendor/src/main.c'
+  const copyA = entry('vendor/a/src/f.c', 10, 'function', 'fwd_start')
+  const copyB = entry('vendor/b/src/f.c', 10, 'function', 'fwd_start')
+  const table = makeTable(
+    [
+      file(source, { lo: 1, hi: 1 }),
+      file(copyA.file, { lo: 7, hi: 7 }),
+      file(copyB.file, { lo: 7, hi: 7 }),
+    ],
+    [copyB, copyA],
+  )
+
+  const groups = groupDefinitions([copyB, copyA], {
+    sourceFile: source,
+    roots: ['vendor'],
+    table,
+  })
+  assert.equal(groups.length, 1, 'same content + same symbol identity folds into one group')
+  assert.equal(groups[0]!.copies, 2, 'copies counts distinct files')
+  assert.deepEqual(
+    groups[0]!.entries.map((item) => item.file),
+    [copyA.file, copyB.file],
+    'entries stay in rank order',
+  )
+  assert.equal(groups[0]!.representative, groups[0]!.entries[0])
+  assert.equal(groups[0]!.representative.file, copyA.file, 'representative is the highest-ranked copy')
+})
+
+test('definition groups: same name and kind in one file never fold (degenerate input)', () => {
+  const first = entry('a/x.h', 5)
+  const second = entry('a/x.h', 9)
+  const table = makeTable(
+    [file('a/main.c', { lo: 1, hi: 1 }), file('a/x.h', { lo: 3, hi: 3 })],
+    [first, second],
+  )
+
+  const groups = groupDefinitions([second, first], {
+    sourceFile: 'a/main.c',
+    roots: ['a'],
+    table,
+  })
+  assert.equal(groups.length, 2, 'same-file duplicates are not copies of each other')
+  assert.deepEqual(
+    groups.map((group) => group.copies),
+    [1, 1],
+    'copies never counts two entries from the same file as 2',
+  )
+  assert.deepEqual(
+    groups.map((group) => group.entries.length),
+    [1, 1],
+  )
+})
+
+test('definition groups: group order is the representative rank order (input-order independent)', () => {
+  const source = 'vendor/src/main.c'
+  const a = entry('vendor/a/src/f.c', 10, 'function', 'f')
+  const b = entry('vendor/b/src/f.c', 10, 'function', 'f')
+  const c = entry('vendor/c/src/f.c', 10, 'function', 'g')
+  const d = entry('vendor/d/src/f.c', 10, 'function', 'h')
+  const records = [
+    file(source, { lo: 1, hi: 1 }),
+    file(a.file, { lo: 7, hi: 7 }),
+    file(b.file, { lo: 7, hi: 7 }),
+    file(c.file, { lo: 8, hi: 8 }),
+    file(d.file, { lo: 9, hi: 9 }),
+  ]
+  const table = makeTable(records, [a, b, c, d])
+  const context = { sourceFile: source, roots: ['vendor'], table }
+
+  const expected = ['vendor/a/src/f.c', 'vendor/c/src/f.c', 'vendor/d/src/f.c']
+  const permutations = [
+    [a, b, c, d],
+    [d, c, b, a],
+    [b, d, a, c],
+    [c, a, d, b],
+  ]
+  for (const input of permutations) {
+    assert.deepEqual(
+      groupDefinitions(input, context).map((group) => group.representative.file),
+      expected,
+      `group order must not depend on input order: ${input.map((item) => item.file).join(', ')}`,
+    )
+  }
 })
 
 test('definition label: composes only the present parts', () => {
@@ -213,6 +345,16 @@ test('definition label: composes only the present parts', () => {
   assert.equal(
     formatDefinitionLabel({ ...base, representative: entry('a/x.h', 10), conditional: true }),
     'sk_buff  ·  conditional',
+  )
+  // 空条件文本视为没有条件：不能留下尾部分隔符
+  assert.equal(
+    formatDefinitionLabel({
+      ...base,
+      included: true,
+      representative: entry('a/x.h', 10, 'struct', 'sk_buff', ''),
+      conditional: true,
+    }),
+    'sk_buff  ·  included',
   )
 })
 

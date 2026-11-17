@@ -57,23 +57,44 @@ function compareStrings(a: string, b: string): number {
 /**
  * 归一 indexRoot，用于「本次构建 vs 旧快照」比较（规则与 walk 的 `toRelativeRoot` 对齐）：
  * `\`→`/`、折叠重复 `/`、去前导 `./`、`.`→空、去尾部 `/`、绝对路径相对化到 workspaceRoot。
+ * 未提供 workspaceRoot（例如没有打开工作区）时不做绝对路径相对化。
  */
-function normalizeRootPath(workspaceRoot: string, root: string): string {
+function normalizeRootPath(workspaceRoot: string | undefined, root: string): string {
   let rel = root
-  if (path.isAbsolute(rel)) rel = path.relative(workspaceRoot, rel)
+  if (workspaceRoot !== undefined && path.isAbsolute(rel)) {
+    rel = path.relative(workspaceRoot, rel)
+  }
   rel = rel.replace(/\\/g, '/').replace(/\/{2,}/g, '/')
   while (rel.startsWith('./')) rel = rel.slice(2)
   if (rel === '.') rel = ''
   return rel.replace(/\/+$/, '')
 }
 
-function normalizeRoots(workspaceRoot: string, roots: readonly string[]): string[] {
+function normalizeRoots(workspaceRoot: string | undefined, roots: readonly string[]): string[] {
   return roots.map((root) => normalizeRootPath(workspaceRoot, root))
 }
 
 /** 顺序敏感：roots 顺序决定 include 的 root 前缀搜索顺序，顺序变了也要重新解析。 */
 function sameRoots(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+/**
+ * 归一后顺序敏感的 roots 比较（indexer 与 service.rootsChanged 共用）。
+ *
+ * - 归一等价（`proj/` vs `proj`、`./proj` vs `proj`、绝对 vs 相对）不算变化；
+ * - 仅顺序变化（`['a','b']` vs `['b','a']`）**算**变化 —— include 的 root 前缀搜索顺序
+ *   是语义的一部分，必须让调用方重新解析。
+ */
+export function indexRootsChanged(
+  workspaceRoot: string | undefined,
+  previous: readonly string[],
+  current: readonly string[],
+): boolean {
+  return !sameRoots(
+    normalizeRoots(workspaceRoot, previous),
+    normalizeRoots(workspaceRoot, current),
+  )
 }
 
 /** 组装符号表：文件与符号都做稳定排序，索引查询走 name/file 两个维度。 */
@@ -299,11 +320,7 @@ export async function buildIndex(
   // 解析到 proj/inc/x.h，但文件本身没变（mtime/size 相同）会走复用分支。因此 roots 归一
   // 后不一致就当作没有 previous：全部文件重扫、include 图按新 roots 重新解析。
   const rootsChanged =
-    previous !== undefined &&
-    !sameRoots(
-      normalizeRoots(workspaceRoot, previous.roots),
-      normalizeRoots(workspaceRoot, roots),
-    )
+    previous !== undefined && indexRootsChanged(workspaceRoot, previous.roots, roots)
   const previousV4 =
     previous && !rootsChanged && previous.version === SNAPSHOT_VERSION ? previous : undefined
   const previousFiles = new Map<string, FileRecord>()

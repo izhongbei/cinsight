@@ -684,6 +684,55 @@ async function checkBudgetUi() {
 }
 
 /**
+ * service.rootsChanged()：必须与 indexer 共用「归一 + 顺序敏感」比较。
+ * 归一等价写法（`proj/`、`./proj`）不提示重建；仅顺序变化必须提示（include 前缀优先级）。
+ */
+async function checkRootsChanged() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+
+  const previousRoots = configurationValues.indexRoots
+  const service = await SymbolService.create(undefined, smokeLogger)
+  const snapshotWithRoots = (roots) => ({
+    roots,
+    files: [],
+    entryCount: 0,
+    builtAt: Date.now(),
+    contentHashOf: () => undefined,
+    includedFiles: () => [],
+    isReachable: () => false,
+    forEachEntry: () => {},
+  })
+  try {
+    // 归一等价：不提示重建
+    for (const configured of [['proj/'], ['./proj']]) {
+      configurationValues.indexRoots = configured
+      service.snapshotValue = snapshotWithRoots(['proj'])
+      assert.equal(
+        service.rootsChanged(),
+        false,
+        `${configured[0]} is normalized-equivalent to proj and must not prompt a rebuild`,
+      )
+    }
+
+    // 顺序变化：必须提示重建（include 的 root 前缀搜索顺序是语义）
+    configurationValues.indexRoots = ['b', 'a']
+    service.snapshotValue = snapshotWithRoots(['a', 'b'])
+    assert.equal(service.rootsChanged(), true, 'order-only change must prompt a rebuild')
+
+    // 内容变化 / 无快照：提示重建
+    configurationValues.indexRoots = ['proj']
+    service.snapshotValue = snapshotWithRoots(['other'])
+    assert.equal(service.rootsChanged(), true, 'different roots prompt a rebuild')
+    service.snapshotValue = undefined
+    assert.equal(service.rootsChanged(), true, 'missing snapshot prompts a rebuild')
+  } finally {
+    configurationValues.indexRoots = previousRoots
+    service.dispose()
+  }
+}
+
+/**
  * autoCompact=false：flush 只 await 已排队的 delta 追加，不写 base。
  * 模拟 service 状态并替换 compactNow/compactNameIndexIfNeeded 计数。
  */
@@ -1247,6 +1296,7 @@ async function main() {
   assert.ok(registrations.statusBar >= 1, 'status bar item')
 
   await checkBudgetUi()
+  await checkRootsChanged()
   await checkAutoCompactFlush()
   await checkServiceRoundTrip()
   await checkLegacySnapshotUpgrade()
@@ -1267,6 +1317,7 @@ async function main() {
   console.log('  output channels:', outputChannels.map((c) => c.name).join(', '))
   console.log('  subscriptions:', context.subscriptions.length)
   console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
+  console.log('  rootsChanged: normalized-equivalent roots stay silent, order-only change prompts OK')
   console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
   console.log('  service round trip: updateFile -> delta v2 (hash/includes/condition) -> replay -> compaction -> reload OK')
   console.log('  legacy v4 snapshot: discarded on load, rebuilt with hash/include/condition metadata OK')

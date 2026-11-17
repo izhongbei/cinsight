@@ -193,6 +193,76 @@ test('indexer includes: roots change re-resolves the include graph instead of re
   }
 })
 
+test('indexer roots: normalized-equivalent roots do not force a rescan', async () => {
+  const dir = tempDir('si-indexer-roots-normalized-')
+  try {
+    writeFiles(dir, {
+      'proj/src/a.c': ['#include "inc/x.h"', 'int alpha(void) { return 0; }', ''].join('\n'),
+      'proj/inc/x.h': 'struct sk_buff { int len; };\n',
+    })
+
+    // 尾部斜杠与 './' 前缀都只是写法差异：归一后是同一组 roots，不重建。
+    for (const previousRoot of ['proj/', './proj']) {
+      const first = await buildIndex({ ...makeOptions(dir), roots: [previousRoot] })
+      assert.equal(first.summary.files, 2, `previousRoot=${previousRoot}`)
+      assert.equal(first.summary.added, 2)
+
+      const second = await buildIndex({
+        ...makeOptions(dir),
+        roots: ['proj'],
+        previous: first.snapshot,
+      })
+      assert.equal(
+        second.summary.unchanged,
+        2,
+        `normalized-equivalent roots (${previousRoot} -> proj) must reuse every file`,
+      )
+      assert.equal(second.summary.added, 0)
+      assert.equal(second.summary.updated, 0)
+      assert.deepEqual(
+        second.snapshot.includedFiles('proj/src/a.c'),
+        ['proj/inc/x.h'],
+        'include graph stays valid without a rescan',
+      )
+      assert.deepEqual([...second.snapshot.roots], ['proj'], 'snapshot records the new normalized form')
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('indexer roots: order-only change re-resolves include root precedence', async () => {
+  const dir = tempDir('si-indexer-roots-order-')
+  try {
+    writeFiles(dir, {
+      'a/src/main.c': ['#include "inc/x.h"', 'int main(void) { return 0; }', ''].join('\n'),
+      'a/inc/x.h': 'struct from_a { int v; };\n',
+      'b/inc/x.h': 'struct from_b { int v; };\n',
+    })
+
+    const first = await buildIndex({ ...makeOptions(dir), roots: ['a', 'b'] })
+    assert.equal(first.summary.files, 3)
+    assert.deepEqual(first.snapshot.includedFiles('a/src/main.c'), ['a/inc/x.h'])
+
+    // 仅顺序变化：root 前缀搜索顺序是 include 语义的一部分，必须重扫并重新解析。
+    const second = await buildIndex({
+      ...makeOptions(dir),
+      roots: ['b', 'a'],
+      previous: first.snapshot,
+    })
+    assert.equal(second.summary.unchanged, 0, 'order-only change must not reuse previous files')
+    assert.equal(second.summary.added, 3)
+    assert.deepEqual(
+      second.snapshot.includedFiles('a/src/main.c'),
+      ['b/inc/x.h'],
+      'include resolution follows the new root order',
+    )
+    assert.deepEqual([...second.snapshot.roots], ['b', 'a'])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('indexer includes: previous snapshot of another version is not reused', async () => {
   const dir = makeIncludeTree()
   try {
