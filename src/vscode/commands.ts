@@ -23,7 +23,6 @@ import { DEFAULT_INDEX_BUDGET, evaluateBudget } from '../core/index-budget'
 import { suppressRebuildPrompt } from './config'
 import { sourceFileOf } from './providers/definition'
 import { showCallGraph } from './views/call-graph-panel'
-import { rankDefinitions } from './rank-definitions'
 import {
   showCallerQuickPick,
   showDefinitionGroupQuickPick,
@@ -84,7 +83,9 @@ export function registerCommands(
 
   add('si.configureRoots', async () => configureRoots(service))
   add('si.rebuildIndex', async () => rebuildIndex(service))
-  add('si.searchSymbol', async () => showSymbolQuickPick(service))
+  add('si.searchSymbol', async () =>
+    showSymbolQuickPick(service, sourceFileOf(service, vscode.window.activeTextEditor?.document)),
+  )
   add('si.gotoDefinition', async () => gotoDefinition(service))
   add('si.showDefinitionCandidates', async () => showDefinitionCandidates(service))
   add('si.findReferences', async () => findReferences(service))
@@ -333,27 +334,36 @@ async function gotoDefinition(service: SymbolService): Promise<void> {
   if (!hit) {
     return
   }
-  let entries = service.definitions(hit.word)
+  const entries = service.definitions(hit.word)
   if (entries.length === 0) {
     await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
     return
   }
-  entries = rankDefinitions(entries, {
-    sourceFile: sourceFileOf(service, hit.document),
+  // 与原生 F12 完全一致的上下文：include 表 + 源文件锚点 + 索引目录，
+  // 从而同一份内容拷贝折叠成一组、排序也与 F12 相同。
+  const sourceFile = sourceFileOf(service, hit.document)
+  const groups = groupDefinitions(entries, {
+    sourceFile,
     roots: service.configuredRoots,
+    table: service.snapshot,
   })
-  if (entries.length === 1) {
-    const entry = entries[0]
-    if (entry) {
-      await openLocation(service, entry.file, entry.line, entry.column)
+  if (groups.length === 0) {
+    await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
+    return
+  }
+  if (groups.length === 1) {
+    const representative = groups[0]?.representative
+    if (representative) {
+      await openLocation(
+        service,
+        representative.file,
+        representative.line,
+        representative.column,
+      )
     }
     return
   }
-  await showSymbolEntriesQuickPick(
-    service,
-    entries,
-    vscode.l10n.t('Select the definition of "{0}"', hit.word),
-  )
+  await showDefinitionGroupQuickPick(service, groups, hit.word, sourceFile)
 }
 
 /**
@@ -373,8 +383,9 @@ async function showDefinitionCandidates(service: SymbolService): Promise<void> {
     await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
     return
   }
+  const sourceFile = sourceFileOf(service, hit.document)
   const groups = groupDefinitions(entries, {
-    sourceFile: sourceFileOf(service, hit.document),
+    sourceFile,
     roots: service.configuredRoots,
     table: service.snapshot,
   })
@@ -382,7 +393,7 @@ async function showDefinitionCandidates(service: SymbolService): Promise<void> {
     await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
     return
   }
-  await showDefinitionGroupQuickPick(service, groups, hit.word)
+  await showDefinitionGroupQuickPick(service, groups, hit.word, sourceFile)
 }
 
 async function findReferences(service: SymbolService): Promise<void> {
@@ -431,7 +442,7 @@ async function showCallers(service: SymbolService): Promise<void> {
     await showInformationMessage(vscode.l10n.t('No callers found for "{0}".', hit.word))
     return
   }
-  await showCallerQuickPick(service, callers, hit.word)
+  await showCallerQuickPick(service, callers, hit.word, sourceFileOf(service, hit.document))
 }
 
 async function showCallees(service: SymbolService): Promise<void> {
@@ -448,6 +459,7 @@ async function showCallees(service: SymbolService): Promise<void> {
     service,
     callees,
     vscode.l10n.t('Functions called by "{0}"', hit.word),
+    sourceFileOf(service, hit.document),
   )
 }
 

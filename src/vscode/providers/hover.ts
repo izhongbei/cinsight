@@ -3,7 +3,7 @@
  * + 定义位置 + 声明位置 + 操作提示。
  *
  * 分组说明与 F12 / si.showDefinitionCandidates 使用同一份 `groupDefinitions` 结果，
- * 保证「included / N copies / conditional」的措辞与判定一致。
+ * 因此包含/副本/条件的判定一致；具体措辞由本文件按悬停场景单独本地化组织。
  */
 import * as vscode from 'vscode'
 
@@ -13,11 +13,21 @@ import { rankDefinitions } from '../rank-definitions'
 import { getWordAt, noopDisposable } from '../util'
 import { C_CPP_SELECTOR, sourceFileOf } from './definition'
 
-/** 把分组折叠信息压成一行（只列适用的部分）：悬停保持简洁。 */
-function summarizeGroup(group: DefinitionGroup): string {
-  const parts: string[] = [
-    group.included ? vscode.l10n.t('included by this file') : vscode.l10n.t('not included'),
-  ]
+/**
+ * 把分组折叠信息压成一行（只列适用的部分）：悬停保持简洁。
+ *
+ * 定义就在当前文件时说明「in this file」：同文件不代表「被当前文件包含」，
+ * 不能沿用 included by this file。
+ */
+function summarizeGroup(group: DefinitionGroup, sourceFile: string | undefined): string {
+  const parts: string[] = []
+  if (group.representative.file === sourceFile) {
+    parts.push(vscode.l10n.t('in this file'))
+  } else if (group.included) {
+    parts.push(vscode.l10n.t('included by this file'))
+  } else {
+    parts.push(vscode.l10n.t('not included'))
+  }
   if (group.copies > 1) {
     parts.push(vscode.l10n.t('{0} identical copies', String(group.copies)))
   }
@@ -48,8 +58,9 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
       if (entries.length === 0) {
         return undefined
       }
+      const sourceFile = sourceFileOf(this.service, document)
       const context = {
-        sourceFile: sourceFileOf(this.service, document),
+        sourceFile,
         roots: this.service.configuredRoots,
         table: this.service.snapshot,
       }
@@ -62,7 +73,7 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
 
       const sections: string[] = []
       sections.push(`\`\`\`c\n${signature}\n\`\`\``)
-      sections.push(summarizeGroup(group))
+      sections.push(summarizeGroup(group, sourceFile))
       sections.push(
         vscode.l10n.t('Definition: {0}:{1}', best.file, String(best.line + 1)),
       )

@@ -103,7 +103,9 @@ export function groupDefinitions(
 }
 
 /**
- * QuickPick / Hover 复用的纯文本标签：`name  ·  included  ·  3 copies  ·  #ifdef FOO`。
+ * core 层纯文本标签（英文）：`name  ·  included  ·  3 copies  ·  #ifdef FOO`。
+ * 保留为稳定的纯函数/测试基准；vscode 层在 quickpick.ts 用 l10n 组装同语义的本地化标签，
+ * 因此本地化文案变化不会影响 core 的测试与分组/排序语义。
  * 缺省部分直接省略（唯一且无条件时只剩名字）；空条件文本视为没有条件，不产生分隔符。
  */
 export function formatDefinitionLabel(group: DefinitionGroup): string {

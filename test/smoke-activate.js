@@ -38,6 +38,8 @@ const registrations = {
   executedCommands: [],
   /** vscode.window.showQuickPick 调用记录（items/options），用于断言候选/副本两级列表 */
   quickPicks: [],
+  /** vscode.window.createQuickPick 创建的输入型 QuickPick（搜索命令断言用） */
+  customQuickPicks: [],
   /** 按调用顺序消费的 QuickPick 应答（函数 = 自定义选择，number = 下标；缺省选第一项） */
   quickPickResponses: [],
   /** vscode.workspace.openTextDocument + showTextDocument 打开过的文档（openLocation 断言） */
@@ -439,6 +441,39 @@ const vscode = {
       }
       registrations.statusBarItems.push(item)
       return item
+    },
+    createQuickPick: () => {
+      const quickPick = {
+        items: [],
+        placeholder: '',
+        matchOnDescription: false,
+        matchOnDetail: false,
+        ignoreFocusOut: false,
+        selectedItems: [],
+        _onChange: undefined,
+        _onAccept: undefined,
+        _onHide: undefined,
+        onDidChangeValue: (listener) => {
+          quickPick._onChange = listener
+          return disposable('quickPickValue')
+        },
+        onDidAccept: (listener) => {
+          quickPick._onAccept = listener
+          return disposable('quickPickAccept')
+        },
+        onDidHide: (listener) => {
+          quickPick._onHide = listener
+          return disposable('quickPickHide')
+        },
+        show: () => {
+          registrations.customQuickPicks.push(quickPick)
+        },
+        hide: () => {
+          if (quickPick._onHide) quickPick._onHide()
+        },
+        dispose: () => {},
+      }
+      return quickPick
     },
     createOutputChannel: (name) => {
       const channel = {
@@ -1292,10 +1327,9 @@ async function checkDeltaConflict() {
   }
 }
 
-
 /**
  * si.showDefinitionCandidates（B1/B2/B4）：
- *  - 组 label = formatDefinitionLabel（included / N copies / 条件）；
+ *  - 组 label 在 vscode 层用 l10n 组装（included/not included / N copies / 条件）；
  *  - 多副本组选中后弹二级 QuickPick 选具体副本，再 openLocation；
  *  - 单副本组直接打开，不弹二级；
  *  - 无定义时不弹 QuickPick，只显示信息提示。
@@ -1487,7 +1521,156 @@ async function checkDefinitionCandidatesCommand() {
       conditionalHoverDisposable.dispose()
     }
 
-    // 无定义：不弹 QuickPick，给信息提示（不抛异常）    // 无定义：不弹 QuickPick，给信息提示（不抛异常）
+    // 同文件定义：inclusion 不能写「included by this file」，应为「in this file」
+    const sameFileEntry = {
+      name: 'sk_buff',
+      kind: 'function',
+      file: sourceFile,
+      line: 5,
+      endLine: 5,
+      column: 0,
+    }
+    const sameFileService = { ...service, definitions: () => [sameFileEntry] }
+    const sameFileHoverDisposable = registerHoverProvider(sameFileService)
+    try {
+      const hoverProvider = registrations.providers
+        .filter(([kind]) => kind === 'hover')
+        .pop()[2]
+      const hover = await hoverProvider.provideHover(document, new Position(0, 10), {
+        isCancellationRequested: false,
+      })
+      assert.ok(hover, 'same-file hover returns a Hover')
+      const markdown = hover.contents[0].value
+      assert.doesNotMatch(
+        markdown,
+        /included by this file/,
+        'same-file definition is not described as included by itself',
+      )
+      assert.match(markdown, /in this file/, 'same-file definition says it lives in this file')
+    } finally {
+      sameFileHoverDisposable.dispose()
+    }
+
+    // si.gotoDefinition：与 F12 相同的分组上下文，多组时一组一行，多副本组走二级选择
+    const gotoHandler = [...registrations.commands]
+      .reverse()
+      .find(([id]) => id === 'si.gotoDefinition')[1]
+    const gotoQuickPicksBefore = registrations.quickPicks.length
+    const gotoOpenedBefore = registrations.openedDocuments.length
+    registrations.quickPickResponses.push(
+      (items) => items.find((item) => item.label.includes('2 copies')),
+      (items) => items[1],
+    )
+    await gotoHandler()
+    assert.equal(
+      registrations.quickPicks.length - gotoQuickPicksBefore,
+      2,
+      'gotoDefinition opens group + copy QuickPicks for a multi-copy group',
+    )
+    const gotoGroupCall = registrations.quickPicks[gotoQuickPicksBefore]
+    assert.equal(
+      gotoGroupCall.items.length,
+      2,
+      'gotoDefinition shows one entry per content group (2 groups)',
+    )
+    const gotoMultiGroup = gotoGroupCall.items.find((item) => item.label.includes('2 copies'))
+    assert.ok(gotoMultiGroup, 'gotoDefinition group label marks identical copies')
+    assert.equal(
+      gotoMultiGroup.description,
+      'vendor/a/include/skbuff.h:11',
+      'gotoDefinition group description is representative file:line',
+    )
+    assert.equal(gotoMultiGroup.detail, 'Struct', 'gotoDefinition group detail is the kind')
+    assert.deepEqual(
+      registrations.openedDocuments.slice(gotoOpenedBefore).map((doc) => doc.uri.fsPath),
+      [path.join(workspaceRoot, b.file)],
+      'gotoDefinition copy sub-picker opens the picked copy',
+    )
+
+    // 单组：直接打开代表位置，不弹组选择
+    const gotoSingleService = { ...service, definitions: () => [a] }
+    const gotoSingleCommands = registerCommands(undefined, gotoSingleService)
+    try {
+      const gotoSingleHandler = [...registrations.commands]
+        .reverse()
+        .find(([id]) => id === 'si.gotoDefinition')[1]
+      const quickPicksBeforeSingle = registrations.quickPicks.length
+      const openedBeforeSingle = registrations.openedDocuments.length
+      await gotoSingleHandler()
+      assert.equal(
+        registrations.quickPicks.length,
+        quickPicksBeforeSingle,
+        'gotoDefinition single group opens directly, no QuickPick',
+      )
+      assert.deepEqual(
+        registrations.openedDocuments.slice(openedBeforeSingle).map((doc) => doc.uri.fsPath),
+        [path.join(workspaceRoot, a.file)],
+        'gotoDefinition single group opens the representative',
+      )
+    } finally {
+      gotoSingleCommands.dispose()
+    }
+
+    // 无定义：保持信息提示，不弹 QuickPick
+    const gotoNoneService = { ...service, definitions: () => [] }
+    const gotoNoneCommands = registerCommands(undefined, gotoNoneService)
+    try {
+      const gotoNoneHandler = [...registrations.commands]
+        .reverse()
+        .find(([id]) => id === 'si.gotoDefinition')[1]
+      const quickPicksBeforeNone = registrations.quickPicks.length
+      const infoBeforeNone = registrations.informationMessages.length
+      await gotoNoneHandler()
+      assert.equal(
+        registrations.quickPicks.length,
+        quickPicksBeforeNone,
+        'gotoDefinition no definitions opens no QuickPick',
+      )
+      assert.ok(
+        registrations.informationMessages
+          .slice(infoBeforeNone)
+          .some((message) => /No definition found/.test(message)),
+        'gotoDefinition no definitions shows an information message',
+      )
+    } finally {
+      gotoNoneCommands.dispose()
+    }
+
+    // zh-cn 标签：组 label 用 l10n 组装，显示 包含/未包含/副本/条件
+    const zhBundle = JSON.parse(
+      fs.readFileSync(path.join(EXT_ROOT, 'l10n/bundle.l10n.zh-cn.json'), 'utf8'),
+    )
+    const originalTranslate = vscode.l10n.t
+    vscode.l10n.t = (message, ...args) => {
+      const template = zhBundle[message] ?? message
+      return args.length
+        ? template.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? ''))
+        : template
+    }
+    try {
+      const zhBaseline = registrations.quickPicks.length
+      registrations.quickPickResponses.push(
+        (items) => items.find((item) => item.label.includes('2 份副本')),
+        (items) => items[0],
+      )
+      await handler()
+      const zhLabels = registrations.quickPicks[zhBaseline].items.map((item) => item.label)
+      assert.ok(
+        zhLabels.some((label) => label.includes('包含') && label.includes('2 份副本')),
+        `zh group label shows 包含 + 副本: ${JSON.stringify(zhLabels)}`,
+      )
+      assert.ok(
+        zhLabels.some(
+          (label) => label.includes('未包含') && label.includes('条件编译：#ifdef RTK_MODULE'),
+        ),
+        `zh conditional label shows 未包含 + 条件: ${JSON.stringify(zhLabels)}`,
+      )
+    } finally {
+      vscode.l10n.t = originalTranslate
+      registrations.quickPickResponses.length = 0
+    }
+
+    // 无定义：不弹 QuickPick，给信息提示（不抛异常）
     const noDefinitionService = { ...service, definitions: () => [] }
     const noDefinitionCommands = registerCommands(undefined, noDefinitionService)
     try {
@@ -1510,6 +1693,179 @@ async function checkDefinitionCandidatesCommand() {
     } finally {
       noDefinitionCommands.dispose()
     }
+  } finally {
+    commands.dispose()
+    vscode.window.activeTextEditor = previousEditor
+    registrations.quickPickResponses.length = 0
+  }
+}
+
+/**
+ * 列表注记（设计 §3.6）：
+ *  - si.searchSymbol / si.showCallers / si.showCallees 的 QuickPick detail 在既有文本后追加
+ *    `included` / `not included`，条件条目再追加 `conditional: <条件>`；
+ *  - 无活动编辑器时省略 inclusion（只保留条件注记）；
+ *  - 共享纯 helper 用 zh-cn bundle 文本验证注记组合。
+ */
+async function checkListAnnotations() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { registerCommands } = require(path.join(dist, 'src/vscode/commands.js'))
+  const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
+  const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
+  const { includedFor, listAnnotationParts } = require(
+    path.join(dist, 'src/vscode/list-annotations.js'),
+  )
+
+  const workspaceRoot = EXT_ROOT
+  const sourceFile = 'src/main.c'
+  const headerFile = 'inc/a.h'
+  const otherFile = 'drv/b.c'
+  const makeEntry = (name, file, line, condition) => {
+    const base = { name, kind: 'function', file, line, endLine: line, column: 0 }
+    return condition ? { ...base, condition } : base
+  }
+  const includedFn = makeEntry('included_fn', headerFile, 5)
+  const ordinaryFn = makeEntry('ordinary_fn', otherFile, 7)
+  const conditionalFn = makeEntry('conditional_fn', headerFile, 9, '#ifdef RTK_MODULE')
+  const table = createSymbolTable(
+    ['.'],
+    [sourceFile, headerFile, otherFile].map((file) => ({ path: file, mtimeMs: 0, size: 0 })),
+    [includedFn, ordinaryFn, conditionalFn],
+    1,
+    SNAPSHOT_VERSION,
+    { includes: new Map([[sourceFile, [headerFile]]]) },
+  )
+  const service = {
+    configuredRoots: ['.'],
+    snapshot: table,
+    workspaceRoot,
+    definitions: () => [],
+    search: () => [includedFn, ordinaryFn, conditionalFn],
+    callers: async () => [
+      {
+        file: headerFile,
+        line: 20,
+        column: 0,
+        preview: 'call_cond();',
+        from: makeEntry('caller_fn', headerFile, 15, '#ifdef RTK_MODULE'),
+      },
+      {
+        file: otherFile,
+        line: 30,
+        column: 0,
+        preview: 'call_plain();',
+        from: undefined,
+      },
+    ],
+    callees: async () => [includedFn, conditionalFn],
+    signature: async () => undefined,
+    toRelative: (absPath) => path.relative(workspaceRoot, absPath).split(path.sep).join('/'),
+    toAbsolute: (relPath) => path.join(workspaceRoot, relPath),
+  }
+
+  // 共享纯 helper：inclusion 判定 + 注记组合（zh-cn bundle 文本）
+  const zhBundle = JSON.parse(
+    fs.readFileSync(path.join(EXT_ROOT, 'l10n/bundle.l10n.zh-cn.json'), 'utf8'),
+  )
+  const zhText = {
+    included: zhBundle['included'],
+    notIncluded: zhBundle['not included'],
+    conditional: zhBundle['conditional: {0}'],
+  }
+  assert.equal(includedFor(table, sourceFile, headerFile), true, 'included header is reachable')
+  assert.equal(includedFor(table, sourceFile, otherFile), false, 'unrelated file is not reachable')
+  assert.equal(includedFor(undefined, sourceFile, headerFile), undefined, 'no table omits inclusion')
+  assert.equal(includedFor(table, undefined, headerFile), undefined, 'no source file omits inclusion')
+  assert.deepEqual(listAnnotationParts(true, undefined, zhText), ['包含'])
+  assert.deepEqual(listAnnotationParts(false, undefined, zhText), ['未包含'])
+  assert.deepEqual(
+    listAnnotationParts(false, '#ifdef RTK_MODULE', zhText),
+    ['未包含', '条件编译：#ifdef RTK_MODULE'],
+  )
+  assert.deepEqual(listAnnotationParts(undefined, '#ifdef X', zhText), ['条件编译：#ifdef X'])
+  assert.deepEqual(listAnnotationParts(undefined, undefined, zhText), [])
+
+  const document = new TextDocument(
+    Uri.file(path.join(workspaceRoot, sourceFile)),
+    'included_fn();\n',
+  )
+  const previousEditor = vscode.window.activeTextEditor
+  const customBaseline = registrations.customQuickPicks.length
+  const commands = registerCommands(undefined, service)
+  try {
+    vscode.window.activeTextEditor = { document, selection: { active: new Position(0, 2) } }
+
+    // si.searchSymbol：输入后 items.detail = kind + inclusion + conditional
+    const searchHandler = [...registrations.commands]
+      .reverse()
+      .find(([id]) => id === 'si.searchSymbol')[1]
+    const searchPending = searchHandler()
+    const searchPick = registrations.customQuickPicks[customBaseline]
+    assert.ok(searchPick, 'searchSymbol creates an editable QuickPick')
+    searchPick._onChange('fn')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      searchPick.items.map((item) => item.label),
+      ['included_fn', 'ordinary_fn', 'conditional_fn'],
+      'searchSymbol keeps candidate order',
+    )
+    assert.deepEqual(
+      searchPick.items.map((item) => item.detail),
+      [
+        'Function · included',
+        'Function · not included',
+        'Function · included · conditional: #ifdef RTK_MODULE',
+      ],
+      'searchSymbol details append inclusion + conditional',
+    )
+    searchPick.selectedItems = [searchPick.items[0]]
+    searchPick._onAccept()
+    await searchPending
+
+    // si.showCallers：detail = preview + inclusion + conditional（from.condition）
+    const callerHandler = [...registrations.commands]
+      .reverse()
+      .find(([id]) => id === 'si.showCallers')[1]
+    const callerBaseline = registrations.quickPicks.length
+    await callerHandler()
+    assert.deepEqual(
+      registrations.quickPicks[callerBaseline].items.map((item) => item.detail),
+      [
+        'call_cond(); · included · conditional: #ifdef RTK_MODULE',
+        'call_plain(); · not included',
+      ],
+      'showCallers details append inclusion + conditional',
+    )
+
+    // si.showCallees：detail = kind + inclusion + conditional（entry.condition）
+    const calleeHandler = [...registrations.commands]
+      .reverse()
+      .find(([id]) => id === 'si.showCallees')[1]
+    const calleeBaseline = registrations.quickPicks.length
+    await calleeHandler()
+    assert.deepEqual(
+      registrations.quickPicks[calleeBaseline].items.map((item) => item.detail),
+      [
+        'Function · included',
+        'Function · included · conditional: #ifdef RTK_MODULE',
+      ],
+      'showCallees details append inclusion + conditional',
+    )
+
+    // 无活动编辑器：省略 inclusion，只保留条件注记
+    vscode.window.activeTextEditor = undefined
+    const noEditorPending = searchHandler()
+    const noEditorPick = registrations.customQuickPicks[registrations.customQuickPicks.length - 1]
+    noEditorPick._onChange('fn')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      noEditorPick.items.map((item) => item.detail),
+      ['Function', 'Function', 'Function · conditional: #ifdef RTK_MODULE'],
+      'no active editor omits inclusion but keeps conditional',
+    )
+    noEditorPick.selectedItems = [noEditorPick.items[0]]
+    noEditorPick._onAccept()
+    await noEditorPending
   } finally {
     commands.dispose()
     vscode.window.activeTextEditor = previousEditor
@@ -1550,6 +1906,7 @@ async function main() {
   await checkIncludeRemovalAndRemoveFile()
   await checkDeltaConflict()
   await checkDefinitionCandidatesCommand()
+  await checkListAnnotations()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -1573,6 +1930,10 @@ async function main() {
   console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')
   console.log('  definition candidates: included/copies/#ifdef labels, copy sub-picker, direct open OK')
   console.log('  F12 grouping + hover annotation: one Location per content group, included/copies/conditional OK')
+  console.log('  gotoDefinition grouping: one entry per group, copy sub-picker, single group direct open, no-def message OK')
+  console.log('  hover same-file wording: "in this file", never "included by this file" OK')
+  console.log('  list annotations: search/callers/callees append included/not included + conditional OK')
+  console.log('  zh-cn labels: 包含/未包含/副本/条件 OK')
 }
 
 main()
