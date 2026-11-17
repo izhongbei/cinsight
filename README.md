@@ -15,7 +15,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Smart candidate order** | When a name has many definitions (multiple kernel/driver copies), `F12` / hover / call hierarchy list the one closest to your cursor first (same index root, then shared path prefix) |
 | **Include-aware jump** | Definitions reachable from the current file through the resolved `#include` graph are listed first — a **soft** ordering: candidates are reordered, never dropped |
 | **Duplicate folding** | Files with identical content (same 64-bit content hash) plus the same name and kind are folded into one `F12` location; `Show Definition Candidates` expands every copy |
-| **Conditional annotations** | Symbols inside `#if` / `#ifdef` / `#ifndef` blocks show the raw condition text in candidates, hover and list details (the text is not evaluated; include guards count) |
+| **Conditional annotations** | Symbols inside `#if` / `#ifdef` / `#ifndef` blocks show the raw condition text in candidates, hover and list details (the text is not evaluated; conventional file-level include guards are transparent) |
 | **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Function` (lists signature and location) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
@@ -113,10 +113,10 @@ sources ──walk──> file list ──mtime+size delta──> changed files
 ```
 
 - The parser works on bytes so line and column numbers stay stable. A single-pass state machine blanks comments, string literals and `#define` continuations, then detects definitions and declarations at file scope ("type + name + balanced parentheses + `{`/`;`") and matches braces to get each function body range.
-- The snapshot is a **columnar** binary format (format v4: string tables + typed arrays + name/file/condition lookup tables, a 64-bit content hash per file, an include-edge CSR and a condition id per symbol). 118,730 symbols load in 31 ms. The 0.5.x v3 table measured ~41 B of heap per symbol; v4 adds a 4 B condition id per symbol and 8 B of content hash per file. Unchanged files reuse their previous symbols; a v3 snapshot is rebuilt once automatically after upgrading.
-- Saving a file is **incremental**: the extension appends a KB-sized delta record (`symbols.sidx.delta`) and applies it to an in-memory overlay in O(Δ), instead of rewriting the snapshot or rebuilding the column arrays (measured **~1 KB / 1 ms** appended with the v2 delta and **<1 ms** overlay update for a 22-symbol file; 0.7.0's v1 delta measured 904 B). The write is **O(Δ) in bytes**, not in time: each append validates the delta tail with an offset-only scan (no `SymbolEntry` decode), cached when only this process writes — measured **0.11 ms avg** steady-state, **0.44 ms** near a 4 MB delta, and **4.3 ms** for a cold read + scan of a 4.2 MB tail. At startup saved deltas are replayed on top of the base snapshot; deltas over **4 MB** or **500** changed files, after **60 s** idle, and on close are compacted back into the base (measured **37–52 ms** for a 5.92 MB base with 118,730 symbols). `sourceInsight.autoCompact=false` only defers these merges: a safety compaction still runs at **5,000** changed files or a **32 MB** delta, except while a shared-storage delta conflict is active. The base format is now v4: a v3 snapshot is rebuilt once automatically after upgrading (no manual action), and unchanged files are reused after that.
+- The snapshot is a **columnar** binary format (format v4: string tables + typed arrays + name/file/condition lookup tables, a 64-bit content hash per file, an include-edge CSR and a condition id per symbol). 118,730 symbols load in 28 ms. The 0.5.x v3 table measured ~41 B of heap per symbol; v4 adds a 4 B condition id per symbol and 8 B of content hash per file. Unchanged files reuse their previous symbols; a v3 snapshot is rebuilt once automatically after upgrading.
+- Saving a file is **incremental**: the extension appends a KB-sized delta record (`symbols.sidx.delta`) and applies it to an in-memory overlay in O(Δ), instead of rewriting the snapshot or rebuilding the column arrays (measured **~1 KB / 1 ms** appended with the v2 delta and **<1 ms** overlay update for a 22-symbol file; 0.7.0's v1 delta measured 904 B). The write is **O(Δ) in bytes**, not in time: each append validates the delta tail with an offset-only scan (no `SymbolEntry` decode), cached when only this process writes — measured **0.11 ms avg** steady-state, **0.44 ms** near a 4 MB delta, and **4.3 ms** for a cold read + scan of a 4.2 MB tail. At startup saved deltas are replayed on top of the base snapshot; deltas over **4 MB** or **500** changed files, after **60 s** idle, and on close are compacted back into the base (measured **37–56 ms** for a 5.78 MB base with 118,730 symbols). `sourceInsight.autoCompact=false` only defers these merges: a safety compaction still runs at **5,000** changed files or a **32 MB** delta, except while a shared-storage delta conflict is active. The base format is now v4: a v3 snapshot is rebuilt once automatically after upgrading (no manual action), and unchanged files are reused after that.
 - A per-file **identifier hash index** (`symbols.names`, ~3.6 MB for 6,838 files) makes find-references read only the files that can contain the identifier instead of the whole tree: measured **1 candidate file vs 6,838**, 5-7 ms vs 159 ms on a warm cache (3.9 s cold). 32-bit collisions can add candidate files but never hide a reference, because each candidate is verified by exact word-boundary matching.
-- The index is built in **one pass**: the parse worker returns symbols, identifier hashes, the 64-bit content hash, the raw `#include` list and the condition text together, so each source file is read exactly once. Include targets are then resolved against the indexed file set.
+- The index is built in **one pass**: the parse worker strips comments/strings **once** per file and reuses that text for symbols, identifier hashes and the raw `#include` list; the 64-bit content hash runs on the raw text. Each source file is read exactly once, and include targets are then resolved against the indexed file set.
 - The reference index is loaded **lazily** on the first find-references / call-hierarchy request (saves ~194 ms and ~69 MB at activation on a 68k-file corpus) and updated **incrementally**: saving a file appends a <1 KB delta record instead of rewriting the index, and deltas are merged back automatically.
 - References and call relationships are scanned on demand: content prefilter first, then exact word-boundary matching; callers are derived from the line hit, callees only parse the target function body.
 - No third-party runtime dependency; fully offline.
@@ -128,16 +128,16 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 | Metric | 0.8.0 result |
 |---|---|
 | Symbols | 118,730 (incl. 19,800 type symbols) |
-| Include graph | 34,538 raw `#include` directives → 6,820 resolved edges in the indexed roots (3,027 files; system headers and out-of-root targets add no edge) |
-| Conditional symbols | 78,199 / 118,730 (65.9%) record a condition; 5,497 distinct texts (mostly header include guards) |
+| Include graph | 34,538 raw `#include` directives → 6,820 resolved edges in the indexed roots (**19.7%**, per-file de-duplicated; 3,027 files; system headers and out-of-root targets add no edge) |
+| Conditional symbols | 27,967 / 118,730 (**23.6%**) record a condition; 2,070 distinct texts (conventional file-level include guards suppressed; 78,199 / 65.9% before suppression) |
 | Content hashes | 6,838 / 6,838 files (64-bit) |
-| Index build, single pass (4 workers) | 6.6 s cold (first run); 2.0–2.2 s with a warm cache (0.7.0 on the same machine/runs: 5.7–6.5 s cold, 1.5–1.6 s warm) |
-| Snapshot size / load (columnar v4) | 5.92 MB / 31 ms (0.7.0: 5.13 MB, **+15.3%**) |
-| Hashing / include scan cost | 101 ms for 74.9 MB hashed (742 MB/s); 0.67 s raw include scan + 0.13 s resolution (single-threaded, page-warm) |
-| Definition ranking + grouping (`F12`) | 0.5–0.8 ms average on the hottest name (470 definitions); 2.5 ms on its first cold call |
+| Index build, single strip (4 workers) | 1.71–1.89 s typical warm (median ~1.84 s; 1.97–2.13 s before the single-strip fix); 6.6 s on the first cold run measured before the fix (not re-run after it). 0.7.0 on the same machine/runs: 5.7–6.5 s cold, 1.5–1.6 s warm |
+| Snapshot size / load (columnar v4) | 5.78 MB / 28 ms (0.7.0: 5.13 MB, **+12.7%**, within the <15% target) |
+| Hashing / include scan cost | 105 ms for 74.9 MB hashed (713 MB/s); 0.71 s raw include scan + 0.14 s resolution (single-threaded, page-warm) |
+| Definition ranking + grouping (`F12`) | 0.5–0.8 ms average on the hottest name (470 definitions); 2.4–2.6 ms on its first cold call |
 | Per-file save (incremental symbol index) | ~1 KB / <1 ms appended (v2 delta; 0.7.0's v1 measured 904 B); overlay update <1 ms (22-symbol file) |
 | Delta append tail validation | 0.44–0.74 ms at a 4.09 MB delta (warm cache); 4.3–5.8 ms cold (read + offset scan of a 4.17 MB tail, no entry decode) |
-| Delta compaction (118,730 symbols) | 37–56 ms to write a 5.92 MB base |
+| Delta compaction (118,730 symbols) | 37–56 ms to write a 5.78 MB base |
 | Symbol search (limit 50) | 4–5 ms |
 | Exact name lookup | <1 ms |
 | Signature reconstruction (first read) | 1–10 ms (page-cache dependent; the 0.7.0 run measured 56 ms) |
@@ -147,9 +147,9 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 | Per-file save (incremental reference index) | ~1 ms, <1 KB appended |
 | Callers / callees | 5 ms / <1 ms |
 | Snapshot-resident memory (after load) | ~76 MB vs 72.5 MB for 0.7.0 (**+3 MB**) |
-| Peak RSS during build | 520–588 MB (0.7.0 interleaved runs: 452–509 MB) |
+| Peak RSS during build | 441–478 MB (0.7.0 interleaved runs: 452–509 MB; no longer above the 0.7.0 range) |
 
-- **Budget check (0.8.0):** snapshot growth **+15.3%** slightly misses the <15% target; loaded-index memory meets <+20 MB (+3 MB) while build-time RSS high-water does not; F12 ranking/grouping averages under 1 ms but the worst-case first cold call took 2.5 ms; the warm-cache CPU-bound build is **~25–35%** slower than 0.7.0, although the cold end-to-end build overhead is largely hidden by disk I/O (6.6 s vs 5.7–6.5 s). The extra build cost is dominated by the include/condition scan.
+- **Budget check (0.8.0):** snapshot growth is **+12.7%**, within the <15% target; loaded-index memory meets <+20 MB (+3 MB) and build-time RSS is now within the 0.7.0 range; F12 ranking/grouping averages under 1 ms but the worst-case first cold call still took 2.4–2.6 ms; the single-strip refactor cut the warm build by ~8–13% (~0.2 s) and worker scan-pipeline CPU by ~32%, but the warm build is still **~15–20%** slower than 0.7.0 (1.71–1.89 s typical vs 1.5–1.6 s), so the <10% target is not met. The residual is not redundant stripping: it is the 0.8.0 scan work (one strip, condition/include parsing, content hash, condition ids and the larger snapshot write), partly hidden at 4 workers by main-thread dispatch/message overhead.
 - 0.7.0 values were measured in an earlier run and differ by run and cache state; the warm-cache 0.7.0 numbers quoted above come from interleaved runs on the same machine against a temporary 0.7.0 worktree.
 - Indexing `plat` alone (5,573 files / 57.5 MB): 74,194 symbols, 0.8–1.2 s with a warm cache, 0.5 s for an unchanged incremental rebuild.
 - A single-threaded scan of all 121,606 files (2.6 GB) takes ~157 s; configure `indexRoots` per module so you only index what you actually browse.
@@ -160,7 +160,7 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 
 - Heuristic parsing, not a full C front end: functions produced by macro expansion, old K&R parameter lists and unusual function-pointer forms may be missed (header prototypes still let you jump).
 - Indexed symbols: functions, function prototypes, function-like macros, `struct`/`union`/`enum` tags and `typedef` names. **Struct members, plain variables and enum constants are not indexed** — jumping to `obj->field` would need type inference.
-- **Conditional text is not evaluated**: definitions of the same name in different `#if` branches all appear as candidates, and the annotation shows the raw `#if`/`#ifdef` stack rather than the branch a given build takes. Header include guards count as conditions, so most header symbols carry one.
+- **Conditional text is not evaluated**: definitions of the same name in different `#if` branches all appear as candidates, and the annotation shows the raw `#if`/`#ifdef` stack rather than the branch a given build takes. Conventional file-level include guards (`#ifndef NAME` + `#define NAME` … final `#endif`, or `#if !defined(NAME)`) are transparent; an `#ifndef` without that `#define`, with a same-depth `#else`/conditional before it, or that does not cover the whole file still counts as a condition.
 - **Ranking is soft**: include-visible definitions are preferred but never filtered; a same-named definition that no indexed file includes still appears after the included ones.
 - **Duplicate folding only applies to identical content**: files must share the same 64-bit content hash (plus the same name and kind); the same code with different whitespace, line endings or comments keeps separate entries.
 - Reference scanning is textual (with comment/string stripping), not semantic; same-named but unrelated symbols match too; first searches on huge roots are bound by disk throughput.
@@ -201,7 +201,7 @@ MIT
 | **候选智能排序** | 同名有很多定义时（多份内核/驱动拷贝），`F12` / 悬停 / 调用层次会把「离光标最近」的排在前面（同索引根 → 共享路径前缀） |
 | **include 感知跳转** | 当前文件经已解析 `#include` 图可达的定义排在前面——**软排序**：只重排、不丢候选 |
 | **重复副本折叠** | 内容完全相同（64 位内容哈希一致）且名字/种类相同的文件在 `F12` 中折叠为一个位置；`显示定义候选` 可展开每个副本 |
-| **条件编译标注** | `#if` / `#ifdef` / `#ifndef` 块内的符号在候选、悬停与列表详情中显示原始条件文本（不求值；include guard 也算） |
+| **条件编译标注** | `#if` / `#ifdef` / `#ifndef` 块内的符号在候选、悬停与列表详情中显示原始条件文本（不求值；传统文件级 include guard 透明） |
 | **函数搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索函数`（列出签名与位置） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
@@ -268,25 +268,25 @@ cursor --install-extension code-insight-0.8.0.vsix
 ## 工作原理
 
 - 解析器按字节工作，行号列号稳定；单遍状态机剥离注释、字符串、`#define` 续行，在文件作用域按"类型 + 名字 + 平衡括号 + `{`/`;`"判定定义与声明，并做花括号配对得到函数体范围。
-- 快照为**列式**二进制格式（v4：字符串表 + TypedArray + 名字/文件/条件查找表，每文件 64 位内容哈希、include 边 CSR、每符号条件 id）；118,730 符号加载约 **31 ms**（0.5.x 的 v3 表实测每符号约 41 B 堆占用；v4 每符号多 4 B 条件 id、每文件多 8 B 内容哈希）。未变化的文件直接复用旧符号；v3 快照升级后会自动重建一次。
-- 保存文件是**增量**的：只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录，并在内存 overlay 上做 O(Δ) 更新，不再重写快照、也不重建列数组（22 符号文件实测追加 **约 1 KB / 1 ms**（v2 delta；0.7.0 的 v1 为 904 B）、overlay 更新 **<1 ms**）。写入成本是「**O(Δ) 字节**，但不是 O(Δ) 时间」：每次追加只按记录长度偏移扫描 delta 尾部（不解码 `SymbolEntry`），且只在仅本进程写入时命中缓存——实测稳态均值 **0.11 ms**、4 MB delta 附近 **0.44 ms**、冷启动读 + 扫描 4.2 MB 尾部 **4.3 ms**。启动时把已保存的 delta 重放在 base 快照之上；delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s** 以及关闭时合并回 base（118,730 符号实测写出 5.92 MB base 用 **37–52 ms**）。`sourceInsight.autoCompact=false` 只推迟这些合并：到达 **5,000** 个文件变更或 **32 MB** delta 的安全上限时仍会强制合并一次（共享存储 delta 冲突期间除外）。base 格式已升为 v4：v3 快照升级后自动重建一次（无需手动操作），之后未变化文件照常复用。
+- 快照为**列式**二进制格式（v4：字符串表 + TypedArray + 名字/文件/条件查找表，每文件 64 位内容哈希、include 边 CSR、每符号条件 id）；118,730 符号加载约 **28 ms**（0.5.x 的 v3 表实测每符号约 41 B 堆占用；v4 每符号多 4 B 条件 id、每文件多 8 B 内容哈希）。未变化的文件直接复用旧符号；v3 快照升级后会自动重建一次。
+- 保存文件是**增量**的：只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录，并在内存 overlay 上做 O(Δ) 更新，不再重写快照、也不重建列数组（22 符号文件实测追加 **约 1 KB / 1 ms**（v2 delta；0.7.0 的 v1 为 904 B）、overlay 更新 **<1 ms**）。写入成本是「**O(Δ) 字节**，但不是 O(Δ) 时间」：每次追加只按记录长度偏移扫描 delta 尾部（不解码 `SymbolEntry`），且只在仅本进程写入时命中缓存——实测稳态均值 **0.11 ms**、4 MB delta 附近 **0.44 ms**、冷启动读 + 扫描 4.2 MB 尾部 **4.3 ms**。启动时把已保存的 delta 重放在 base 快照之上；delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s** 以及关闭时合并回 base（118,730 符号实测写出 5.78 MB base 用 **37–56 ms**）。`sourceInsight.autoCompact=false` 只推迟这些合并：到达 **5,000** 个文件变更或 **32 MB** delta 的安全上限时仍会强制合并一次（共享存储 delta 冲突期间除外）。base 格式已升为 v4：v3 快照升级后自动重建一次（无需手动操作），之后未变化文件照常复用。
 - 每个文件的**标识符哈希倒排索引**（`symbols.names`，6,838 文件约 3.6 MB）让查找引用只读可能包含该名字的文件：实测**候选文件 1 个 vs 6,838 个**，热缓存 5–7 ms vs 全量 159 ms（冷盘全量 3.9 s）。32 位哈希碰撞只会多出候选文件，不会漏报——候选文件仍按词边界精确校验。
-- 索引**单遍构建**：解析 worker 同时返回符号、标识符哈希、64 位内容哈希、原始 `#include` 列表与条件文本，每个源码文件只读一次；include 目标随后按索引内文件集合解析。
+- 索引**单遍构建**：解析 worker 对每个文件只剥离注释/字符串一次，符号、标识符哈希与原始 `#include` 列表共用该结果，64 位内容哈希按原始文本计算；每个源码文件只读一次，include 目标随后按索引内文件集合解析。
 - 引用索引**惰性加载**（首次查找引用/调用层次才读盘；68k 文件语料约省 194 ms 与 69 MB），并**增量维护**：保存一个文件只追加 <1 KB 的 delta 记录，超阈值自动合并回 base。
 - 引用与调用关系先用「每文件标识符倒排索引」缩小候选集，只对候选文件读盘并做词法剥离与词边界精确匹配。
 - 无第三方运行时依赖，离线可用。
 
 ## 性能
 
-对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测（0.8.0）：符号 **118,730**；include 图 **34,538 条原始指令 → 索引根内 6,820 条边**（3,027 个文件）；**78,199 / 118,730（65.9%）** 个符号带条件标注（5,497 种文本，多数是头文件保护宏）；建索引（单遍，4 workers）首次冷盘 **6.6 s**、热缓存 **2.0–2.2 s**（同机交替 A/B：0.7.0 冷盘 5.7–6.5 s、热缓存 1.5–1.6 s）；快照 **5.92 MB / 加载 31 ms**（0.7.0 为 5.13 MB，**+15.3%**）；内容哈希 74.9 MB 用 **101 ms**（742 MB/s），原始 include 扫描单线程 **0.67 s**；F12 排序+分组在最热名字（470 个定义）上平均 **0.5–0.8 ms**、首次冷调用 **2.5 ms**；函数搜索 4–5 ms；按名查找 <1 ms；签名重建 1–10 ms；**查找引用：倒排索引 1–2 ms，全量扫描 143–163 ms（冷盘 4.2 s，0.7.0）**；调用者/被调用者 5 ms / <1 ms；保存单文件约 **1 KB / <1 ms**（v2 delta），compaction **37–56 ms** 写出 5.92 MB base；加载后快照常驻内存 **约 76 MB**（0.7.0 为 72.5 MB，+3 MB），构建期 RSS 峰值 **520–588 MB**（0.7.0 交替实测 452–509 MB）。0.7.0 的数字来自不同轮次，会随缓存状态与运行波动。
+对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测（0.8.0）：符号 **118,730**；include 图 **34,538 条原始指令 → 索引根内 6,820 条边**（3,027 个文件）；**27,967 / 118,730（23.6%）** 个符号带条件标注（2,070 种文本；传统文件级保护宏已透明，抑制前为 78,199 / 65.9%）；建索引（单遍剥离，4 workers）热缓存典型 **1.71–1.89 s**（中位数约 1.84 s；单遍剥离修复前 1.97–2.13 s）；修复前首次冷盘 **6.6 s**（修复后未重测冷盘）。同机 0.7.0：冷盘 5.7–6.5 s、热缓存 1.5–1.6 s；快照 **5.78 MB / 加载 28 ms**（0.7.0 为 5.13 MB，**+12.7%**，已进入 <15% 目标内）；内容哈希 74.9 MB 用 **105 ms**（713 MB/s），原始 include 扫描单线程 **0.71 s**；F12 排序+分组在最热名字（470 个定义）上平均 **0.5–0.8 ms**、首次冷调用 **2.4–2.6 ms**；函数搜索 4–5 ms；按名查找 <1 ms；签名重建 1–10 ms；**查找引用：倒排索引 1–2 ms，全量扫描 143–163 ms（冷盘 4.2 s，0.7.0）**；调用者/被调用者 5 ms / <1 ms；保存单文件约 **1 KB / <1 ms**（v2 delta），compaction **37–56 ms** 写出 5.78 MB base；加载后快照常驻内存 **约 76 MB**（0.7.0 为 72.5 MB，+3 MB），构建期 RSS 峰值 **441–478 MB**（0.7.0 交替实测 452–509 MB）。0.7.0 的数字来自不同轮次，会随缓存状态与运行波动。
 
-**预算核对**：快照增长 **+15.3%** 略超 <15%；F12 排序/分组均值 <1 ms，但最坏名字（470 个定义）首次冷调用 2.5 ms；加载后的索引内存满足 <+20 MB，构建期 RSS 峰值不满足；热缓存、CPU 受限的构建比 0.7.0 慢约 **25–35%**，冷构建的端到端额外开销大部分被磁盘 I/O 掩盖（6.6 s vs 5.7–6.5 s）。额外构建开销主要来自 include/条件扫描。
+**预算核对**：快照增长 **+12.7%**，满足 <15%；F12 排序/分组均值 <1 ms，但最坏名字（470 个定义）首次冷调用仍为 2.4–2.6 ms；加载后的索引内存满足 <+20 MB，构建期 RSS 峰值已回到 0.7.0 区间；单遍剥离让热缓存构建快约 **8–13%（约 0.2 s）**、worker 扫描流水线 CPU 降约 **32%**，但仍比 0.7.0 慢 **约 15–20%**（典型 1.71–1.89 s vs 1.5–1.6 s），**<10% 目标未达成**。残余开销不再是重复剥离，而是 0.8.0 新增扫描本身（一次剥离、条件/include 解析、内容哈希、条件 id 与更大的快照写入），且 4 workers 时部分被主线程派发/消息开销掩盖。
 
 ## 已知限制
 
 - 启发式解析：宏展开生成的函数、K&R 老式参数表、极端函数指针写法可能漏识别（头文件原型可兜底跳转）。
 - 已索引：函数、函数原型、函数式宏、`struct`/`union`/`enum` 标签与 `typedef` 名字。**结构体成员、普通变量、枚举常量暂不索引**——`obj->field` 的跳转需要类型推导。
-- **条件文本不求值**：同一名字在多个 `#if` 分支的定义都会出现在候选里，标注显示原始 `#if`/`#ifdef` 栈，而不是某次构建实际走的分支；头文件 include guard 也算条件，因此多数头文件符号都会带标注。
+- **条件文本不求值**：同一名字在多个 `#if` 分支的定义都会出现在候选里，标注显示原始 `#if`/`#ifdef` 栈，而不是某次构建实际走的分支。传统文件级 include guard（`#ifndef NAME` + `#define NAME` … 文件末尾 `#endif`，或 `#if !defined(NAME)`）透明；无同名 `#define`、同层提前出现其他条件、或未覆盖整个文件的 `#ifndef` 仍算条件。
 - **排序是软排序**：已包含的定义优先，但不过滤；没有任何索引内文件包含的同名定义仍会排在后面。
 - **重复副本折叠只对内容完全相同生效**：必须 64 位内容哈希一致（且名字/种类相同）；仅空白/换行/注释不同的相同代码不会折叠。
 - 引用扫描是文本级（已剥离注释/字符串），不是语义级；首次在大仓库上受磁盘吞吐限制。

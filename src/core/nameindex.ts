@@ -34,12 +34,13 @@ export function hashIdentifier(name: string): number {
 }
 
 /** 收集文本中出现过的标识符哈希（注释/字符串内容不参与），去重后升序返回。 */
-export function collectIdentifierHashes(text: string): Uint32Array {
-  const stripped = stripSources(text)
+export function collectIdentifierHashes(text: string, stripped?: string): Uint32Array {
+  // `stripped` 可选：构建 worker 已为符号扫描剥离过一次，直接复用，避免第三次整文件剥离。
+  const prepared = stripped === undefined ? stripSources(text) : stripped
   const seen = new Set<number>()
   IDENTIFIER_RE.lastIndex = 0
   let match: RegExpExecArray | null
-  while ((match = IDENTIFIER_RE.exec(stripped)) !== null) {
+  while ((match = IDENTIFIER_RE.exec(prepared)) !== null) {
     seen.add(hashIdentifier(match[0]))
   }
   const hashes = new Uint32Array(seen.size)

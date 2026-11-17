@@ -213,7 +213,18 @@ const INCLUDE_RE = /^#\s*include\s*(["<])([^">\s]+)[">]/
  * `#elif/#else` 等条件不影响 include 收集。
  */
 export function scanIncludes(text: string): ScannedInclude[] {
-  const strippedLines = stripSources(text).split('\n')
+  return scanIncludesFromStripped(stripSources(text), text)
+}
+
+/**
+ * 已剥离文本 + 原始文本 → include 列表（调用方可复用同一份 `stripped`）。
+ *
+ * 剥离会涂白字符串内容（包括 include 的引号与路径），因此 `stripped` 只用于判断该行的
+ * 「代码位置」是否真的以 `#` 开头（注释/字符串内的伪指令被涂白后不会命中），真实路径仍
+ * 从 `text` 的同一行、同一列解析（剥离保持列号不变）。
+ */
+export function scanIncludesFromStripped(stripped: string, text: string): ScannedInclude[] {
+  const strippedLines = stripped.split('\n')
   const originalLines = text.split('\n')
   const result: ScannedInclude[] = []
   for (let line = 0; line < strippedLines.length; line++) {
@@ -236,21 +247,102 @@ export interface ConditionTimeline {
 }
 
 const CONDITION_DIRECTIVE_RE = /^#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$/
+const INCLUDE_GUARD_IFNDEF_RE = /^#\s*ifndef\s+([A-Za-z_]\w*)$/
+const INCLUDE_GUARD_IF_NOT_DEFINED_RE =
+  /^#\s*if\s+!\s*defined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|([A-Za-z_]\w*))$/
+const DEFINE_DIRECTIVE_RE = /^#\s*define\s+([A-Za-z_]\w*)\b/
 const MAX_CONDITION_DEPTH = 3
 const MAX_CONDITION_LENGTH = 120
 
-/** 记录 #if/#ifdef/#ifndef 条件栈的时间线（不求值；未配对 #endif 忽略）。 */
+interface ConditionFrame {
+  readonly text: string
+  /** 文件级 include guard：格式化时透明（不参与条件文本） */
+  readonly guard: boolean
+}
+
+/**
+ * 文件级 include guard 检测：首条有内容的指令是 `#ifndef NAME` /
+ * `#if !defined(NAME)` / `#if !defined NAME`，在同一层出现其他条件指令之前定义了同名宏，
+ * 且配对的 `#endif` 之后文件再无内容。
+ *
+ * 只有这种「覆盖整个文件」的 guard 才透明化；普通 `#ifndef`（无 `#define`、
+ * 不覆盖到文件末尾、或同层还有 `#else`/嵌套条件）仍是普通条件块。
+ */
+function detectIncludeGuard(
+  lines: readonly string[],
+): { openLine: number; closeLine: number; name: string } | undefined {
+  let openLine = -1
+  for (let line = 0; line < lines.length; line++) {
+    if (lines[line]!.trim() !== '') {
+      openLine = line
+      break
+    }
+  }
+  if (openLine < 0) return undefined
+
+  const opener = lines[openLine]!.trim()
+  let name: string | undefined
+  let match = INCLUDE_GUARD_IFNDEF_RE.exec(opener)
+  if (match) name = match[1]
+  else {
+    match = INCLUDE_GUARD_IF_NOT_DEFINED_RE.exec(opener)
+    if (match) name = match[1] ?? match[2]
+  }
+  if (name === undefined) return undefined
+
+  let depth = 1
+  let defineLine = -1
+  let closeLine = -1
+  for (let line = openLine + 1; line < lines.length; line++) {
+    const content = lines[line]!.trim()
+    if (content === '') continue
+    const directiveMatch = CONDITION_DIRECTIVE_RE.exec(content)
+    if (directiveMatch) {
+      const directive = directiveMatch[1]!
+      if (directive === 'endif') {
+        depth -= 1
+        if (depth === 0) {
+          closeLine = line
+          break
+        }
+        continue
+      }
+      if (directive === 'else' || directive === 'elif') {
+        // guard 自身这一层出现 else/elif：不是纯 guard
+        if (depth === 1) return undefined
+        continue
+      }
+      // guard 这一层在 #define NAME 之前出现其他条件指令：不是 guard
+      if (depth === 1 && defineLine < 0) return undefined
+      depth += 1
+      continue
+    }
+    if (depth === 1 && defineLine < 0) {
+      const define = DEFINE_DIRECTIVE_RE.exec(content)
+      if (define && define[1] === name) defineLine = line
+    }
+  }
+  if (closeLine < 0 || defineLine < 0) return undefined
+  // guard 必须覆盖到文件末尾：配对 #endif 之后不能再有代码/指令
+  for (let line = closeLine + 1; line < lines.length; line++) {
+    if (lines[line]!.trim() !== '') return undefined
+  }
+  return { openLine, closeLine, name }
+}
+
+/** 记录 #if/#ifdef/#ifndef 条件栈的时间线（不求值；未配对 #endif 忽略；文件级 guard 透明）。 */
 export function scanConditions(text: string): ConditionTimeline {
   return collectConditions(stripSources(text))
 }
 
 /**
  * 已剥离注释/字符串的文本 → 条件时间线。
- * `scanSource` 复用同一份剥离结果，避免为条件再整文件扫描一遍。
+ * `scanSource`/`scanFileMeta` 复用同一份剥离结果，避免为条件再整文件扫描一遍。
  */
 function collectConditions(stripped: string): ConditionTimeline {
   const lines = stripped.split('\n')
-  const stack: string[] = []
+  const guard = detectIncludeGuard(lines)
+  const stack: ConditionFrame[] = []
   const changes: Array<{ line: number; condition: string | undefined }> = []
   for (let line = 0; line < lines.length; line++) {
     const match = CONDITION_DIRECTIVE_RE.exec(lines[line]!.trim())
@@ -265,17 +357,56 @@ function collectConditions(stripped: string): ConditionTimeline {
     // #else/#elif 只切换同一层内的分支，不改变嵌套层级；0.8.0 只标注「处于哪个条件块」，
     // 因而条件文本保留 enclosing #if（与需求中的示例一致：else 分支仍显示外层 #ifdef）。
     if (directive === 'else' || directive === 'elif') continue
-    stack.push(`#${directive} ${expression}`.trim())
+    stack.push({
+      text: `#${directive} ${expression}`.trim(),
+      guard: guard !== undefined && line === guard.openLine,
+    })
     changes.push({ line, condition: formatCondition(stack) })
   }
   return { changes }
 }
 
-/** 条件栈文本：只保留最内层 MAX_CONDITION_DEPTH 层，超长截断。 */
-function formatCondition(stack: readonly string[]): string | undefined {
-  if (stack.length === 0) return undefined
-  const joined = stack.slice(Math.max(0, stack.length - MAX_CONDITION_DEPTH)).join(' && ')
+/**
+ * 条件栈文本：跳过 include guard 帧，只保留最内层 MAX_CONDITION_DEPTH 层非 guard 条件，超长截断。
+ */
+function formatCondition(stack: readonly ConditionFrame[]): string | undefined {
+  const active = stack.filter((frame) => !frame.guard)
+  if (active.length === 0) return undefined
+  const joined = active
+    .slice(Math.max(0, active.length - MAX_CONDITION_DEPTH))
+    .map((frame) => frame.text)
+    .join(' && ')
   return joined.length > MAX_CONDITION_LENGTH ? `${joined.slice(0, MAX_CONDITION_LENGTH - 1)}…` : joined
+}
+
+export interface FileScanMeta {
+  /** 剥掉注释/字符串后的文本，可复用于 `scanSource(text, stripped)` */
+  readonly stripped: string
+  readonly includes: ScannedInclude[]
+  readonly timeline: ConditionTimeline
+}
+
+/**
+ * 单遍剥离，同时产出 include 列表与条件时间线。
+ * 需要符号时把 `stripped` 传给 `scanSource(text, stripped)`，避免同一文件重复剥离。
+ */
+export function scanFileMeta(text: string): FileScanMeta {
+  return scanFileMetaFromStripped(stripSources(text), text)
+}
+
+/**
+ * 已剥离文本 + 原始文本 → include + 条件时间线。
+ *
+ * include 路径在剥离结果里已被涂白，仍需要原始文本还原（剥离前后列号一致），
+ * 因此这里同时接收 `text`；构建 worker 用「一次 strip + 本函数」代替分别调用
+ * `scanSource`/`scanIncludes` 的重剥离路径。
+ */
+export function scanFileMetaFromStripped(stripped: string, text: string): FileScanMeta {
+  return {
+    stripped,
+    includes: scanIncludesFromStripped(stripped, text),
+    timeline: collectConditions(stripped),
+  }
 }
 
 /** 返回某行生效的条件（时间线二分）。 */
@@ -874,10 +1005,15 @@ function scanTypes(text: string, lineStarts: readonly number[]): ScannedSymbol[]
  * struct/union/enum 标签与 typedef 名字。
  * 行号、列号均为 0-based；`endLine` 为函数体/类型体的配对 `}` 所在行
  * （声明、宏与 typedef 等于声明所在行）。
+ *
+ * `stripped` 可选：调用方已对同一 `text` 调用过 `stripSources`（或 `scanFileMeta`）时传入，
+ * 避免整文件重复剥离；缺省时内部自行剥离，行为与旧版一致。
  */
-export function scanSource(text: string): ScannedSymbol[] {
+export function scanSource(text: string, stripped?: string): ScannedSymbol[] {
   if (text.length === 0) return []
-  const prepared = blankExternCAfterStrip(stripSources(blankExternCBlocks(text)))
+  const prepared = blankExternCAfterStrip(
+    stripped === undefined ? stripSources(blankExternCBlocks(text)) : stripped,
+  )
   const lineStarts = computeLineStarts(prepared)
   const timeline = collectConditions(prepared)
   const { clean, macros } = extractMacros(prepared, lineStarts)

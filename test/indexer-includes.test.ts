@@ -106,8 +106,8 @@ test('indexer includes: v4 snapshot keeps include edges, content hash and condit
     assert.equal(guarded[0]!.condition, '#ifdef RTK_MODULE')
     const conditional = loaded!.findByName('conditional_t')
     assert.equal(conditional.length, 1)
-    // 头文件 include guard + 内层 #ifdef：条件栈按最内层 3 层以 " && " 连接
-    assert.equal(conditional[0]!.condition, '#ifndef X_H && #ifdef RTK_MODULE')
+    // 头文件 include guard 透明，只有内层 #ifdef 计入条件文本
+    assert.equal(conditional[0]!.condition, '#ifdef RTK_MODULE')
     assert.equal(Object.hasOwn(loaded!.findByName('alpha')[0]!, 'condition'), false)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -345,10 +345,7 @@ test('indexer includes: legacy v4 previous without metadata is re-scanned and re
       assert.equal(table.isReachable('src/a.c', 'inc/y.h'), true)
     }
     assert.equal(loaded!.findByName('guarded')[0]!.condition, '#ifdef RTK_MODULE')
-    assert.equal(
-      loaded!.findByName('conditional_t')[0]!.condition,
-      '#ifndef X_H && #ifdef RTK_MODULE',
-    )
+    assert.equal(loaded!.findByName('conditional_t')[0]!.condition, '#ifdef RTK_MODULE')
 
     // 修复后的快照（带哈希）才允许真正的增量复用：不再读源码
     const repaired = await buildIndex({

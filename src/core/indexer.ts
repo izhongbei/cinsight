@@ -17,7 +17,7 @@ import { hashContent64 } from './hash'
 import { resolveIncludePaths } from './include-resolve'
 import { buildNameIndex, collectIdentifierHashes, loadNameIndex, saveNameIndex } from './nameindex'
 import { createSymbolTable } from './symbol-table'
-import { scanIncludes, scanSource } from './scan'
+import { scanIncludesFromStripped, scanSource, stripSources } from './scan'
 import { saveSnapshot } from './store'
 import { walkFiles } from './walk'
 
@@ -258,11 +258,12 @@ async function parseRemainingSerial(job: PendingParser): Promise<void> {
       continue
     }
     throwIfAborted(job.signal)
+    const stripped = stripSources(text)
     job.finish(file, {
-      symbols: scanSource(text),
-      hashes: collectIdentifierHashes(text),
+      symbols: scanSource(text, stripped),
+      hashes: collectIdentifierHashes(text, stripped),
       contentHash: hashContent64(text),
-      includes: scanIncludes(text),
+      includes: scanIncludesFromStripped(stripped, text),
     })
   }
 }
