@@ -6,6 +6,7 @@
   "command.rebuildIndex.title": "重建索引",
   "command.searchSymbol.title": "搜索函数",
   "command.gotoDefinition.title": "跳转定义",
+  "command.showDefinitionCandidates.title": "显示定义候选",
   "command.findReferences.title": "查找所有引用",
   "command.showCallers.title": "显示调用者",
   "command.showCallees.title": "显示被调用者",

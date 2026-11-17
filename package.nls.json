@@ -6,6 +6,7 @@
   "command.rebuildIndex.title": "Rebuild Index",
   "command.searchSymbol.title": "Search Function",
   "command.gotoDefinition.title": "Go to Definition",
+  "command.showDefinitionCandidates.title": "Show Definition Candidates",
   "command.findReferences.title": "Find References",
   "command.showCallers.title": "Show Callers",
   "command.showCallees.title": "Show Callees",

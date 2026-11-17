@@ -53,6 +53,11 @@
         "category": "%command.category%"
       },
       {
+        "command": "si.showDefinitionCandidates",
+        "title": "%command.showDefinitionCandidates.title%",
+        "category": "%command.category%"
+      },
+      {
         "command": "si.showCallGraph",
         "title": "%command.showCallGraph.title%",
         "category": "%command.category%"
@@ -212,6 +217,11 @@
           "command": "si.gotoDefinition",
           "when": "editorLangId == c || editorLangId == cpp",
           "group": "navigation@10"
+        },
+        {
+          "command": "si.showDefinitionCandidates",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@16"
         },
         {
           "command": "si.findReferences",

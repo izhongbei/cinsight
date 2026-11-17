@@ -5,6 +5,10 @@
  */
 import * as vscode from 'vscode'
 
+import {
+  formatDefinitionLabel,
+  type DefinitionGroup,
+} from '../core/definition-groups'
 import type { CallerHit, ReferenceHit, SymbolEntry } from '../shared/types'
 import { baseName, normalizeRelative } from './paths'
 import type { SymbolService } from './service'
@@ -151,6 +155,77 @@ export async function showSymbolEntriesQuickPick(
     }
   } catch (error) {
     console.error('[code-insight] showSymbolEntriesQuickPick failed', error)
+  }
+}
+
+// ---- 定义候选（B1/B2/B4）：内容相同的副本折叠成组，多副本可二级展开 ----
+
+interface DefinitionGroupQuickPickItem extends vscode.QuickPickItem {
+  readonly group: DefinitionGroup
+}
+
+interface DefinitionCopyQuickPickItem extends vscode.QuickPickItem {
+  readonly entry: SymbolEntry
+}
+
+function toDefinitionGroupItem(group: DefinitionGroup): DefinitionGroupQuickPickItem {
+  const representative = group.representative
+  return {
+    // 与 F12 / hover 共用同一格式化函数：name · included · N copies · 条件
+    label: formatDefinitionLabel(group),
+    description: `${representative.file}:${representative.line + 1}`,
+    detail: kindLabel(representative.kind),
+    group,
+  }
+}
+
+function toDefinitionCopyItem(entry: SymbolEntry): DefinitionCopyQuickPickItem {
+  return {
+    label: `${entry.file}:${entry.line + 1}`,
+    description: kindLabel(entry.kind),
+    entry,
+  }
+}
+
+/**
+ * si.showDefinitionCandidates：先按组展示（label 含 included / N copies / 条件），
+ * 选中多副本组时再弹一层副本列表；单副本组直接打开。
+ */
+export async function showDefinitionGroupQuickPick(
+  service: SymbolService,
+  groups: readonly DefinitionGroup[],
+  symbolName: string,
+): Promise<void> {
+  try {
+    if (groups.length === 0 || typeof vscode.window.showQuickPick !== 'function') {
+      return
+    }
+    const picked = await vscode.window.showQuickPick(groups.map(toDefinitionGroupItem), {
+      placeHolder: vscode.l10n.t('Select the definition of "{0}"', symbolName),
+      matchOnDescription: true,
+      matchOnDetail: true,
+    })
+    if (!picked) {
+      return
+    }
+    if (picked.group.copies > 1) {
+      const copy = await vscode.window.showQuickPick(
+        picked.group.entries.map(toDefinitionCopyItem),
+        {
+          placeHolder: vscode.l10n.t('Select a copy of "{0}"', symbolName),
+          matchOnDescription: true,
+        },
+      )
+      if (!copy) {
+        return
+      }
+      await openLocation(service, copy.entry.file, copy.entry.line, copy.entry.column)
+      return
+    }
+    const representative = picked.group.representative
+    await openLocation(service, representative.file, representative.line, representative.column)
+  } catch (error) {
+    console.error('[code-insight] showDefinitionGroupQuickPick failed', error)
   }
 }
 

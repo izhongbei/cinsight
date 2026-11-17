@@ -36,6 +36,14 @@ const registrations = {
   warnings: [],
   /** vscode.commands.executeCommand 调用记录 */
   executedCommands: [],
+  /** vscode.window.showQuickPick 调用记录（items/options），用于断言候选/副本两级列表 */
+  quickPicks: [],
+  /** 按调用顺序消费的 QuickPick 应答（函数 = 自定义选择，number = 下标；缺省选第一项） */
+  quickPickResponses: [],
+  /** vscode.workspace.openTextDocument + showTextDocument 打开过的文档（openLocation 断言） */
+  openedDocuments: [],
+  /** vscode.window.showInformationMessage 调用记录 */
+  informationMessages: [],
   /** showWarningMessage 的返回值（模拟用户点击按钮） */
   warningChoice: undefined,
 }
@@ -454,19 +462,32 @@ const vscode = {
       return channel
     },
     withProgress: async (_options, task) => task({ report: () => {} }, { isCancellationRequested: false }),
-    showInformationMessage: async () => undefined,
+    showInformationMessage: async (message) => {
+      registrations.informationMessages.push(message)
+      return undefined
+    },
     showWarningMessage: async (message, ...items) => {
       registrations.warnings.push({ message, items })
       return registrations.warningChoice
     },
     showErrorMessage: async () => undefined,
-    showQuickPick: async (items) => (Array.isArray(items) ? items[0] : undefined),
+    showQuickPick: async (items, options) => {
+      if (!Array.isArray(items)) return undefined
+      registrations.quickPicks.push({ items, options })
+      const responder = registrations.quickPickResponses.shift()
+      if (typeof responder === 'function') return responder(items, options)
+      if (typeof responder === 'number') return items[responder]
+      return items[0]
+    },
     showInputBox: async () => undefined,
-    showTextDocument: async (document) => ({
-      document: document && document.getText ? document : new TextDocument(Uri.file('/tmp/x.c'), ''),
-      selection: undefined,
-      revealRange: () => {},
-    }),
+    showTextDocument: async (document) => {
+      if (document && document.uri) registrations.openedDocuments.push(document)
+      return {
+        document: document && document.getText ? document : new TextDocument(Uri.file('/tmp/x.c'), ''),
+        selection: undefined,
+        revealRange: () => {},
+      }
+    },
     activeColorTheme: { kind: 2 },
     onDidChangeActiveColorTheme: () => disposable('theme'),
     tabGroups: { all: [], onDidChangeTabs: () => disposable('tabs'), close: async () => true },
@@ -1271,6 +1292,231 @@ async function checkDeltaConflict() {
   }
 }
 
+
+/**
+ * si.showDefinitionCandidates（B1/B2/B4）：
+ *  - 组 label = formatDefinitionLabel（included / N copies / 条件）；
+ *  - 多副本组选中后弹二级 QuickPick 选具体副本，再 openLocation；
+ *  - 单副本组直接打开，不弹二级；
+ *  - 无定义时不弹 QuickPick，只显示信息提示。
+ *
+ * 用 dist 的 createSymbolTable 构造确定性快照（include 边 + 内容哈希 + #ifdef 条件），
+ * 再用假的 service 调用真实的 registerCommands 处理器：不依赖扩展激活期间的索引状态。
+ */
+async function checkDefinitionCandidatesCommand() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { registerCommands } = require(path.join(dist, 'src/vscode/commands.js'))
+  const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
+  const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
+
+  const workspaceRoot = EXT_ROOT
+  const sourceFile = 'src/main.c'
+  const a = { name: 'sk_buff', kind: 'struct', file: 'vendor/a/include/skbuff.h', line: 10, endLine: 10, column: 0 }
+  const b = { name: 'sk_buff', kind: 'struct', file: 'vendor/b/include/skbuff.h', line: 20, endLine: 20, column: 0 }
+  const c = {
+    name: 'sk_buff',
+    kind: 'struct',
+    file: 'vendor/c/include/skbuff.h',
+    line: 30,
+    endLine: 30,
+    column: 0,
+    condition: '#ifdef RTK_MODULE',
+  }
+  const fileRecord = (rel, hash) => ({
+    path: rel,
+    mtimeMs: 0,
+    size: 0,
+    contentHashLo: hash.lo,
+    contentHashHi: hash.hi,
+  })
+  const table = createSymbolTable(
+    ['.'],
+    [
+      fileRecord(sourceFile, { lo: 1, hi: 1 }),
+      fileRecord(a.file, { lo: 11, hi: 22 }),
+      fileRecord(b.file, { lo: 11, hi: 22 }),
+      fileRecord(c.file, { lo: 33, hi: 44 }),
+    ],
+    [a, b, c],
+    1,
+    SNAPSHOT_VERSION,
+    { includes: new Map([[sourceFile, [a.file]]]) },
+  )
+
+  const definitions = [a, b, c]
+  const service = {
+    configuredRoots: ['.'],
+    snapshot: table,
+    workspaceRoot,
+    definitions: (name) => definitions.filter((entry) => entry.name === name),
+    signature: async () => undefined,
+    toRelative: (absPath) => path.relative(workspaceRoot, absPath).split(path.sep).join('/'),
+    toAbsolute: (relPath) => path.join(workspaceRoot, relPath),
+  }
+
+  const document = new TextDocument(
+    Uri.file(path.join(workspaceRoot, sourceFile)),
+    'struct sk_buff *skb;\n',
+  )
+  const previousEditor = vscode.window.activeTextEditor
+  vscode.window.activeTextEditor = { document, selection: { active: new Position(0, 10) } }
+  const quickPickBaseline = registrations.quickPicks.length
+  const openedBaseline = registrations.openedDocuments.length
+  const infoBaseline = registrations.informationMessages.length
+  const commands = registerCommands(undefined, service)
+  try {
+    const handler = [...registrations.commands]
+      .reverse()
+      .find(([id]) => id === 'si.showDefinitionCandidates')[1]
+
+    // 多副本组：第一级选组 -> 二级选副本 -> 打开副本位置
+    registrations.quickPickResponses.push(
+      (items) => items.find((item) => item.label.includes('included') && item.label.includes('2 copies')),
+      (items) => items[1],
+    )
+    await handler()
+    assert.equal(
+      registrations.quickPicks.length - quickPickBaseline,
+      2,
+      'multi-copy group opens exactly two QuickPicks',
+    )
+    const groupCall = registrations.quickPicks[quickPickBaseline]
+    const copyCall = registrations.quickPicks[quickPickBaseline + 1]
+    const labels = groupCall.items.map((item) => item.label)
+    assert.ok(
+      labels.some((label) => label.includes('included') && label.includes('2 copies')),
+      `group label carries included + copies: ${JSON.stringify(labels)}`,
+    )
+    assert.ok(
+      labels.some((label) => label.includes('#ifdef RTK_MODULE')),
+      `conditional group label: ${JSON.stringify(labels)}`,
+    )
+    const multiGroup = groupCall.items.find((item) => item.label.includes('2 copies'))
+    assert.equal(
+      multiGroup.description,
+      'vendor/a/include/skbuff.h:11',
+      'group description is the representative file:line (1-based)',
+    )
+    assert.equal(multiGroup.detail, 'Struct', 'group detail is the symbol kind')
+    assert.deepEqual(
+      copyCall.items.map((item) => item.label),
+      ['vendor/a/include/skbuff.h:11', 'vendor/b/include/skbuff.h:21'],
+      'copy list is file:line for every copy',
+    )
+    assert.deepEqual(
+      registrations.openedDocuments.slice(openedBaseline).map((doc) => doc.uri.fsPath),
+      [path.join(workspaceRoot, b.file)],
+      'picking a copy opens that copy',
+    )
+
+    // 单副本组：选中后直接打开，不再弹二级列表
+    const openedAfterMulti = registrations.openedDocuments.length
+    const quickPicksBeforeSingle = registrations.quickPicks.length
+    registrations.quickPickResponses.push(
+      (items) => items.find((item) => item.label.includes('#ifdef RTK_MODULE')),
+    )
+    await handler()
+    assert.equal(
+      registrations.quickPicks.length - quickPicksBeforeSingle,
+      1,
+      'single-copy group opens no second QuickPick',
+    )
+    assert.deepEqual(
+      registrations.openedDocuments.slice(openedAfterMulti).map((doc) => doc.uri.fsPath),
+      [path.join(workspaceRoot, c.file)],
+      'single-copy group opens the representative',
+    )
+
+    // F12 Provider：同一个内容哈希组只出一个代表 Location，顺序 = 分组/排名顺序
+    const { registerDefinitionProvider } = require(
+      path.join(dist, 'src/vscode/providers/definition.js'),
+    )
+    const definitionProviderDisposable = registerDefinitionProvider(service)
+    try {
+      const definitionProvider = registrations.providers
+        .filter(([kind]) => kind === 'definition')
+        .pop()[2]
+      const locations = await definitionProvider.provideDefinition(
+        document,
+        new Position(0, 10),
+        { isCancellationRequested: false },
+      )
+      assert.ok(Array.isArray(locations), 'definition provider returns locations')
+      assert.deepEqual(
+        locations.map((location) => location.uri.fsPath),
+        [path.join(workspaceRoot, a.file), path.join(workspaceRoot, c.file)],
+        'F12 returns one Location per content group, in group order',
+      )
+    } finally {
+      definitionProviderDisposable.dispose()
+    }
+
+    // Hover：签名后追加分组说明（included/not included、N copies、conditional）
+    const { registerHoverProvider } = require(path.join(dist, 'src/vscode/providers/hover.js'))
+    const hoverProviderDisposable = registerHoverProvider(service)
+    try {
+      const hoverProvider = registrations.providers
+        .filter(([kind]) => kind === 'hover')
+        .pop()[2]
+      const hover = await hoverProvider.provideHover(document, new Position(0, 10), {
+        isCancellationRequested: false,
+      })
+      assert.ok(hover, 'hover provider returns a Hover')
+      const markdown = hover.contents[0].value
+      assert.match(markdown, /included by this file/, 'hover marks the group as included')
+      assert.match(markdown, /2 identical copies/, 'hover reports identical copies')
+    } finally {
+      hoverProviderDisposable.dispose()
+    }
+
+    // 条件分支：只返回条件组时 hover 标注 not included + conditional: #ifdef
+    const conditionalService = { ...service, definitions: () => [c] }
+    const conditionalHoverDisposable = registerHoverProvider(conditionalService)
+    try {
+      const hoverProvider = registrations.providers
+        .filter(([kind]) => kind === 'hover')
+        .pop()[2]
+      const hover = await hoverProvider.provideHover(document, new Position(0, 10), {
+        isCancellationRequested: false,
+      })
+      assert.ok(hover, 'conditional hover returns a Hover')
+      const markdown = hover.contents[0].value
+      assert.match(markdown, /not included/, 'hover marks a non-included group')
+      assert.match(markdown, /conditional: #ifdef RTK_MODULE/, 'hover shows the condition text')
+    } finally {
+      conditionalHoverDisposable.dispose()
+    }
+
+    // 无定义：不弹 QuickPick，给信息提示（不抛异常）    // 无定义：不弹 QuickPick，给信息提示（不抛异常）
+    const noDefinitionService = { ...service, definitions: () => [] }
+    const noDefinitionCommands = registerCommands(undefined, noDefinitionService)
+    try {
+      const quickPicksBeforeNone = registrations.quickPicks.length
+      const noDefinitionHandler = [...registrations.commands]
+        .reverse()
+        .find(([id]) => id === 'si.showDefinitionCandidates')[1]
+      await noDefinitionHandler()
+      assert.equal(
+        registrations.quickPicks.length,
+        quickPicksBeforeNone,
+        'no definitions opens no QuickPick',
+      )
+      assert.ok(
+        registrations.informationMessages
+          .slice(infoBaseline)
+          .some((message) => /No definition found/.test(message)),
+        'no definitions shows an information message',
+      )
+    } finally {
+      noDefinitionCommands.dispose()
+    }
+  } finally {
+    commands.dispose()
+    vscode.window.activeTextEditor = previousEditor
+    registrations.quickPickResponses.length = 0
+  }
+}
+
 async function main() {
   const extension = require(path.join(EXT_ROOT, 'dist/src/vscode/extension.js'))
   assert.equal(typeof extension.activate, 'function', 'extension.activate must be a function')
@@ -1284,8 +1530,9 @@ async function main() {
   const missing = expectedCommands.filter((id) => !registered.includes(id))
   assert.deepEqual(missing, [], `missing registered commands: ${missing.join(', ')}`)
 
-  // package.json 中声明了哪些命令，就至少注册哪些
-  assert.ok(registered.length >= expectedCommands.length, 'command count')
+  // package.json 声明 12 个命令（0.8.0 新增 si.showDefinitionCandidates），必须全部注册
+  assert.equal(expectedCommands.length, 12, 'package.json declares 12 commands')
+  assert.equal(registered.length, 12, 'all 12 declared commands are registered')
 
   const providerKinds = new Set(registrations.providers.map(([kind]) => kind))
   for (const kind of ['definition', 'references', 'hover', 'documentSymbol', 'workspaceSymbol', 'callHierarchy']) {
@@ -1302,6 +1549,7 @@ async function main() {
   await checkLegacySnapshotUpgrade()
   await checkIncludeRemovalAndRemoveFile()
   await checkDeltaConflict()
+  await checkDefinitionCandidatesCommand()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -1323,6 +1571,8 @@ async function main() {
   console.log('  legacy v4 snapshot: discarded on load, rebuilt with hash/include/condition metadata OK')
   console.log('  include removal: explicit [] in delta, base edges cleared on replay/reload, removeFile drops cached path/edges OK')
   console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')
+  console.log('  definition candidates: included/copies/#ifdef labels, copy sub-picker, direct open OK')
+  console.log('  F12 grouping + hover annotation: one Location per content group, included/copies/conditional OK')
 }
 
 main()

@@ -5,6 +5,7 @@
  *   si.rebuildIndex    重建索引（withProgress + 可取消）
  *   si.searchSymbol    QuickPick 搜索函数
  *   si.gotoDefinition  当前光标处跳转定义（多候选走 QuickPick）
+ *   si.showDefinitionCandidates 当前光标处全部定义候选（内容副本折叠成组，可二级展开）
  *   si.findReferences  当前光标处查找引用（优先原生 peek，兜底 QuickPick）
  *   si.showCallers     当前函数的所有调用者（QuickPick 跳转）
  *   si.showCallees     当前函数调用的所有被调用者（QuickPick 跳转）
@@ -16,13 +17,20 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 
+import { groupDefinitions } from '../core/definition-groups'
 import { renderDiagnosticsMarkdown } from '../core/diagnostics'
 import { DEFAULT_INDEX_BUDGET, evaluateBudget } from '../core/index-budget'
 import { suppressRebuildPrompt } from './config'
 import { sourceFileOf } from './providers/definition'
 import { showCallGraph } from './views/call-graph-panel'
 import { rankDefinitions } from './rank-definitions'
-import { showCallerQuickPick, showReferenceQuickPick, showSymbolEntriesQuickPick, showSymbolQuickPick } from './quickpick'
+import {
+  showCallerQuickPick,
+  showDefinitionGroupQuickPick,
+  showReferenceQuickPick,
+  showSymbolEntriesQuickPick,
+  showSymbolQuickPick,
+} from './quickpick'
 import type { SymbolService } from './service'
 import {
   currentWord,
@@ -37,6 +45,7 @@ export const COMMAND_IDS = [
   'si.rebuildIndex',
   'si.searchSymbol',
   'si.gotoDefinition',
+  'si.showDefinitionCandidates',
   'si.findReferences',
   'si.showCallers',
   'si.showCallGraph',
@@ -77,6 +86,7 @@ export function registerCommands(
   add('si.rebuildIndex', async () => rebuildIndex(service))
   add('si.searchSymbol', async () => showSymbolQuickPick(service))
   add('si.gotoDefinition', async () => gotoDefinition(service))
+  add('si.showDefinitionCandidates', async () => showDefinitionCandidates(service))
   add('si.findReferences', async () => findReferences(service))
   add('si.showCallers', async () => showCallers(service))
   add('si.showCallGraph', async () => {
@@ -344,6 +354,35 @@ async function gotoDefinition(service: SymbolService): Promise<void> {
     entries,
     vscode.l10n.t('Select the definition of "{0}"', hit.word),
   )
+}
+
+/**
+ * si.showDefinitionCandidates：光标处符号的全部定义候选。
+ *
+ * 与 F12 用同一份 `groupDefinitions` 结果：内容相同的多份拷贝折叠成一组
+ * （included / N copies / 条件），多副本组选中后再弹二级 QuickPick 选具体副本。
+ * 与原生 F12 的区别是这里可以展开副本，适合大仓里「知道有多份拷贝、想挑一份」的场景。
+ */
+async function showDefinitionCandidates(service: SymbolService): Promise<void> {
+  const hit = currentWord()
+  if (!hit) {
+    return
+  }
+  const entries = service.definitions(hit.word)
+  if (entries.length === 0) {
+    await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
+    return
+  }
+  const groups = groupDefinitions(entries, {
+    sourceFile: sourceFileOf(service, hit.document),
+    roots: service.configuredRoots,
+    table: service.snapshot,
+  })
+  if (groups.length === 0) {
+    await showInformationMessage(vscode.l10n.t('No definition found for "{0}".', hit.word))
+    return
+  }
+  await showDefinitionGroupQuickPick(service, groups, hit.word)
 }
 
 async function findReferences(service: SymbolService): Promise<void> {

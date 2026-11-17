@@ -1,13 +1,32 @@
 /**
- * 悬停签名：代码块（c）+ 定义位置 + 声明位置 + 操作提示。
+ * 悬停签名：代码块（c）+ 分组说明（是否被当前文件包含 / 副本数 / 条件编译）
+ * + 定义位置 + 声明位置 + 操作提示。
+ *
+ * 分组说明与 F12 / si.showDefinitionCandidates 使用同一份 `groupDefinitions` 结果，
+ * 保证「included / N copies / conditional」的措辞与判定一致。
  */
 import * as vscode from 'vscode'
 
-import type { SymbolEntry } from '../../shared/types'
+import { groupDefinitions, type DefinitionGroup } from '../../core/definition-groups'
 import type { SymbolService } from '../service'
 import { rankDefinitions } from '../rank-definitions'
 import { getWordAt, noopDisposable } from '../util'
 import { C_CPP_SELECTOR, sourceFileOf } from './definition'
+
+/** 把分组折叠信息压成一行（只列适用的部分）：悬停保持简洁。 */
+function summarizeGroup(group: DefinitionGroup): string {
+  const parts: string[] = [
+    group.included ? vscode.l10n.t('included by this file') : vscode.l10n.t('not included'),
+  ]
+  if (group.copies > 1) {
+    parts.push(vscode.l10n.t('{0} identical copies', String(group.copies)))
+  }
+  const condition = group.representative.condition
+  if (condition) {
+    parts.push(vscode.l10n.t('conditional: {0}', condition))
+  }
+  return parts.join(' · ')
+}
 
 class SourceInsightHoverProvider implements vscode.HoverProvider {
   constructor(private readonly service: SymbolService) {}
@@ -32,13 +51,18 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
       const context = {
         sourceFile: sourceFileOf(this.service, document),
         roots: this.service.configuredRoots,
+        table: this.service.snapshot,
       }
-      const ranked = rankDefinitions(entries, context)
-      const best = ranked[0] as SymbolEntry
+      const group = groupDefinitions(entries, context)[0]
+      if (!group) {
+        return undefined
+      }
+      const best = group.representative
       const signature = (await this.service.signature(best)) ?? best.name
 
       const sections: string[] = []
       sections.push(`\`\`\`c\n${signature}\n\`\`\``)
+      sections.push(summarizeGroup(group))
       sections.push(
         vscode.l10n.t('Definition: {0}:{1}', best.file, String(best.line + 1)),
       )
