@@ -7,6 +7,8 @@ import { stripSources } from './signature'
  * 做词法剥离 + 词边界精确定位（注释/字符串里的同名标识符不算引用），
  * 排除同名符号的定义/声明行，并发读取（默认 8），支持 AbortSignal 与进度回调。
  * 结果按 name 做小型 LRU 缓存（≤64 项，键含快照对象身份，重建索引后自动失效）。
+ * 注意：overlay 索引是原地修改（对象身份不变），缓存不会自动失效；持有可变索引的
+ * service 必须在每次增量提交后调用 `clearReferenceCache()`。
  */
 
 export interface ReferenceOptions {

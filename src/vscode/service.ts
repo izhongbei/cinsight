@@ -14,7 +14,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 
-import { callersOf, calleesOf } from '../core/callgraph'
+import { callersOf, calleesOf, clearCallGraphCache } from '../core/callgraph'
 import { buildIndex } from '../core/indexer'
 import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolIndex } from '../core/overlay-index'
 import {
@@ -27,7 +27,7 @@ import {
   snapshotDeltaPath,
 } from '../core/snapshot-delta'
 import { entriesInFile, findByName, searchSymbols } from '../core/query'
-import { findReferences } from '../core/references'
+import { findReferences, clearReferenceCache } from '../core/references'
 import { readSignature } from '../core/signature'
 import { scanSource } from '../core/scan'
 import {
@@ -101,8 +101,16 @@ export class SymbolService implements vscode.Disposable {
   private mutableValue: MutableSymbolIndex | undefined
   /** 串行化 delta 追加（compaction 前需要 await 它） */
   private appendChain: Promise<void> = Promise.resolve()
+  /** 在途 compaction：flush 需要 await；重复调用复用同一 promise，避免并发 compaction */
+  private compactPromise: Promise<void> | undefined
   /** compaction 进行中：新变更先入 deferred，写完 base 后回放，避免被 compaction 吞掉 */
   private compacting = false
+  /**
+   * 整表代际号：build / clearCache / loadFromDisk / compaction swap 都会替换整个索引对象。
+   * compaction 在 quiesce 前捕获它，若中途变化说明本次结果已过期，必须放弃（不能写旧 base、
+   * 也不能把旧内存索引换回来）。
+   */
+  private indexEpoch = 0
   private deferredDuringCompaction: Array<{
     readonly path: string
     readonly file: FileRecord
@@ -522,6 +530,10 @@ export class SymbolService implements vscode.Disposable {
           }
           this.mutableValue = createMutableIndex(result.snapshot)
           this.snapshotValue = this.mutableValue
+          // 全新索引：代际 +1，让在途 compaction 作废，并清掉 identity-keyed 查询缓存
+          this.indexEpoch += 1
+          clearReferenceCache()
+          clearCallGraphCache()
           this.appendChain = Promise.resolve()
           this.deferredDuringCompaction = []
           this.compacting = false
@@ -732,6 +744,10 @@ export class SymbolService implements vscode.Disposable {
     }
     this.snapshotValue = index
     this.lastSummaryValue = undefined
+    // overlay 是原地修改：索引对象身份不变，identity-keyed 的引用/调用图缓存不会自动失效。
+    // core 不依赖 vscode，只能在 service 这一层显式清（否则增量编辑后仍返回旧结果）。
+    clearReferenceCache()
+    clearCallGraphCache()
     this.changeEmitter.fire()
 
     const change = {
@@ -939,26 +955,77 @@ export class SymbolService implements vscode.Disposable {
   }
 
   /**
+   * compaction 入口：同一时刻只允许一个 compaction。
+   * 已在运行时直接复用其 promise（flush 依赖它等待在途 compaction 完成），
+   * 结束后（成功/放弃/失败）再按需重新排期，接住 compaction 期间到达的变更。
+   */
+  private compactNow(): Promise<void> {
+    const running = this.compactPromise
+    if (running) return running
+    if (!this.snapshotPathValue || !this.mutableValue) {
+      return Promise.resolve()
+    }
+    const settled = this.runCompaction()
+    const promise: Promise<void> = settled
+      .finally(() => {
+        if (this.compactPromise === promise) {
+          this.compactPromise = undefined
+        }
+      })
+      .then(() => undefined)
+    this.compactPromise = promise
+    // 必须在 compactPromise 清空之后再重排（.finally 先注册，所以它的回调先跑）；
+    // 失败（false）不重排：避免持续失败时形成热重试，下一次提交会重新触发调度。
+    void settled.then(
+      (shouldReschedule) => {
+        if (shouldReschedule) this.rescheduleAfterCompaction()
+      },
+      () => undefined,
+    )
+    return promise
+  }
+
+  /**
    * 实际 compaction。顺序很关键（否则会丢记录）：
    *   1. 等所有在途 delta 追加落盘（appendChain + flushSnapshotDeltaAppends）
    *   2. 进入 compacting 状态：新变更先入 deferred，不写 delta
    *   3. flatten 当前 overlay（包含此前全部变更）→ 原子写 base（saveSnapshot）→ 清 delta
    *   4. 换成基于新 base 的 mutable index，回放 deferred（内存 + delta），退出 compacting
+   *
+   * 每个 await 之后都校验 epoch / mutable 身份 / building：build、clearCache、loadFromDisk
+   * 已经换掉整张表时，本次捕获的 flat 属于旧表，既不能写盘，也不能把旧索引换回内存。
+   *
+   * 返回值表示结束后是否需要重排（success/abort 为 true；失败为 false，避免热重试）。
    */
-  private async compactNow(): Promise<void> {
+  private async runCompaction(): Promise<boolean> {
     const snapshotPath = this.snapshotPathValue
     const index = this.mutableValue
-    if (!snapshotPath || !index || this.compacting) return
+    if (!snapshotPath || !index) return true
+    const epoch = this.indexEpoch
     this.compacting = true
+    const stale = (): boolean =>
+      this.indexEpoch !== epoch || this.mutableValue !== index || this.buildingValue
     try {
       await this.appendChain
+      if (stale()) return true
       await flushSnapshotDeltaAppends()
-      if (index.pendingChanges === 0 && (await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))) === 0) {
-        return
-      }
+      if (stale()) return true
+      const deltaBytes = await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
+      if (stale()) return true
+      if (index.pendingChanges === 0 && deltaBytes === 0) return true
       const flat = index.flatten()
+      // 写 base 前最后一次校验：重建/清缓存之后不能再把旧 flat 写成 base。
+      if (stale()) return true
       const started = Date.now()
       const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
+      // 写盘期间整表被替换（rebuild / clearCache / 再次 load）：放弃 swap，保留新索引。
+      if (stale()) {
+        if (this.mutableValue === undefined) {
+          // 索引已被清空（clearCache）：写盘可能落在删除之后，删掉这份过期 base，避免复活。
+          await this.removeSnapshotFile()
+        }
+        return true
+      }
       this.logger.info(
         `snapshot compacted: ${baseBytes} bytes in ${Date.now() - started}ms` +
           (deltaTruncated ? ' (delta cleared)' : ''),
@@ -969,6 +1036,8 @@ export class SymbolService implements vscode.Disposable {
       this.deferredDuringCompaction = []
       this.mutableValue = next
       this.snapshotValue = next
+      // 成功换表：代际 +1，任何更早捕获旧索引的 compaction 都随之作废。
+      this.indexEpoch += 1
       for (const change of deferred) {
         if (change.remove) next.removeFile(change.path)
         else next.applyFile(change.file, change.entries)
@@ -987,11 +1056,43 @@ export class SymbolService implements vscode.Disposable {
         }
         await this.appendChain
       }
+      return true
     } catch (error) {
       this.logger.warn('snapshot compaction failed', error)
+      // 失败时不静默丢弃 deferred：这些变更仍在旧 mutable 索引内存里，只是 delta 写盘被推迟，
+      // 重新入队成普通 append（内存索引不动），否则崩溃/重启后会丢记录。
+      const deferred = this.deferredDuringCompaction
+      this.deferredDuringCompaction = []
+      for (const change of deferred) {
+        this.enqueueAppend(change)
+      }
+      return false
     } finally {
       this.compacting = false
     }
+  }
+
+  /**
+   * compaction 结束后重排：compaction 期间到达的变更需要再走一次调度（可能触发下一次
+   * compaction，也可能只是 arm idle timer），不能在 compacting 状态里就地 re-arm。
+   */
+  private rescheduleAfterCompaction(): void {
+    if (this.disposed || this.buildingValue) return
+    const index = this.mutableValue
+    if (!index) return
+    if (index.pendingChanges > 0) {
+      void this.scheduleCompaction()
+      return
+    }
+    const snapshotPath = this.snapshotPathValue
+    if (!snapshotPath) return
+    void snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
+      .then((bytes) => {
+        if (bytes > 0 && !this.disposed && !this.buildingValue && !this.compacting) {
+          void this.scheduleCompaction()
+        }
+      })
+      .catch(() => undefined)
   }
 
   /** 删除快照文件与 delta（清缓存 / 构建期间清缓存的竞态兜底）。 */
@@ -1019,6 +1120,9 @@ export class SymbolService implements vscode.Disposable {
       this.compactTimer = undefined
     }
     await this.appendChain
+    // 先等在途 compaction：否则 compactNow 会复用它的 promise 而不是发起一次新的，
+    // 导致 flush 返回时 delta 仍可能没合并进 base。
+    await this.compactPromise
     await this.compactNow()
     await this.compactNameIndexIfNeeded(true)
   }
@@ -1026,6 +1130,10 @@ export class SymbolService implements vscode.Disposable {
   /** 清空内存索引 + 删除快照文件（"清除索引缓存"命令）。 */
   async clearCache(): Promise<void> {
     this.generation += 1
+    // 整表作废：代际 +1 让在途 compaction 的 stale 检查立即失败；同时清 identity-keyed 查询缓存。
+    this.indexEpoch += 1
+    clearReferenceCache()
+    clearCallGraphCache()
     this.clearRequested = this.buildingValue
     this.snapshotValue = undefined
     this.lastSummaryValue = undefined
@@ -1067,6 +1175,10 @@ export class SymbolService implements vscode.Disposable {
       const records = await readSnapshotDeltas(snapshotDeltaPath(snapshotPath))
       this.mutableValue = createMutableIndexFromDeltas(snapshot, records)
       this.snapshotValue = this.mutableValue
+      // 新载入的整表：代际 +1，并清掉可能仍指向旧表身份的查询缓存
+      this.indexEpoch += 1
+      clearReferenceCache()
+      clearCallGraphCache()
       // 引用索引惰性加载：只在首次查引用/调用层次时读盘
       this.nameIndexValue = undefined
       this.nameIndexLoadedValue = false

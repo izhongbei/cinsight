@@ -11,9 +11,10 @@ import * as path from 'node:path'
 
 import type { FileRecord, ReadFileFn, SymbolEntry, SymbolTable } from '../src/shared/types'
 import { SNAPSHOT_VERSION } from '../src/shared/types'
+import { createMutableIndex } from '../src/core/overlay-index'
 import { createSymbolTable } from '../src/core/symbol-table'
-import { findReferences } from '../src/core/references'
-import { callersOf, calleesOf } from '../src/core/callgraph'
+import { clearReferenceCache, findReferences } from '../src/core/references'
+import { callersOf, calleesOf, clearCallGraphCache } from '../src/core/callgraph'
 
 const FIXTURE_ROOT = path.join(__dirname, '..', '..', 'test', 'fixtures', 'refs')
 
@@ -334,4 +335,97 @@ test('calleesOf: signal 取消抛 AbortError', async () => {
       return true
     },
   )
+})
+
+// ---------------------------------------------------------------------------
+// 原地增量编辑后的缓存失效
+//
+// service 现在只保留一个 MutableSymbolIndex 并原地 applyFile/removeFile：快照对象身份
+// 不变，所以 references 的结果缓存与 callgraph 的 scanCache 都不会自动失效。
+// core 不能反向依赖 vscode，由 service 在每次 commit 后调用这两个 clear 函数。
+// 下面两个用例走真实 overlay + readFile，锁定这一契约。
+// ---------------------------------------------------------------------------
+
+test('findReferences: overlay 原地编辑后 clearReferenceCache 才能看到新引用', async () => {
+  // new.c 的内容由测试注入，模拟编辑后磁盘上出现新引用
+  const texts = new Map<string, string>([['new.c', 'void quux(void);\nint caller = 0;\n']])
+  const readFile: ReadFileFn = async (rel) => {
+    const injected = texts.get(rel)
+    return injected !== undefined ? injected : fixtureReadFile(rel)
+  }
+
+  const index = createMutableIndex(refsSnapshot())
+  // 预热：此刻 quux 不存在，空结果按 snapshotIdentity(index) 写入缓存
+  assert.deepEqual(await findReferences(index, 'quux', readFile), [])
+
+  // 原地 applyFile：索引对象身份不变，new.c 的文本与符号同时更新
+  index.applyFile({ path: 'new.c', mtimeMs: 1, size: 1 }, [
+    makeEntry({ name: 'quux', file: 'new.c', line: 0 }),
+  ])
+  texts.set('new.c', 'void quux(void);\nint caller = 0;\nvoid user(void) {\n    quux();\n}\n')
+
+  // 未清缓存：identity 未变，仍命中旧的空结果（service 修复前的行为）
+  assert.deepEqual(await findReferences(index, 'quux', readFile), [])
+
+  clearReferenceCache()
+  const hits = await findReferences(index, 'quux', readFile)
+  assert.deepEqual(
+    hits.map((h) => `${h.file}:${h.line}:${h.column}`),
+    ['new.c:3:4'],
+  )
+})
+
+test('callersOf: overlay 原地编辑后 clearCallGraphCache 让函数区间反映新代码', async () => {
+  const before = [
+    'void handler(void)', // 0
+    '{', // 1
+    '}', // 2
+    'void outer(void)', // 3
+    '{', // 4
+    '    handler();', // 5
+    '}', // 6
+    '',
+  ].join('\n')
+  // 编辑后 handler 扩展到整段（handler 调用变成自递归）；引用命中行/列保持不变，
+  // 只有 scanSource 得到的函数区间变了——正好单独暴露 scanCache 的失效问题。
+  const after = [
+    'void handler(void)', // 0
+    '{', // 1
+    '    int unused = 0;', // 2
+    '    unused++;', // 3
+    '    unused++;', // 4
+    '    handler();', // 5
+    '}', // 6
+    '',
+  ].join('\n')
+  let text = before
+  const readFile: ReadFileFn = async (rel) => {
+    if (rel === 'a.c') return text
+    throw new Error(`ENOENT ${rel}`)
+  }
+
+  const base = makeSnapshot([
+    makeEntry({ name: 'handler', file: 'a.c', line: 0, endLine: 2 }),
+    makeEntry({ name: 'outer', file: 'a.c', line: 3, endLine: 6 }),
+  ])
+  const index = createMutableIndex(base)
+
+  // 预热 scanCache（a.c 的函数区间来自编辑前的文本）
+  const first = await callersOf(index, 'handler', readFile)
+  assert.equal(first.length, 1)
+  assert.equal(first[0]?.line, 5)
+  assert.equal(first[0]?.from?.name, 'outer')
+
+  text = after
+  index.applyFile({ path: 'a.c', mtimeMs: 2, size: 2 }, [
+    makeEntry({ name: 'handler', file: 'a.c', line: 0, endLine: 6 }),
+  ])
+
+  // 未清 callgraph 缓存：仍用旧区间把命中归到 outer（service 修复前的行为）
+  const stale = await callersOf(index, 'handler', readFile)
+  assert.equal(stale[0]?.from?.name, 'outer')
+
+  clearCallGraphCache()
+  const fresh = await callersOf(index, 'handler', readFile)
+  assert.equal(fresh[0]?.from?.name, 'handler')
 })

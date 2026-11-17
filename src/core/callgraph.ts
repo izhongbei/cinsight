@@ -24,6 +24,17 @@ const SCAN_CACHE_LIMIT = 500
 /** scanSource 结果缓存：key = snapshotId|file。 */
 const scanCache = new Map<string, readonly ScannedSymbol[]>()
 
+/**
+ * 清空本模块所有 identity-keyed 缓存（scanCache）。
+ *
+ * 快照对象被原地修改（overlay 增量编辑）时身份不变，缓存键不会自动失效；
+ * 由持有可变索引的调用方（service）在每次增量提交后显式调用。
+ * core 不得反向依赖 vscode，因此只导出函数、由上层决定何时清。
+ */
+export function clearCallGraphCache(): void {
+  scanCache.clear()
+}
+
 const C_KEYWORDS = new Set([
   'auto',
   'break',
