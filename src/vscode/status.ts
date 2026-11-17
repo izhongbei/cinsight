@@ -2,11 +2,10 @@
  * 状态栏：`$(symbol-function) 123,456 symbols` / `$(sync~spin) Indexing 45%` / 未配置。
  *
  * 点击行为：未配置 -> si.configureRoots；其余 -> si.rebuildIndex。
- * 大仓库保护：符号数 > MAX_SYMBOLS_WARNING 时用警告色并提示缩小 indexRoots。
+ * 大仓库保护：service.budgetReport.level === 'exceeded' 时用警告色，并展示预算提示与建议。
  */
 import * as vscode from 'vscode'
 
-import { MAX_SYMBOLS_WARNING } from '../shared/types'
 import { onDidChangeConfig, readConfig } from './config'
 import type { SymbolService } from './service'
 
@@ -85,7 +84,8 @@ export class StatusBarController implements vscode.Disposable {
       if (service.ready) {
         const symbols = service.entryCount
         const files = service.fileCount
-        const tooManySymbols = symbols > MAX_SYMBOLS_WARNING
+        const report = service.budgetReport
+        const tooManySymbols = report?.level === 'exceeded'
         const formatted = formatNumber(symbols)
         this.item.text = tooManySymbols
           ? vscode.l10n.t('$(warning) {0} symbols', formatted)
@@ -102,13 +102,11 @@ export class StatusBarController implements vscode.Disposable {
         if (service.snapshotPath) {
           lines.push(vscode.l10n.t('Snapshot: {0}', service.snapshotPath))
         }
-        if (tooManySymbols) {
-          lines.push(
-            vscode.l10n.t(
-              'More than {0} symbols are indexed. Consider narrowing sourceInsight.indexRoots.',
-              formatNumber(MAX_SYMBOLS_WARNING),
-            ),
-          )
+        if (report && report.level !== 'ok' && report.message) {
+          lines.push(report.message)
+        }
+        if (report && report.level !== 'ok' && report.suggestions.length > 0) {
+          lines.push(report.suggestions[0])
         }
         lines.push(vscode.l10n.t('Click to rebuild the index.'))
         this.item.tooltip = markdown(lines.join('\n\n'))

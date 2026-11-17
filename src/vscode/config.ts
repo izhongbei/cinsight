@@ -1,11 +1,12 @@
 /**
  * 读取 / 监听 `sourceInsight.*` 配置。
  *
- * package.json 里已冻结的 8 个配置键（全部在这里读取，配置默认值以 package.json 为准，
+ * package.json 里已冻结的 11 个配置键（全部在这里读取，配置默认值以 package.json 为准，
  * 这里再兜一层默认值，保证 mock 环境（getConfiguration 只返回空对象）也能工作）。
  */
 import * as vscode from 'vscode'
 
+import { DEFAULT_INDEX_BUDGET } from '../core/index-budget'
 import { DEFAULT_EXCLUDE } from '../shared/types'
 import { normalizeRoot } from './paths'
 
@@ -20,6 +21,9 @@ export const CONFIG_KEYS = {
   exclude: 'sourceInsight.exclude',
   maxFileSizeKB: 'sourceInsight.maxFileSizeKB',
   concurrency: 'sourceInsight.concurrency',
+  maxSymbols: 'sourceInsight.maxSymbols',
+  maxFiles: 'sourceInsight.maxFiles',
+  autoCompact: 'sourceInsight.autoCompact',
   searchLimit: 'sourceInsight.searchLimit',
   autoReindexOnSave: 'sourceInsight.autoReindexOnSave',
   enableCallHierarchy: 'sourceInsight.enableCallHierarchy',
@@ -32,6 +36,12 @@ export interface SiConfig {
   readonly exclude: readonly string[]
   readonly maxFileSizeKB: number
   readonly concurrency: number
+  /** 符号数预算：超过时状态栏警告并提示缩小索引目录 */
+  readonly maxSymbols: number
+  /** 文件数预算：超过时状态栏警告并提示缩小索引目录 */
+  readonly maxFiles: number
+  /** 空闲/关闭时自动 compaction */
+  readonly autoCompact: boolean
   readonly searchLimit: number
   readonly autoReindexOnSave: boolean
   readonly enableCallHierarchy: boolean
@@ -116,6 +126,19 @@ export function readConfig(): SiConfig {
       1_048_576,
     ),
     concurrency: toNumber(rawGet(CONFIG_KEYS.concurrency, DEFAULT_CONCURRENCY), DEFAULT_CONCURRENCY, 1, 64),
+    maxSymbols: toNumber(
+      rawGet(CONFIG_KEYS.maxSymbols, DEFAULT_INDEX_BUDGET.maxSymbols),
+      DEFAULT_INDEX_BUDGET.maxSymbols,
+      1,
+      1_000_000_000,
+    ),
+    maxFiles: toNumber(
+      rawGet(CONFIG_KEYS.maxFiles, DEFAULT_INDEX_BUDGET.maxFiles),
+      DEFAULT_INDEX_BUDGET.maxFiles,
+      1,
+      10_000_000,
+    ),
+    autoCompact: toBoolean(rawGet(CONFIG_KEYS.autoCompact, true), true),
     searchLimit: toNumber(rawGet(CONFIG_KEYS.searchLimit, DEFAULT_SEARCH_LIMIT), DEFAULT_SEARCH_LIMIT, 1, 10_000),
     autoReindexOnSave: toBoolean(rawGet(CONFIG_KEYS.autoReindexOnSave, true), true),
     enableCallHierarchy: toBoolean(rawGet(CONFIG_KEYS.enableCallHierarchy, true), true),
@@ -152,6 +175,9 @@ export function onDidChangeConfig(
           'searchLimit',
           'autoReindexOnSave',
           'enableCallHierarchy',
+          'maxSymbols',
+          'maxFiles',
+          'autoCompact',
         ]
         return allKeys.some((key) => affects(e, key))
       }

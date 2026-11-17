@@ -15,6 +15,7 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 
 import { callersOf, calleesOf, clearCallGraphCache } from '../core/callgraph'
+import { DEFAULT_INDEX_BUDGET, evaluateBudget, type BudgetReport } from '../core/index-budget'
 import { buildIndex } from '../core/indexer'
 import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolIndex } from '../core/overlay-index'
 import {
@@ -122,6 +123,10 @@ export class SymbolService implements vscode.Disposable {
   private nameIndexLoadedValue = false
   private nameIndexLoadPromise: Promise<NameIndexData | undefined> | undefined
   private lastSummaryValue: BuildSummary | undefined
+  /** 最近一次构建/加载后评估的索引规模预算（状态栏警告用） */
+  private budgetReportValue: BudgetReport | undefined
+  /** 预算报告的评估输入签名：符号/文件数或阈值变化时 getter 重新评估，避免状态栏读到过期阈值 */
+  private budgetReportKey: string | undefined
   private lastErrorValue: string | undefined
   private progressValue: IndexProgress | undefined
   private buildingValue = false
@@ -199,6 +204,20 @@ export class SymbolService implements vscode.Disposable {
 
   get lastSummary(): BuildSummary | undefined {
     return this.lastSummaryValue
+  }
+
+  /** 索引规模预算报告；未构建/未加载时为 undefined。 */
+  get budgetReport(): BudgetReport | undefined {
+    const snapshot = this.snapshotValue
+    if (!snapshot) {
+      return undefined
+    }
+    const key = this.budgetKey(snapshot.entryCount, snapshot.files.length, readConfig())
+    if (!this.budgetReportValue || this.budgetReportKey !== key) {
+      // 配置阈值或符号/文件数变了：静默重算（不刷日志，状态栏会频繁读取）。
+      return this.evaluateIndexBudget(snapshot.entryCount, snapshot.files.length, false)
+    }
+    return this.budgetReportValue
   }
 
   get lastError(): string | undefined {
@@ -508,12 +527,22 @@ export class SymbolService implements vscode.Disposable {
         let lastDone = 0
         try {
           await this.ensureStorageDir()
+          // 上一轮索引超过 80k 文件时把并发降到 2，压低 build 峰值内存。
+          // 不能只看 lastSummary：增量编辑会清空它、重启后也不存在，需回退到当前快照。
+          const priorFileCount = this.lastSummaryValue?.files ?? this.snapshotValue?.fileCount ?? 0
+          const concurrencyCap = priorFileCount > 80_000 ? 2 : undefined
+          if (concurrencyCap !== undefined) {
+            this.logger.info(
+              `large index (${priorFileCount} files); build concurrency capped at ${concurrencyCap}`,
+            )
+          }
           const options: BuildOptions & { readFile: ReadFileFn } = {
             workspaceRoot,
             roots,
             exclude: config.exclude,
             maxFileSizeKB: config.maxFileSizeKB,
             concurrency: config.concurrency,
+            concurrencyCap,
             followSymlinks: config.followSymlinks,
             previous: this.snapshotValue,
             snapshotPath: this.snapshotPathValue,
@@ -566,6 +595,7 @@ export class SymbolService implements vscode.Disposable {
           this.lastSummaryValue = result.summary
           this.textCache.clear()
           this.textCacheChars = 0
+          this.evaluateIndexBudget(result.summary.entries, result.summary.files)
           return this.lastSummaryValue
         } finally {
           for (const disposable of tokenDisposables) {
@@ -649,6 +679,35 @@ export class SymbolService implements vscode.Disposable {
     } catch {
       // 进度上报失败不能影响构建
     }
+  }
+
+  /**
+   * 评估索引规模预算（构建完成 / 从磁盘加载后各一次）。
+   * 阈值来自 `sourceInsight.maxSymbols` / `maxFiles`（硬上限固定 DEFAULT_INDEX_BUDGET.hardMaxSymbols）；
+   * 超限只记日志 + 由状态栏提示缩小 indexRoots，不改变索引行为。
+   */
+  private evaluateIndexBudget(symbols: number, files: number, log = true): BudgetReport {
+    const config = readConfig()
+    const report = evaluateBudget({
+      symbols,
+      files,
+      budget: {
+        maxSymbols: config.maxSymbols,
+        maxFiles: config.maxFiles,
+        hardMaxSymbols: DEFAULT_INDEX_BUDGET.hardMaxSymbols,
+      },
+    })
+    this.budgetReportValue = report
+    this.budgetReportKey = this.budgetKey(symbols, files, config)
+    if (log && report.level !== 'ok') {
+      this.logger.warn(`index budget ${report.level}: ${report.message ?? ''}`)
+    }
+    return report
+  }
+
+  /** 预算评估输入签名（符号数/文件数 + 可配置阈值）。 */
+  private budgetKey(symbols: number, files: number, config: SiConfig): string {
+    return `${symbols}\u0000${files}\u0000${config.maxSymbols}\u0000${config.maxFiles}`
   }
 
   /** 配置里的 roots -> 规范化后的 workspace 相对 posix roots。 */
@@ -940,6 +999,8 @@ export class SymbolService implements vscode.Disposable {
   private async scheduleCompaction(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath || this.disposed || this.compacting) return
+    // 自动 compaction 可关闭：delta 仍逐次追加落盘（不丢数据），只在 flush/关闭时合并。
+    if (!readConfig().autoCompact) return
     try {
       const index = this.mutableValue
       if (!index) return
@@ -1201,6 +1262,8 @@ export class SymbolService implements vscode.Disposable {
     this.clearRequested = this.buildingValue
     this.snapshotValue = undefined
     this.lastSummaryValue = undefined
+    this.budgetReportValue = undefined
+    this.budgetReportKey = undefined
     this.lastErrorValue = undefined
     this.progressValue = undefined
     this.textCache.clear()
@@ -1246,6 +1309,8 @@ export class SymbolService implements vscode.Disposable {
       // 引用索引惰性加载：只在首次查引用/调用层次时读盘
       this.nameIndexValue = undefined
       this.nameIndexLoadedValue = false
+      // 磁盘加载的索引也要评估预算：否则重启后大索引用不到警告（旧实现直接比较 live entryCount）。
+      this.evaluateIndexBudget(this.entryCount, this.fileCount)
       this.logger.info(
         `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entryCount} ` +
           `delta=${records.length} records builtAt=${new Date(snapshot.builtAt).toISOString()}`,

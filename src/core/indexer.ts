@@ -231,7 +231,8 @@ export async function buildIndex(
     onProgress,
     readFile,
   } = options
-  const concurrency = normalizeConcurrency(options.concurrency)
+  const cap = options.concurrencyCap ?? Number.POSITIVE_INFINITY
+  const concurrency = normalizeConcurrency(Math.min(options.concurrency, cap))
 
   throwIfAborted(signal)
   const files = await walkFiles({

@@ -82,6 +82,8 @@ export interface BuildOptions {
   readonly exclude: readonly string[]
   readonly maxFileSizeKB: number
   readonly concurrency: number
+  /** 构建并发上限（大工程自动降级用） */
+  readonly concurrencyCap?: number
   readonly followSymlinks: boolean
   readonly previous?: SymbolTable
   /** 提供时 buildIndex 负责把快照写盘并回填 summary.snapshotBytes */

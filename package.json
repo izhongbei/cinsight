@@ -117,6 +117,21 @@
           "default": 4,
           "markdownDescription": "%config.concurrency%"
         },
+        "sourceInsight.maxSymbols": {
+          "type": "number",
+          "default": 2000000,
+          "description": "%config.maxSymbols.description%"
+        },
+        "sourceInsight.maxFiles": {
+          "type": "number",
+          "default": 120000,
+          "description": "%config.maxFiles.description%"
+        },
+        "sourceInsight.autoCompact": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.autoCompact.description%"
+        },
         "sourceInsight.searchLimit": {
           "type": "number",
           "default": 200,
