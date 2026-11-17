@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.0 — 2026-11-17
+
+### English
+
+- **Include-aware candidate ranking.** When a name has several definitions, `F12`, hover, call hierarchy, `si.gotoDefinition` and `si.showDefinitionCandidates` now list definitions reachable from the current file through the resolved `#include` graph first. This is a **soft** ranking: candidates are reordered, never filtered — a definition that no indexed file includes still appears after the included ones. The include graph is built in the same scan pass (on the measured corpus 34,538 raw `#include` directives produced 6,820 edges inside the two indexed roots; system headers and files outside the roots simply add no edge).
+- **Duplicate folding.** Definitions that are byte-identical (same 64-bit content hash) and have the same name and kind are folded into one F12 location. `si.showDefinitionCandidates` shows one item per group and opens a second-level copy picker for every identical copy. Folding changes presentation only — no definition is dropped — and only identical-content files fold (whitespace or line-ending changes keep them separate). On the measured corpus the hottest name (`START_TEST`, 470 definitions) had no identical copies, so folding was a no-op there; it targets duplicated kernel/driver trees.
+- **Conditional annotations.** Each symbol records the raw enclosing `#if`/`#ifdef`/`#ifndef` stack text (up to 3 levels / 120 chars). Candidate labels, hover and search/callers/callees details show it as `conditional: ...`, and an unconditional definition wins the tie-break inside the same path-proximity layer. The text is **display-only and never evaluated**; header include guards count as conditions, so most header symbols are annotated (78,199 of 118,730 symbols, 65.9%, on the measured corpus — `#ifdef`-wrapped driver code plus `#ifndef <GUARD>` headers).
+- **New command `Code Insight: Show Definition Candidates` (`si.showDefinitionCandidates`)** — an annotated QuickPick of definition groups (`included` / `not included`, `N copies`, `conditional: ...`) with an expandable copy picker; also available in the C/C++ editor context menu.
+- **Consistent lists and goto.** `si.gotoDefinition` uses the same grouping and ranking as F12 (one entry per group, copy sub-picker). Symbol search, callers and callees append the same inclusion/conditional annotations to their details without reordering rows.
+- **Snapshot v4.** The snapshot now stores a 64-bit content hash per file, the include CSR, the condition string table and a condition id per symbol. A v3 snapshot fails the version check and is **rebuilt once automatically after upgrading — no manual action**; unchanged files are then reused as usual. Snapshots that already say v4 but lack the metadata (written by an early build) are detected and rescanned once.
+- **Measured performance.** On 6,838 C/H files / 118,730 symbols: snapshot 5.92 MB (0.7.0: 5.13 MB, **+15.3%**), load 31 ms, search 5 ms, indexed find-references 1–2 ms (full scan 158 ms), callers / callees 5 ms / <1 ms, ranking+grouping **0.5–0.8 ms average** on the 470-definition hottest name (2.5 ms on its first cold call), content hash 101 ms for 74.9 MB (742 MB/s), raw include scan 0.67 s single-threaded. Build 6.6 s on the first cold run (0.7.0 documented: 5.7–6.5 s); on warm-cache interleaved A/B runs 2.0–2.2 s vs 1.5–1.6 s. Snapshot-resident memory after load is ~76 MB vs 72.5 MB (+3 MB); peak RSS during the build was 520–588 MB vs 452–509 MB for 0.7.0.
+- **Budget check:** snapshot growth slightly exceeds the <15% target (+15.3%); F12 ranking/grouping satisfies <2 ms warm but the first cold call on the worst-case name took 2.5 ms; loaded-index memory meets <+20 MB, while build-time RSS high-water does not; the warm-cache CPU-bound build is ~25–35% slower than 0.7.0 (the cold end-to-end build overhead is hidden by disk I/O). The extra build cost is dominated by the include/condition scan.
+- 276 tests pass.
+
+### 中文
+
+- **include 感知的候选排序**：同名多定义时，`F12`、悬停、调用层次、`si.gotoDefinition` 与 `si.showDefinitionCandidates` 会把当前文件经已解析 `#include` 图**可达**的定义排在前面。这是**软排序**：只重排、不过滤——没有任何索引内文件包含的定义仍会排在已包含的候选之后。include 图在同一次扫描中构建（实测语料 34,538 条原始 `#include` 指令，在两个索引根内得到 6,820 条边；系统头文件与根外文件不建边）。
+- **重复副本折叠**：字节完全相同（64 位内容哈希相同）且名字/种类相同的定义在 F12 中折叠为一个位置；`si.showDefinitionCandidates` 每组显示一条，并可打开二级副本选择列出全部相同副本。折叠只改变展示、**不删除任何定义**，且只对内容完全相同的文件生效（空白或换行差异不会折叠）。实测最热名字（`START_TEST`，470 个定义）没有内容相同的副本，因此该语料上折叠未生效；它面向内核/驱动的多份拷贝。
+- **条件编译标注**：每个符号记录其所在的原始 `#if`/`#ifdef`/`#ifndef` 栈文本（最多 3 层、120 字符）。候选标签、悬停与搜索/调用者/被调用者详情显示 `条件编译：...`；同一路径远近层内，无条件定义优先。该文本**只用于展示、不求值**；头文件 include guard 也算条件，因此多数头文件符号都会带标注（实测 118,730 个符号中有 78,199 个、65.9% 位于条件块内——包括 `#ifdef` 包裹的驱动代码和 `#ifndef <保护宏>` 的头文件）。
+- **新命令 `Code Insight: 显示定义候选`（`si.showDefinitionCandidates`）**：带标注的定义分组 QuickPick（`包含` / `未包含`、`N 份副本`、`条件编译：...`），支持展开副本选择；C/C++ 编辑器右键菜单也可用。
+- **列表与跳转一致**：`si.gotoDefinition` 与 F12 使用相同的分组与排序（每组一条、多副本组进入二级选择）。符号搜索、调用者、被调用者在详情中追加相同的包含/条件标注，且不重排结果。
+- **快照 v4**：快照新增每文件 64 位内容哈希、include CSR、条件字符串表与每符号条件 id。v3 快照会因版本不匹配而被**在升级后自动重建一次——无需手动操作**；之后未变化的文件照常复用。已经是 v4 但缺少元数据的旧快照（早期构建写出）也会被识别并重扫一次。
+- **实测性能**：对 6,838 个 C/H 文件 / 118,730 符号：快照 5.92 MB（0.7.0 为 5.13 MB，**+15.3%**），加载 31 ms，搜索 5 ms，倒排索引查找引用 1–2 ms（全量扫描 158 ms），调用者/被调用者 5 ms / <1 ms；最热名字（470 个定义）的排序+分组**平均 0.5–0.8 ms**（首次冷调用 2.5 ms），内容哈希 74.9 MB 用 101 ms（742 MB/s），原始 include 扫描单线程 0.67 s。首次冷构建 6.6 s（0.7.0 文档值 5.7–6.5 s）；热缓存交替 A/B 为 2.0–2.2 s vs 1.5–1.6 s。加载后快照常驻内存约 76 MB vs 72.5 MB（+3 MB）；构建峰值 RSS 520–588 MB vs 0.7.0 的 452–509 MB。
+- **预算核对**：快照增长略超 <15% 目标（+15.3%）；F12 排序/分组热路径满足 <2 ms，但最坏名字的首次冷调用为 2.5 ms；加载后的索引内存满足 <+20 MB，但构建期 RSS 峰值不满足；热缓存、CPU 受限的构建比 0.7.0 慢约 25–35%（冷构建的端到端额外开销被磁盘 I/O 掩盖）。额外构建开销主要来自 include/条件扫描。
+- 276 个单测通过。
+
 ## 0.7.0 — 2026-11-17
 
 ### English

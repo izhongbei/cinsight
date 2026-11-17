@@ -44,6 +44,98 @@ const {
   snapshotDeltaPath,
 } = require(path.join(EXT_ROOT, 'dist/src/core/snapshot-delta.js'))
 const { DEFAULT_EXCLUDE } = require(path.join(EXT_ROOT, 'dist/src/shared/types.js'))
+const { getSymbolTableColumns } = require(path.join(EXT_ROOT, 'dist/src/core/symbol-table.js'))
+const { groupDefinitions } = require(path.join(EXT_ROOT, 'dist/src/core/definition-groups.js'))
+const { rankDefinitions } = require(path.join(EXT_ROOT, 'dist/src/core/rank-definitions.js'))
+const { execFile } = require('node:child_process')
+const { promisify } = require('node:util')
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * 0.8.0 新增指标的独立子进程：读同一批源码，统计原始 `#include` 数、解析命中数、
+ * 内容哈希与 include 扫描的单线程 CPU 成本。
+ *
+ * 放在子进程里的理由：这段是**额外**的全语料扫描（构建本身已经扫过一遍），如果在主进程
+ * 里跑会把字符串/剥离结果留在 V8 堆上，抬高后面打印的 RSS，让「内存」指标失真。子进程
+ * 的分配随退出释放，主进程的构建/加载内存保持可比。
+ */
+const GRAPH_CHILD_SCRIPT = String.raw`
+'use strict'
+const path = require('node:path')
+const fsp = require('node:fs/promises')
+const extRoot = process.argv[1]
+const snapshotPath = process.argv[2]
+const workspaceRoot = process.argv[3]
+const { loadSnapshot } = require(path.join(extRoot, 'dist/src/core/store.js'))
+const { getSymbolTableColumns } = require(path.join(extRoot, 'dist/src/core/symbol-table.js'))
+const { scanIncludes } = require(path.join(extRoot, 'dist/src/core/scan.js'))
+const { hashContent64 } = require(path.join(extRoot, 'dist/src/core/hash.js'))
+const { resolveIncludePaths } = require(path.join(extRoot, 'dist/src/core/include-resolve.js'))
+const hrtime = process.hrtime.bigint
+
+async function forEachConcurrent(items, limit, worker) {
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const index = next++
+      if (index >= items.length) return
+      await worker(items[index])
+    }
+  }))
+}
+
+async function main() {
+  const table = await loadSnapshot(snapshotPath)
+  if (!table) throw new Error('graph child: snapshot load failed')
+  const columns = getSymbolTableColumns(table)
+  const indexedPaths = new Set(table.files.map((file) => file.path))
+  const context = { indexedPaths, roots: table.roots }
+  let bytes = 0
+  let directives = 0
+  let filesWithIncludes = 0
+  let resolvedDirectives = 0
+  let scanNs = 0n
+  let resolveNs = 0n
+  let hashNs = 0n
+  const startedAt = performance.now()
+  await forEachConcurrent(table.files, 16, async (file) => {
+    const text = await fsp.readFile(path.join(workspaceRoot, file.path), 'latin1')
+    bytes += text.length
+    let start = hrtime()
+    const includes = scanIncludes(text)
+    scanNs += hrtime() - start
+    directives += includes.length
+    if (includes.length > 0) filesWithIncludes += 1
+    start = hrtime()
+    resolvedDirectives += resolveIncludePaths(file.path, includes.map((include) => include.path), context).length
+    resolveNs += hrtime() - start
+    start = hrtime()
+    hashContent64(text)
+    hashNs += hrtime() - start
+  })
+  const toMs = (value) => Number(value) / 1e6
+  return {
+    files: table.files.length,
+    bytes,
+    directives,
+    filesWithIncludes,
+    resolvedDirectives,
+    tableEdges: columns ? columns.includeTargets.length : 0,
+    scanMs: toMs(scanNs),
+    resolveMs: toMs(resolveNs),
+    hashMs: toMs(hashNs),
+    passMs: performance.now() - startedAt,
+  }
+}
+
+main()
+  .then((result) => process.stdout.write(JSON.stringify(result)))
+  .catch((error) => {
+    console.error(error && error.stack ? error.stack : error)
+    process.exit(1)
+  })
+`
 
 const args = process.argv.slice(2)
 const queryArg = args.find((a) => a.startsWith('--query='))
@@ -110,6 +202,95 @@ async function main() {
     perFile.length && Math.max(...perFile) === 1 ? '(single-pass ✅)' : '(⚠️ multi-pass)')
   console.log('  rss          :', mb(process.memoryUsage().rss))
   console.log('')
+
+  // v4 元数据（直接从构建好的内存表读，不额外读盘）：include 边、条件符号、内容哈希
+  const columns = getSymbolTableColumns(result.snapshot)
+  let includeEdgeCount = 0
+  if (columns) {
+    includeEdgeCount = columns.includeTargets.length
+    let filesWithIncludes = 0
+    for (let fileIndex = 0; fileIndex < result.snapshot.fileCount; fileIndex++) {
+      if (columns.includeOffsets[fileIndex + 1] > columns.includeOffsets[fileIndex]) filesWithIncludes += 1
+    }
+    let conditionalEntries = 0
+    for (let index = 0; index < columns.conditionIds.length; index++) {
+      if (columns.conditionIds[index] !== 0) conditionalEntries += 1
+    }
+    let hashedFiles = 0
+    for (let fileIndex = 0; fileIndex < result.snapshot.fileCount; fileIndex++) {
+      if (columns.contentHashLo[fileIndex] !== 0 || columns.contentHashHi[fileIndex] !== 0) hashedFiles += 1
+    }
+    const percent = (part, whole) => (whole > 0 ? ((part / whole) * 100).toFixed(1) + '%' : 'n/a')
+    console.log('=== v4 metadata (built table) ===')
+    console.log('  include edges :', includeEdgeCount, 'resolved |', filesWithIncludes, 'files with edges')
+    console.log('  conditions    :', conditionalEntries, '/', columns.conditionIds.length,
+      'symbols conditional (' + percent(conditionalEntries, columns.conditionIds.length) + ') |',
+      Math.max(0, columns.conditions.length - 1), 'distinct texts')
+    console.log('  content hashes:', hashedFiles, '/', result.snapshot.fileCount, 'files')
+    console.log('')
+
+    // 快照体积构成（与 store.encodeSnapshot 的布局逐项对齐，便于核对增长来源）
+    const rootsBytes = Buffer.byteLength(JSON.stringify(result.snapshot.roots), 'utf8')
+    const headerBytes = 32 + rootsBytes
+    let fileBytes = 0
+    for (const file of result.snapshot.files) {
+      fileBytes += 4 + Buffer.byteLength(file.path, 'utf8') + 20
+    }
+    let nameBytes = 0
+    for (const name of columns.names) nameBytes += 4 + Buffer.byteLength(name, 'utf8')
+    let conditionBytes = 4
+    for (const condition of columns.conditions) conditionBytes += 4 + Buffer.byteLength(condition, 'utf8')
+    const symbolColumnBytes = columns.nameIds.length * 23
+    const offsetBytes =
+      (columns.names.length + 1) * 4 +
+      (result.snapshot.fileCount + 1) * 4 +
+      columns.nameIds.length * 4 +
+      (result.snapshot.fileCount + 1) * 4
+    const includeBytes = includeEdgeCount * 4
+    const compositionBytes =
+      headerBytes + fileBytes + nameBytes + conditionBytes + symbolColumnBytes + offsetBytes + includeBytes
+    console.log('=== snapshot composition (v4) ===')
+    console.log('  header+roots :', size(headerBytes))
+    console.log('  file records :', size(fileBytes),
+      '(' + result.snapshot.fileCount + ' paths + 64-bit content hash)')
+    console.log('  name table   :', size(nameBytes), '(' + columns.names.length + ' names)')
+    console.log('  conditions   :', size(conditionBytes), '(' + Math.max(0, columns.conditions.length - 1) + ' distinct texts)')
+    console.log('  symbol cols  :', size(symbolColumnBytes), '(' + columns.nameIds.length + ' entries x 23 B)')
+    console.log('  offsets      :', size(offsetBytes), '(name/file/entry lookup arrays)')
+    console.log('  include CSR  :', size(includeBytes), '(' + includeEdgeCount + ' edges)')
+    console.log('  total        :', size(compositionBytes), compositionBytes === snapshotBytes
+      ? '(matches snapshot ✅)'
+      : '(⚠️ differs from snapshot ' + size(snapshotBytes) + ')')
+    console.log('')
+  }
+
+  // include 图/内容哈希的额外指标：子进程读同一批源码（不污染主进程内存）
+  {
+    const tChild = performance.now()
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ['-e', GRAPH_CHILD_SCRIPT, EXT_ROOT, snapshotPath, WORKSPACE_ROOT],
+      { maxBuffer: 16 * 1024 * 1024 },
+    )
+    const graph = JSON.parse(stdout)
+    const childMs = performance.now() - tChild
+    const rawPct =
+      graph.directives > 0 ? ((graph.tableEdges / graph.directives) * 100).toFixed(1) + '%' : 'n/a'
+    const parity = graph.tableEdges === graph.resolvedDirectives
+    console.log('=== include graph / hashing (v4, extra child-process pass) ===')
+    console.log('  raw includes :', graph.directives, 'directives in', graph.filesWithIncludes, 'of', graph.files,
+      'files |', (graph.bytes / 1048576).toFixed(1), 'MB')
+    console.log('  resolved     :', graph.tableEdges, '/', graph.directives,
+      'directives (' + rawPct + '; per-file de-duplicated)', '| resolver parity:',
+      parity ? 'yes ✅' : 'NO (' + graph.resolvedDirectives + ' vs ' + graph.tableEdges + ') ⚠️')
+    console.log('  scan cost    :', graph.scanMs.toFixed(0), 'ms raw include scan |', graph.resolveMs.toFixed(0),
+      'ms resolution |', graph.hashMs.toFixed(0), 'ms content hash (single-thread child, page-warm)')
+    console.log('  hash rate    :', (graph.bytes / 1048576 / (graph.hashMs / 1000)).toFixed(0), 'MB/s;',
+      ((graph.hashMs / total) * 100).toFixed(1) + '% of this build wall time')
+    console.log('  child pass   :', graph.passMs.toFixed(0), 'ms (read+scan+resolve+hash);', childMs.toFixed(0),
+      'ms incl. spawn/load (main-process RSS unaffected)')
+    console.log('')
+  }
 
   const tLoad = performance.now()
   const loaded = await loadSnapshot(snapshotPath)
@@ -330,6 +511,89 @@ async function main() {
       t = performance.now()
       const second = await findReferences(loaded, query, readFile, { includeDeclaration: false })
       console.log('  references(2):', ms(t), 'ms; hits:', second.length)
+    }
+  }
+
+  // 0.8.0 定义排序/分组：取「定义数最多」的名字，在真实 include 上下文中测 F12 路径
+  {
+    const loadedColumns = getSymbolTableColumns(loaded)
+    if (loadedColumns && loadedColumns.names.length > 0) {
+      let hotName = ''
+      let hotCount = 0
+      for (let nameId = 0; nameId < loadedColumns.names.length; nameId++) {
+        const count = loadedColumns.nameOffsets[nameId + 1] - loadedColumns.nameOffsets[nameId]
+        if (count > hotCount) {
+          hotCount = count
+          hotName = loadedColumns.names[nameId]
+        }
+      }
+      if (hotName !== '' && hotCount > 1) {
+        const hotDefs = loaded.findByName(hotName)
+        const defFiles = new Set(hotDefs.map((entry) => entry.file))
+        // 选一个「直接 include 了最多定义文件」的真实源文件当光标文件；没有就退回第一个定义文件
+        let sourceFile = hotDefs[0].file
+        let bestHits = 0
+        for (const file of loaded.files) {
+          const targets = loaded.includedFiles(file.path)
+          if (targets.length === 0) continue
+          let hits = 0
+          for (const target of targets) if (defFiles.has(target)) hits += 1
+          if (hits > bestHits) {
+            bestHits = hits
+            sourceFile = file.path
+          }
+        }
+        const context = { sourceFile, roots: loaded.roots, table: loaded }
+        const tGroupCold = performance.now()
+        const groups = groupDefinitions(hotDefs, context)
+        const groupColdMs = performance.now() - tGroupCold
+        const runs = 20
+        let rankTotal = 0
+        let rankMax = 0
+        for (let run = 0; run < runs; run++) {
+          const start = performance.now()
+          rankDefinitions(hotDefs, context)
+          const duration = performance.now() - start
+          rankTotal += duration
+          if (duration > rankMax) rankMax = duration
+        }
+        let groupTotal = 0
+        let groupMax = 0
+        for (let run = 0; run < runs; run++) {
+          const start = performance.now()
+          groupDefinitions(hotDefs, context)
+          const duration = performance.now() - start
+          groupTotal += duration
+          if (duration > groupMax) groupMax = duration
+        }
+        let multiCopyGroups = 0
+        let maxCopies = 0
+        let includedReps = 0
+        let conditionalReps = 0
+        let entriesKept = 0
+        for (const group of groups) {
+          entriesKept += group.entries.length
+          if (group.copies > 1) multiCopyGroups += 1
+          if (group.copies > maxCopies) maxCopies = group.copies
+          if (group.included) includedReps += 1
+          if (group.conditional) conditionalReps += 1
+        }
+        console.log('=== definition ranking / grouping (fresh table, hot name) ===')
+        console.log('  hot name     :', hotName, '(' + hotDefs.length, 'definitions in', defFiles.size, 'files)')
+        console.log('  cursor file  :', sourceFile, '(directly includes', bestHits, 'definition files)')
+        console.log('  group first  :', groupColdMs.toFixed(2), 'ms (cold include cache)',
+          groupColdMs < 2 ? '(✅ <2 ms)' : '(⚠️ >=2 ms)')
+        console.log('  rank warm    :', (rankTotal / runs).toFixed(2), 'ms avg |', rankMax.toFixed(2),
+          'ms max (' + runs + 'x)')
+        console.log('  group warm   :', (groupTotal / runs).toFixed(2), 'ms avg |', groupMax.toFixed(2),
+          'ms max (' + runs + 'x)')
+        console.log('  groups       :', groups.length, '| multi-copy:', multiCopyGroups, '| max copies:', maxCopies,
+          '| included reps:', includedReps, '| conditional reps:', conditionalReps)
+        console.log('  preserved    :', entriesKept === hotDefs.length
+          ? 'all ' + hotDefs.length + ' definitions kept ✅'
+          : '⚠️ ' + entriesKept + '/' + hotDefs.length)
+        console.log('')
+      }
     }
   }
 
