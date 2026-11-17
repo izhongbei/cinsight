@@ -350,6 +350,40 @@ test('snapshot delta: compact writes the base and removes the delta', async () =
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('index e2e: changes that arrive during compaction survive(service order)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'si-index-race-'))
+  try {
+    const basePath = join(dir, 'symbols.sidx')
+    const base = createSymbolTable(
+      ['root'],
+      [{ path: 'a.c', mtimeMs: 1, size: 1 }],
+      [entry('alpha', 'a.c', 1)],
+      1,
+      SNAPSHOT_VERSION,
+    )
+    await compactSnapshot(basePath, base)
+    const index = createMutableIndex((await loadSnapshot(basePath))!)
+
+    // 模拟 service.compactNow：先 flatten，写入期间又有 B 到达（进入 deferred），写完后回放
+    const flat = index.flatten()
+    index.applyFile({ path: 'b.c', mtimeMs: 2, size: 2 }, [entry('beta', 'b.c', 3)]) // 写入期间到达
+    await compactSnapshot(basePath, flat) // 只包含 A
+    await appendSnapshotDelta(snapshotDeltaPath(basePath), {
+      kind: 'set', path: 'b.c', mtimeMs: 2, size: 2, entries: [entry('beta', 'b.c', 3)],
+    }) // deferred 回放
+
+    const reloaded = createMutableIndexFromDeltas(
+      (await loadSnapshot(basePath))!,
+      await readSnapshotDeltas(snapshotDeltaPath(basePath)),
+    )
+    assert.deepEqual(reloaded.findByName('alpha').map((e) => e.file), ['a.c'])
+    assert.deepEqual(reloaded.findByName('beta').map((e) => e.file), ['b.c'], 'change during compaction must not be lost')
+    assert.equal(reloaded.entryCount, 2)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -991,7 +1025,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createMutableIndex } from '../src/core/overlay-index'
+import { createMutableIndex, createMutableIndexFromDeltas } from '../src/core/overlay-index'
 import {
   appendSnapshotDelta,
   compactSnapshot,
@@ -1067,6 +1101,7 @@ Expected: 该测试是 core 组合的契约回归测试（T3 完成后即可通�
 import {
   appendSnapshotDelta,
   compactSnapshot,
+  flushSnapshotDeltaAppends,
   readSnapshotDeltas,
   removeSnapshotDelta,
   snapshotDeltaBytes,
@@ -1094,7 +1129,24 @@ import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolInd
 
 并更新日志：`entries=${snapshot.entryCount}` 与 `delta=${records.length} records`（可加在 `snapshot loaded:` 行）。
 
-- [ ] **Step 4: 改造 `commitSnapshot`（overlay + delta）**
+- [ ] **Step 4: 改造 `commitSnapshot`（overlay + delta，compaction 期间 defer）**
+
+新增字段（`mutableValue` 附近）：
+
+```ts
+  /** 串行化 delta 追加（compaction 前需要 await 它） */
+  private appendChain: Promise<void> = Promise.resolve()
+  /** compaction 进行中：新变更先入 deferred，写完 base 后回放，避免被 compaction 吞掉 */
+  private compacting = false
+  private deferredDuringCompaction: Array<{
+    readonly path: string
+    readonly file: FileRecord
+    readonly entries: readonly SymbolEntry[]
+    readonly remove: boolean
+  }> = []
+```
+
+`commitSnapshot` 改为（**同步**改内存，追加串行化，compaction 期间 defer）：
 
 ```ts
   private commitSnapshot(
@@ -1117,41 +1169,59 @@ import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolInd
     this.snapshotValue = index
     this.lastSummaryValue = undefined
     this.changeEmitter.fire()
-    void this.appendDelta(relPath, entries, mtimeMs, size, remove)
+
+    const change = {
+      path: relPath,
+      file: { path: relPath, mtimeMs, size },
+      entries,
+      remove,
+    }
+    if (this.compacting) {
+      this.deferredDuringCompaction.push(change)
+    } else {
+      this.enqueueAppend(change)
+    }
     void this.scheduleCompaction()
   }
 
-  private async appendDelta(
-    relPath: string,
-    entries: readonly SymbolEntry[],
-    mtimeMs: number,
-    size: number,
-    remove: boolean,
-  ): Promise<void> {
+  /** 追加 delta 串行化：失败只记日志，chain 永不 reject，保证后续 append 可继续。 */
+  private enqueueAppend(change: {
+    readonly path: string
+    readonly file: FileRecord
+    readonly entries: readonly SymbolEntry[]
+    readonly remove: boolean
+  }): void {
+    this.appendChain = this.appendChain
+      .then(() => this.appendDelta(change))
+      .catch((error) => this.logger.warn('append snapshot delta failed', error))
+  }
+
+  private async appendDelta(change: {
+    readonly path: string
+    readonly file: FileRecord
+    readonly entries: readonly SymbolEntry[]
+    readonly remove: boolean
+  }): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     if (!snapshotPath) return
-    try {
-      await appendSnapshotDelta(
-        snapshotDeltaPath(snapshotPath),
-        remove
-          ? { kind: 'remove', path: relPath }
-          : { kind: 'set', path: relPath, mtimeMs, size, entries },
-      )
-    } catch (error) {
-      this.logger.warn('append snapshot delta failed', error)
-    }
+    await appendSnapshotDelta(
+      snapshotDeltaPath(snapshotPath),
+      change.remove
+        ? { kind: 'remove', path: change.path }
+        : { kind: 'set', path: change.path, mtimeMs: change.file.mtimeMs, size: change.file.size, entries: change.entries },
+    )
   }
 ```
 
-- [ ] **Step 5: 用 compaction 替换全量保存**
+- [ ] **Step 5: 用 compaction 替换全量保存（含 quiesce + deferred 回放）**
 
-删除 `private scheduleSave()`、`private async saveNow()`、`private async persistNow()` 三个方法；新增：
+删除 `private scheduleSave()`、`private async saveNow()`、`private async persistNow()`；新增：
 
 ```ts
   /** 阈值/空闲触发 compaction（写 base + 清 delta），不再每次保存全量写盘。 */
   private async scheduleCompaction(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
-    if (!snapshotPath || this.disposed) return
+    if (!snapshotPath || this.disposed || this.compacting) return
     try {
       const index = this.mutableValue
       if (!index) return
@@ -1182,27 +1252,47 @@ import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolInd
     }
   }
 
-  /** 实际 compaction：flatten + 原子写 base + 清空 delta 与 overlay。 */
+  /**
+   * 实际 compaction。顺序很关键（否则会丢记录）：
+   *   1. 等所有在途 delta 追加落盘（appendChain + flushSnapshotDeltaAppends）
+   *   2. 进入 compacting 状态：新变更先入 deferred，不写 delta
+   *   3. flatten 当前 overlay（包含此前全部变更）→ 原子写 base（saveSnapshot）→ 清 delta
+   *   4. 换成基于新 base 的 mutable index，回放 deferred（内存 + delta），退出 compacting
+   */
   private async compactNow(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
     const index = this.mutableValue
-    if (!snapshotPath || !index) return
-    if (index.pendingChanges === 0 && (await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))) === 0) {
-      return
-    }
+    if (!snapshotPath || !index || this.compacting) return
+    this.compacting = true
     try {
-      await this.ensureStorageDir()
+      await this.appendChain
+      await flushSnapshotDeltaAppends()
+      if (index.pendingChanges === 0 && (await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))) === 0) {
+        return
+      }
       const flat = index.flatten()
       const started = Date.now()
       const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
-      this.mutableValue = createMutableIndex(flat)
-      this.snapshotValue = this.mutableValue
       this.logger.info(
         `snapshot compacted: ${baseBytes} bytes in ${Date.now() - started}ms` +
           (deltaTruncated ? ' (delta cleared)' : ''),
       )
+
+      const next = createMutableIndex(flat)
+      const deferred = this.deferredDuringCompaction
+      this.deferredDuringCompaction = []
+      this.mutableValue = next
+      this.snapshotValue = next
+      for (const change of deferred) {
+        if (change.remove) next.removeFile(change.path)
+        else next.applyFile(change.file, change.entries)
+        this.enqueueAppend(change)
+      }
+      await this.appendChain
     } catch (error) {
       this.logger.warn('snapshot compaction failed', error)
+    } finally {
+      this.compacting = false
     }
   }
 ```
@@ -1227,6 +1317,7 @@ const SNAPSHOT_IDLE_COMPACT_MS = 60_000
       clearTimeout(this.compactTimer)
       this.compactTimer = undefined
     }
+    await this.appendChain
     await this.compactNow()
     await this.compactNameIndexIfNeeded(true)
   }
@@ -1236,6 +1327,9 @@ const SNAPSHOT_IDLE_COMPACT_MS = 60_000
 
 ```ts
     this.mutableValue = undefined
+    this.appendChain = Promise.resolve()
+    this.deferredDuringCompaction = []
+    this.compacting = false
     if (this.compactTimer) {
       clearTimeout(this.compactTimer)
       this.compactTimer = undefined
@@ -1258,6 +1352,8 @@ const SNAPSHOT_IDLE_COMPACT_MS = 60_000
     }
     this.snapshotValue = undefined
     this.mutableValue = undefined
+    this.appendChain = Promise.resolve()
+    this.deferredDuringCompaction = []
   }
 ```
 
@@ -1266,6 +1362,9 @@ const SNAPSHOT_IDLE_COMPACT_MS = 60_000
 ```ts
           this.mutableValue = createMutableIndex(result.snapshot)
           this.snapshotValue = this.mutableValue
+          this.appendChain = Promise.resolve()
+          this.deferredDuringCompaction = []
+          this.compacting = false
           if (this.snapshotPathValue) {
             await removeSnapshotDelta(snapshotDeltaPath(this.snapshotPathValue))
           }
