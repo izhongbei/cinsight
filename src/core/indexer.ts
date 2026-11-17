@@ -282,13 +282,22 @@ export async function buildIndex(
     })
   }
 
-  // 增量比对：mtimeMs + size 都没变的文件直接复用旧符号
+  // 增量比对：mtimeMs + size 都没变的文件直接复用旧符号。
+  //
+  // v4 元数据可用性判定（升级路径修复，格式不变）：旧版本（本任务之前的 2ffa868）写出的
+  // v4 快照里，文件记录没有内容哈希、include CSR 为空、条目无条件。这种快照「版本号正确」
+  // 但元数据全缺，若按 mtime+size 复用它，B1/B2/B4 会一直失效到每个文件被编辑或清缓存。
+  // 因此 v4 旧快照里的文件只有「确实带哈希」才算可用于增量复用；无哈希一律当作变更重新
+  // 扫描，下一次 build 就会自然补齐哈希、include 边与条件。这里刻意不写日志：升级后首次
+  // 全量重扫是预期的一次性修复，不是异常。
   const reused: SymbolEntry[] = []
   const pending: FileRecord[] = []
   const unchanged = new Set<string>()
   for (const file of files) {
     const old = previousFiles.get(file.path)
-    if (old && old.mtimeMs === file.mtimeMs && old.size === file.size) {
+    const reusable =
+      previousV4 !== undefined && previousV4.contentHashOf(file.path) !== undefined
+    if (old && reusable && old.mtimeMs === file.mtimeMs && old.size === file.size) {
       unchanged.add(file.path)
       const entries = previousEntries.get(file.path)
       if (entries) reused.push(...entries)
@@ -392,7 +401,8 @@ export async function buildIndex(
     if (!successfulPaths.has(oldPath)) removed += 1
   }
 
-  // v4 元数据：未变更文件复用旧表（仅 v4 旧表被采用），变更文件用本轮扫描结果。
+  // v4 元数据：未变更文件复用旧表（仅 v4 旧表、且上面的「哈希可用」判定通过才进入
+  // unchanged；因此复用到的哈希/include 必然存在）；变更文件用本轮扫描结果。
   // include 只在命中「索引内文件」时建边（skipped 文件不在表里，同样丢弃）。
   const includeContext = { indexedPaths: successfulPaths, roots }
   const includesByFile = new Map<string, readonly string[]>()

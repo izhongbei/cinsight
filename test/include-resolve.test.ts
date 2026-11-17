@@ -102,6 +102,48 @@ test('include-resolve: windows separators are normalized to posix', () => {
   )
 })
 
+test('include-resolve: absolute includes are rejected even when a same-named workspace file is indexed', () => {
+  // 工作区里确实有 etc/passwd：绝对 include 必须仍然不命中，否则会造出假边
+  const ctx = context(['src/a.c', 'a.c', 'etc/passwd'])
+  assert.equal(resolveIncludePath('src/a.c', '/etc/passwd', ctx), undefined)
+  // 根目录文件曾是最危险的情况：dirname('.') + /etc/passwd 归一化后就是 etc/passwd
+  assert.equal(resolveIncludePath('a.c', '/etc/passwd', ctx), undefined)
+  // Windows 盘符（正/反斜杠）与 UNC 同样是绝对路径
+  assert.equal(resolveIncludePath('a.c', 'C:/etc/passwd', ctx), undefined)
+  assert.equal(resolveIncludePath('a.c', 'C:\\etc\\passwd', ctx), undefined)
+  assert.equal(resolveIncludePath('a.c', '\\\\server\\share\\x.h', ctx), undefined)
+  // 批量解析：绝对 include 被丢弃，相对同路径仍可命中（证明拒绝的是绝对形式而非文件名）
+  assert.deepEqual(
+    resolveIncludePaths('a.c', ['/etc/passwd', 'etc/passwd'], context(['a.c', 'etc/passwd'])),
+    ['etc/passwd'],
+  )
+})
+
+test('include-resolve: roots are normalized like walk before root-prefixed candidates', () => {
+  const paths = ['src/a.c', 'proj/inc/x.h']
+  // 尾部 `/`、尾部 `\`、前导 `./`、重复斜杠、首尾空白都等价于 proj
+  for (const root of ['proj/', 'proj\\', './proj', './/proj/', ' proj/ ']) {
+    assert.equal(
+      resolveIncludePath('src/a.c', 'inc/x.h', context(paths, [root])),
+      'proj/inc/x.h',
+      `root=${JSON.stringify(root)}`,
+    )
+  }
+})
+
+test('include-resolve: absolute roots never produce workspace-relative hits', () => {
+  const paths = ['src/a.c', 'proj/x.h']
+  // 调用方直接传绝对 root（例如 workspace 绝对路径）：归一后仍是绝对路径，
+  // 拼出的候选不是 workspace 相对路径，不能把 root 名当成工作区内目录。
+  assert.equal(resolveIncludePath('src/a.c', 'x.h', context(paths, ['/abs/proj'])), undefined)
+  assert.equal(resolveIncludePath('src/a.c', 'x.h', context(paths, ['/abs/proj/'])), undefined)
+  // 绝对 root 与相对 root 并存时，只有相对 root 的候选命中
+  assert.equal(
+    resolveIncludePath('src/a.c', 'x.h', context(paths, ['/abs/proj', 'proj'])),
+    'proj/x.h',
+  )
+})
+
 test('include-resolve: batch helper preserves include order and dedupes targets', () => {
   const ctx = context(['src/a.c', 'src/x.h', 'inc/y.h', 'inc/x.h'])
   assert.deepEqual(

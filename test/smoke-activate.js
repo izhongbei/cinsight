@@ -759,6 +759,26 @@ function capturingLogger() {
 }
 
 /**
+ * 有界等待 delta 追加落盘。
+ *
+ * `updateFile` / `removeFile` 只把 append 排进 service 的 appendChain，快照 delta 的写入
+ * 是异步的；直接读会偶发读到 0 条或半条记录（时序依赖）。这里轮询到谓词成立或超时失败，
+ * 不改变任何生产逻辑。
+ */
+async function waitForDeltaRecords(deltaPath, readSnapshotDeltas, predicate, label) {
+  const deadline = Date.now() + 2000
+  let records = []
+  for (;;) {
+    records = await readSnapshotDeltas(deltaPath)
+    if (predicate(records)) return records
+    if (Date.now() >= deadline) {
+      assert.fail(`${label}: timed out waiting for delta append (records=${records.length})`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+/**
  * 真实 service 级 round trip（不 stub 状态机）：
  * 临时 workspace + 独立 storage -> 建索引 -> 通过公开的 updateFile 保存一个改动
  * -> 断言 delta 落盘（含 v4 元数据）-> 不 compaction 直接重载（delta 重放）
@@ -835,8 +855,13 @@ async function checkServiceRoundTrip() {
     assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'save applies overlay include edges')
     assert.equal(service.snapshot.isReachable('a.c', 'inc/y.h'), true)
     assert.deepEqual(service.snapshot.contentHashOf('a.c'), hashContent64(savedText), 'save records content hash')
-    assert.ok((await snapshotDeltaBytes(deltaPath)) > 0, 'incremental save appends a delta record')
-    const records = await readSnapshotDeltas(deltaPath)
+    // delta 追加走 appendChain 异步排队：有界轮询到记录可读，去掉「读得太早」的时序依赖
+    const records = await waitForDeltaRecords(
+      deltaPath,
+      readSnapshotDeltas,
+      (list) => list.length >= 1 && list[0]?.path === 'a.c',
+      'save delta append',
+    )
     assert.equal(records.length, 1, 'one delta record for one save')
     assert.equal(records[0]?.kind, 'set')
     assert.deepEqual(records[0]?.entries?.map((e) => e.name), ['beta', 'guarded'])
@@ -895,6 +920,195 @@ async function checkServiceRoundTrip() {
       vscode.workspace.workspaceFolders = previousFolders
       configurationValues.indexRoots = previousRoots
       configurationValues.autoCompact = previousAutoCompact
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/**
+ * 升级路径：本任务之前（2ffa868）写出的 v4 快照版本号仍是 v4，但文件记录没有哈希、
+ * include CSR 为空、条目无条件。loadFromDisk 必须把它当作无效快照丢弃（警告 + 删 base
+ * 和 delta），ensureBuilt 重建后元数据齐全；重建后的快照还能正常加载（不会反复重建）。
+ */
+async function checkLegacySnapshotUpgrade() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+  const { snapshotDeltaPath } = require(path.join(dist, 'src/core/snapshot-delta.js'))
+  const { encodeSnapshot } = require(path.join(dist, 'src/core/store.js'))
+  const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
+  const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-smoke-legacy-v4-'))
+  const workspace = path.join(dir, 'ws')
+  const storage = path.join(dir, 'storage')
+  fs.mkdirSync(path.join(workspace, 'inc'), { recursive: true })
+  fs.mkdirSync(storage, { recursive: true })
+  fs.writeFileSync(path.join(workspace, 'a.c'), '#include "inc/x.h"\nint alpha(void) { return 1; }\n', 'utf8')
+  fs.writeFileSync(
+    path.join(workspace, 'inc', 'x.h'),
+    '#ifndef X_H\n#define X_H\nstruct sk_buff { int len; };\n#endif\n',
+    'utf8',
+  )
+
+  const snapshotPath = path.join(storage, 'symbols.sidx')
+  const deltaPath = snapshotDeltaPath(snapshotPath)
+  const legacyFileRecord = (rel) => {
+    const stat = fs.statSync(path.join(workspace, rel))
+    return { path: rel, mtimeMs: stat.mtimeMs, size: stat.size } // 无 contentHashLo/Hi
+  }
+  const legacy = createSymbolTable(
+    ['.'],
+    ['a.c', 'inc/x.h'].map(legacyFileRecord),
+    [
+      { name: 'alpha', kind: 'function', file: 'a.c', line: 2, endLine: 2, column: 5 },
+      { name: 'sk_buff', kind: 'struct', file: 'inc/x.h', line: 3, endLine: 3, column: 8 },
+    ],
+    1,
+    SNAPSHOT_VERSION,
+  )
+  assert.equal(legacy.contentHashOf('a.c'), undefined, 'legacy fixture has no content hash')
+  assert.deepEqual(legacy.includedFiles('a.c'), [], 'legacy fixture has no include edges')
+  fs.writeFileSync(snapshotPath, encodeSnapshot(legacy))
+
+  const previousFolders = vscode.workspace.workspaceFolders
+  const previousRoots = configurationValues.indexRoots
+  vscode.workspace.workspaceFolders = [{ uri: Uri.file(workspace), name: 'legacy', index: 0 }]
+  configurationValues.indexRoots = ['.']
+  const context = { storageUri: Uri.file(storage) }
+  const logger = capturingLogger()
+  let service
+  let reloaded
+  try {
+    service = await SymbolService.create(context, logger)
+    // 旧快照被丢弃：内存里没有（也绝不能有）没有边的表
+    assert.equal(service.ready, false, 'legacy v4 snapshot is discarded on load')
+    assert.equal(service.snapshot, undefined, 'no table without v4 metadata is accepted')
+    assert.ok(
+      logger.entries.some(
+        ([level, message]) =>
+          level === 'warn' && message === 'legacy v4 snapshot without v4 metadata; rebuilding',
+      ),
+      `legacy v4 warning logged: ${JSON.stringify(logger.entries)}`,
+    )
+    assert.equal(fs.existsSync(snapshotPath), false, 'legacy base deleted')
+    assert.equal(fs.existsSync(deltaPath), false, 'legacy delta deleted')
+
+    const summary = await service.ensureBuilt()
+    assert.ok(summary, 'ensureBuilt rebuilds after a discarded legacy snapshot')
+    assert.equal(service.ready, true, 'rebuild path entered')
+    assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h'], 'rebuild produces include edges')
+    assert.equal(service.snapshot.isReachable('a.c', 'inc/x.h'), true)
+    assert.ok(service.snapshot.contentHashOf('a.c'), 'rebuild records content hashes')
+
+    // 重建后的快照（带哈希）再次加载必须成功：证明该修复不会每次启动都重建
+    reloaded = await SymbolService.create(context, logger)
+    assert.equal(reloaded.ready, true, 'metadata-complete rebuilt snapshot reloads')
+    assert.deepEqual(reloaded.snapshot.includedFiles('a.c'), ['inc/x.h'], 'reloaded snapshot keeps edges')
+  } finally {
+    try {
+      service?.dispose()
+      reloaded?.dispose()
+    } finally {
+      vscode.workspace.workspaceFolders = previousFolders
+      configurationValues.indexRoots = previousRoots
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/**
+ * 保存路径的 include 权威语义与 removeFile 的缓存维护：
+ *  - 保存后没有任何 include 时，delta v2 记录必须是显式 `[]`（不是缺省字段），
+ *    「base + delta」重放与 compaction 后的 base 都必须清掉旧边；
+ *  - removeFile 必须同时清 overlay 边与「索引内路径集合」缓存中的该文件。
+ */
+async function checkIncludeRemovalAndRemoveFile() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { SymbolService } = require(path.join(dist, 'src/vscode/service.js'))
+  const { readSnapshotDeltas, snapshotDeltaBytes, snapshotDeltaPath } = require(
+    path.join(dist, 'src/core/snapshot-delta.js'),
+  )
+  const { hashContent64 } = require(path.join(dist, 'src/core/hash.js'))
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-smoke-include-removal-'))
+  const workspace = path.join(dir, 'ws')
+  const storage = path.join(dir, 'storage')
+  fs.mkdirSync(path.join(workspace, 'inc'), { recursive: true })
+  fs.mkdirSync(storage, { recursive: true })
+  const sourceFile = path.join(workspace, 'a.c')
+  fs.writeFileSync(path.join(workspace, 'inc', 'x.h'), '#ifndef X_H\n#define X_H\nint x(void);\n#endif\n', 'utf8')
+  fs.writeFileSync(sourceFile, '#include "inc/x.h"\nint alpha(void) { return 1; }\n', 'utf8')
+
+  const previousFolders = vscode.workspace.workspaceFolders
+  const previousRoots = configurationValues.indexRoots
+  vscode.workspace.workspaceFolders = [{ uri: Uri.file(workspace), name: 'removal', index: 0 }]
+  configurationValues.indexRoots = ['.']
+
+  const context = { storageUri: Uri.file(storage) }
+  const snapshotPath = path.join(storage, 'symbols.sidx')
+  const deltaPath = snapshotDeltaPath(snapshotPath)
+  const logger = capturingLogger()
+  let service
+  let replayed
+  let reloaded
+  try {
+    service = await SymbolService.create(context, logger)
+    await service.rebuild()
+    assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h'], 'build has include edges')
+
+    // 保存为「没有任何 include」：overlay 边必须立刻清空，delta v2 记录必须是显式 []
+    const noIncludeText = 'int beta(void) { return 2; }\n'
+    fs.writeFileSync(sourceFile, noIncludeText, 'utf8')
+    const future = new Date(Date.now() + 1000)
+    fs.utimesSync(sourceFile, future, future)
+    await service.updateFile(sourceFile)
+    assert.deepEqual(service.snapshot.includedFiles('a.c'), [], 'save clears overlay include edges')
+    const records = await waitForDeltaRecords(
+      deltaPath,
+      readSnapshotDeltas,
+      (list) => list.length >= 1 && list[0]?.path === 'a.c',
+      'include removal delta',
+    )
+    assert.equal(records.length, 1, 'one delta record for the include-removing save')
+    assert.equal(records[0]?.kind, 'set')
+    assert.deepEqual(records[0]?.includes, [], 'removing all includes writes explicit []')
+
+    // 不 compaction 直接重载：base 里的旧边必须被空数组（权威值）覆盖
+    replayed = await SymbolService.create(context, logger)
+    assert.equal(replayed.ready, true)
+    assert.deepEqual(replayed.snapshot.includedFiles('a.c'), [], 'explicit [] clears base edges on replay')
+    assert.equal(replayed.snapshot.isReachable('a.c', 'inc/x.h'), false)
+    assert.deepEqual(replayed.snapshot.contentHashOf('a.c'), hashContent64(noIncludeText))
+
+    // compaction 后再重载：base 里的旧边已消失
+    await service.flush()
+    assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'flush compacts the include-removal delta')
+    reloaded = await SymbolService.create(context, logger)
+    assert.equal(reloaded.ready, true)
+    assert.deepEqual(reloaded.snapshot.includedFiles('a.c'), [], 'cleared include edges survive reload')
+    assert.equal(reloaded.snapshot.isReachable('a.c', 'inc/x.h'), false)
+
+    // removeFile：缓存路径集合与 overlay 边一并清理
+    const withIncludeAgain = '#include "inc/x.h"\nint gamma(void) { return 3; }\n'
+    fs.writeFileSync(sourceFile, withIncludeAgain, 'utf8')
+    const later = new Date(Date.now() + 3000)
+    fs.utimesSync(sourceFile, later, later)
+    await reloaded.updateFile(sourceFile)
+    assert.ok(reloaded.indexedPathsCache, 'include save materializes the indexed path cache')
+    assert.equal(reloaded.indexedPathsCache.paths.has('a.c'), true)
+    assert.deepEqual(reloaded.snapshot.includedFiles('a.c'), ['inc/x.h'])
+    await reloaded.removeFile(sourceFile)
+    assert.equal(reloaded.indexedPathsCache.paths.has('a.c'), false, 'removeFile drops cached path')
+    assert.deepEqual(reloaded.snapshot.includedFiles('a.c'), [], 'removeFile drops cached include edges')
+    assert.deepEqual(reloaded.fileSymbols('a.c'), [])
+  } finally {
+    try {
+      service?.dispose()
+      replayed?.dispose()
+      reloaded?.dispose()
+    } finally {
+      vscode.workspace.workspaceFolders = previousFolders
+      configurationValues.indexRoots = previousRoots
       fs.rmSync(dir, { recursive: true, force: true })
     }
   }
@@ -1021,6 +1235,8 @@ async function main() {
   await checkBudgetUi()
   await checkAutoCompactFlush()
   await checkServiceRoundTrip()
+  await checkLegacySnapshotUpgrade()
+  await checkIncludeRemovalAndRemoveFile()
   await checkDeltaConflict()
 
   await extension.deactivate()
@@ -1039,6 +1255,8 @@ async function main() {
   console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
   console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
   console.log('  service round trip: updateFile -> delta v2 (hash/includes/condition) -> replay -> compaction -> reload OK')
+  console.log('  legacy v4 snapshot: discarded on load, rebuilt with hash/include/condition metadata OK')
+  console.log('  include removal: explicit [] in delta, base edges cleared on replay/reload, removeFile drops cached path/edges OK')
   console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')
 }
 

@@ -15,7 +15,9 @@ import * as path from 'node:path'
  * - 路径比较一律使用 posix 规则，且先把 `\` 归一为 `/`：Windows 风格的 include 文本
  *   与 `\` 分隔的 fromFile 在任意平台上语义一致；
  * - 候选经 `path.posix.normalize`（折叠 `a/../b`），并拒绝含前导 `..` 或绝对路径的候选
- *   ——索引内文件都是 workspace 相对 posix 路径，这类候选不可能命中，显式跳过更清晰。
+ *   ——索引内文件都是 workspace 相对 posix 路径，这类候选不可能命中，显式跳过更清晰；
+ * - include 文本本身是绝对路径（`/x`、`C:/x`、`\\server\x`）时直接未命中，不构造候选
+ *   ——避免「系统头文件路径」被归一成工作区同名相对路径而造出假边。
  */
 
 export interface IncludeResolutionContext {
@@ -25,9 +27,35 @@ export interface IncludeResolutionContext {
   readonly roots: readonly string[]
 }
 
+/** Windows 盘符绝对路径（`C:/x`）；posix 规则只把前导 `/` 当绝对路径。 */
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:\//
+
 /** 反斜杠归一为 `/`（Windows 风格 include / 路径与平台无关地比较）。 */
 function toPosix(value: string): string {
   return value.replace(/\\/g, '/')
+}
+
+/**
+ * include 文本本身是否绝对路径。
+ *
+ * 绝对 include（`/etc/passwd`、`C:/...`、`\\server\share`）在真实工程里表示系统/编译器
+ * 搜索路径下的文件，绝不等价于工作区里的同名相对路径。必须在构造候选**之前**拒绝：
+ * 否则 `src/a.c` 里的 `/etc/passwd` 会被 dir 候选归一成 `src/etc/passwd`，甚至在根目录
+ * 文件里归一成 `etc/passwd`，从而对工作区里恰好存在的 `etc/passwd` 造出假边。
+ */
+function isAbsoluteInclude(include: string): boolean {
+  return path.posix.isAbsolute(include) || WINDOWS_ABSOLUTE.test(include)
+}
+
+/**
+ * 归一 indexRoot，规则与 walk 的 `toRelativeRoot` 对齐（walk 无 workspaceRoot 可相对化时
+ * 的等价部分）：`\`→`/`、折叠重复 `/`、去前导 `./`、去尾部 `/`。
+ * 绝对 root 保持绝对（拼出的候选会被 isWorkspaceRelative 拒绝，不会误命中工作区路径）。
+ */
+function normalizeRoot(root: string): string {
+  let rel = toPosix(root).trim().replace(/\/{2,}/g, '/')
+  while (rel.startsWith('./')) rel = rel.slice(2)
+  return rel.replace(/\/+$/, '')
 }
 
 /** 只有 workspace 相对、非 `.`/`..`/绝对路径的候选才可能是索引内文件。 */
@@ -50,7 +78,7 @@ export function resolveIncludePath(
   context: IncludeResolutionContext,
 ): string | undefined {
   const include = toPosix(includePath).trim()
-  if (include === '') return undefined
+  if (include === '' || isAbsoluteInclude(include)) return undefined
   const from = toPosix(fromFile)
   const dir = path.posix.dirname(from)
 
@@ -69,7 +97,7 @@ export function resolveIncludePath(
   const asIs = consider(include)
   if (asIs !== undefined) return asIs
   for (const root of context.roots) {
-    const rooted = consider(path.posix.join(toPosix(root), include))
+    const rooted = consider(path.posix.join(normalizeRoot(root), include))
     if (rooted !== undefined) return rooted
   }
   return undefined

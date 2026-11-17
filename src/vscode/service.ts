@@ -669,6 +669,9 @@ export class SymbolService implements vscode.Disposable {
           }
           this.mutableValue = createMutableIndex(result.snapshot)
           this.snapshotValue = this.mutableValue
+          // 整表已替换：旧的「索引内路径集合」缓存（O(文件数) 的 Set）没有意义了，
+          // 立即释放；下一次保存按新快照身份重建。
+          this.indexedPathsCache = undefined
           // 全新索引：代际 +1，让在途 compaction 作废，并清掉 identity-keyed 查询缓存
           this.indexEpoch += 1
           clearReferenceCache()
@@ -1453,6 +1456,8 @@ export class SymbolService implements vscode.Disposable {
       this.deferredDuringCompaction = []
       this.mutableValue = next
       this.snapshotValue = next
+      // 整表换新（flat 身份变了）：旧的路径集合缓存随之释放，避免继续占着上一代 Set。
+      this.indexedPathsCache = undefined
       // 成功换表：代际 +1，任何更早捕获旧索引的 compaction 都随之作废。
       this.indexEpoch += 1
       for (const change of deferred) {
@@ -1539,6 +1544,8 @@ export class SymbolService implements vscode.Disposable {
     this.appendChain = Promise.resolve()
     this.snapshotValue = undefined
     this.mutableValue = undefined
+    // 索引已清空：路径集合缓存不再对应任何活表，直接释放。
+    this.indexedPathsCache = undefined
     this.deferredDuringCompaction = []
     this.expectedDeltaBytes = 0
     this.expectedDeltaRecords = 0
@@ -1599,6 +1606,8 @@ export class SymbolService implements vscode.Disposable {
     this.textCacheChars = 0
     this.excludeCache = undefined
     this.mutableValue = undefined
+    // 整表清空：释放「索引内路径集合」缓存（可能仍有最后一次保存留下的 O(文件数) Set）。
+    this.indexedPathsCache = undefined
     // 等在途 delta 追加落盘后再重置 chain：否则删除文件后到达的 append 会把旧记录写回，
     // 形成下次启动会被重放的「幽灵 delta」。
     await this.appendChain
@@ -1639,6 +1648,29 @@ export class SymbolService implements vscode.Disposable {
         this.logger.warn('snapshot has invalid shape; ignored')
         this.expectedDeltaBytes = await snapshotDeltaBytes(deltaPath)
         this.expectedDeltaRecords = 0
+        return
+      }
+      // 升级路径：本任务之前（2ffa868）写出的 v4 快照版本号正确，但文件记录没有内容哈希、
+      // include CSR 为空、条目无条件。接受它会让 B1/B2/B4 一直失效到每个文件被编辑或清缓存。
+      // 因此「有文件但至少一个文件没有哈希」视为旧的无效 v4：删掉 base + 无法独立重放的
+      // delta，交给 ensureBuilt() 重建。重建后的快照每个成功入表文件都带哈希
+      //（hashContent64 对空内容也非 0/0），所以下一次加载不会再命中这里，不会循环。
+      const legacyWithoutMetadata =
+        snapshot.files.length > 0 &&
+        snapshot.files.some((file) => snapshot.contentHashOf(file.path) === undefined)
+      if (legacyWithoutMetadata) {
+        this.logger.warn('legacy v4 snapshot without v4 metadata; rebuilding')
+        for (const target of [snapshotPath, deltaPath]) {
+          try {
+            await fs.promises.unlink(target)
+          } catch {
+            // 文件可能已不存在：删除失败不影响重建
+          }
+        }
+        this.expectedDeltaBytes = 0
+        this.expectedDeltaRecords = 0
+        this.deltaConflict = false
+        this.deltaWarningValue = undefined
         return
       }
       const deltaResult = await readSnapshotDeltasDetailed(deltaPath)
