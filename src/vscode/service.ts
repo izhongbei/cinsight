@@ -95,6 +95,21 @@ const MAX_TRACKED_CACHE_FILES = 256
  */
 const CONCURRENCY_DOWNGRADE = { files: 80_000, concurrency: 2 } as const
 
+/**
+ * stat 单个文件的字节数。
+ * 诊断只读路径：文件不存在（ENOENT）/不可访问时返回 0 且不写日志，避免打开报告刷警告。
+ */
+async function statBytesOrZero(filePath: string | undefined): Promise<number> {
+  if (!filePath) {
+    return 0
+  }
+  try {
+    return (await fs.promises.stat(filePath)).size
+  } catch {
+    return 0
+  }
+}
+
 export class SymbolService implements vscode.Disposable {
   /** 索引首次构建完成 / 增量更新 / 清缓存后触发（树、状态栏、调用层次依赖它刷新）。 */
   readonly onDidChange: vscode.Event<void>
@@ -230,6 +245,16 @@ export class SymbolService implements vscode.Disposable {
   /** 当前快照 delta 文件字节数（诊断用，不触发写盘）。 */
   async deltaBytes(): Promise<number> {
     return this.snapshotPathValue ? snapshotDeltaBytes(snapshotDeltaPath(this.snapshotPathValue)) : 0
+  }
+
+  /** 快照 base 文件（symbols.sidx）字节数；文件缺失或未配置存储路径时为 0。 */
+  async snapshotBytes(): Promise<number> {
+    return statBytesOrZero(this.snapshotPathValue)
+  }
+
+  /** 引用索引 base 文件（symbols.names）字节数；文件缺失或未配置存储路径时为 0。 */
+  async nameIndexBytes(): Promise<number> {
+    return statBytesOrZero(this.nameIndexPathValue)
   }
 
   /** 按符号类型统计条目数（诊断用；仅遍历一次列式存储）。 */

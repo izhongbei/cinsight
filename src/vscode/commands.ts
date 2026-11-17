@@ -480,25 +480,34 @@ async function showIndexDiagnostics(service: SymbolService): Promise<void> {
   const budgetReport =
     service.budgetReport ??
     evaluateBudget({ symbols: service.entryCount, files: service.fileCount, budget: DEFAULT_INDEX_BUDGET })
+  // 存储字节数一律 stat 磁盘上的 base 文件：重启/compaction 后 lastSummary 可能不存在。
+  const [snapshotBytes, deltaBytes, nameIndexBytes] = await Promise.all([
+    service.snapshotBytes(),
+    service.deltaBytes(),
+    service.nameIndexBytes(),
+  ])
+  const memory = process.memoryUsage()
   const content = renderDiagnosticsMarkdown({
     extensionVersion: extensionVersion(),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     roots: service.configuredRoots,
     snapshotPath: service.snapshotPath,
-    snapshotBytes: service.lastSummary?.snapshotBytes ?? 0,
-    deltaBytes: await service.deltaBytes(),
+    snapshotBytes,
+    deltaBytes,
     nameIndexPath: service.nameIndexPath,
-    nameIndexBytes: service.lastSummary?.nameIndexBytes ?? 0,
+    nameIndexBytes,
     nameIndexLoaded: service.nameIndexLoaded,
     entryCount: service.entryCount,
     fileCount: service.fileCount,
     builtAt: service.builtAt,
+    // 未构建时 rootsChanged() 恒为 true，只在有索引时提示，避免误报。
+    rootsChanged: service.ready && service.rootsChanged(),
     pendingChanges: service.pendingChanges,
     kindCounts: service.kindCounts(),
     lastBuild: service.lastSummary,
     lastError: service.lastError,
-    heapUsedBytes: process.memoryUsage().heapUsed,
-    rssBytes: process.memoryUsage().rss,
+    heapUsedBytes: memory.heapUsed,
+    rssBytes: memory.rss,
     budget: budgetReport,
   })
   const document = await vscode.workspace.openTextDocument({ content, language: 'markdown' })
