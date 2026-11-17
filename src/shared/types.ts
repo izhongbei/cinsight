@@ -47,8 +47,8 @@ export interface SymbolTable {
   findByName(name: string): SymbolEntry[]
   entriesInFile(file: string): SymbolEntry[]
   forEachEntry(callback: (entry: SymbolEntry) => void): void
-  /** 遍历去重后的名字及对应条目区间（搜索用，避免逐条 materialize） */
-  forEachName(callback: (name: string, start: number, end: number) => void): void
+  /** 遍历去重后的名字（升序）；条目通过 findByName 获取。 */
+  forEachName(callback: (name: string) => void): void
   /** 测试/兼容用：物化全部条目（生产路径不应调用） */
   toArray(): SymbolEntry[]
 }

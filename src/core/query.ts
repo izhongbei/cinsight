@@ -1,5 +1,5 @@
 import type { SymbolEntry, SymbolKind, SymbolTable } from '../shared/types'
-import { SYMBOL_KIND_ORDER } from '../shared/types'
+import { compareStrings, compareSymbolEntries } from './symbol-order'
 
 /**
  * 符号搜索 / 按名查找 / 按文件查询。
@@ -27,20 +27,20 @@ export function searchSymbols(
   const matches: Array<{ entry: SymbolEntry; weight: number }> = []
   const candidateCap = limit * 40
 
-  table.forEachName((name, start, end) => {
+  table.forEachName((name) => {
     if (matches.length >= candidateCap) return
     const weight = nameWeight(name, lowerQuery)
     if (weight < 0) return
-    for (let index = start; index < end && matches.length < candidateCap; index++) {
-      const entry = table.entryAt(index)
+    for (const entry of table.findByName(name)) {
       if (kinds && !kinds.has(entry.kind)) continue
       matches.push({ entry, weight })
+      if (matches.length >= candidateCap) break
     }
   })
 
   matches.sort((a, b) => {
     if (a.weight !== b.weight) return a.weight - b.weight
-    const kindCompare = compareEntries(a.entry, b.entry)
+    const kindCompare = compareSymbolEntries(a.entry, b.entry)
     if (kindCompare !== 0) return kindCompare
     return compareStrings(a.entry.name, b.entry.name)
   })
@@ -67,27 +67,10 @@ function isSubwordMatch(name: string, lowerName: string, lowerQuery: string): bo
 
 export function findByName(table: SymbolTable, name: string): SymbolEntry[] {
   if (name.length === 0) return []
-  return table.findByName(name).sort(compareEntries)
+  return table.findByName(name).sort(compareSymbolEntries)
 }
 
 export function entriesInFile(table: SymbolTable, file: string): SymbolEntry[] {
   if (file.length === 0) return []
   return table.entriesInFile(file)
-}
-
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0
-}
-
-/** 种类顺序 -> 文件 -> 行 -> 列 -> 名字（与 v1 行为一致）。 */
-function compareEntries(a: SymbolEntry, b: SymbolEntry): number {
-  const kindOrder = SYMBOL_KIND_ORDER[a.kind] - SYMBOL_KIND_ORDER[b.kind]
-  if (kindOrder !== 0) return kindOrder
-  if (a.name.length !== b.name.length) return a.name.length - b.name.length
-  if (a.name !== b.name) return compareStrings(a.name, b.name)
-  if (a.file !== b.file) return compareStrings(a.file, b.file)
-  if (a.line !== b.line) return a.line - b.line
-  if (a.column !== b.column) return a.column - b.column
-  if (a.endLine !== b.endLine) return a.endLine - b.endLine
-  return compareStrings(a.name, b.name)
 }

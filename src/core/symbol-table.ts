@@ -141,13 +141,13 @@ class SymbolTableImpl implements SymbolTable {
     for (let index = 0; index < this.entryCount; index++) callback(this.entryAt(index))
   }
 
-  forEachName(callback: (name: string, start: number, end: number) => void): void {
+  forEachName(callback: (name: string) => void): void {
     const columns = this.columns
     for (let nameId = 0; nameId < columns.names.length; nameId++) {
       const start = columns.nameOffsets[nameId]!
       const end = columns.nameOffsets[nameId + 1]!
       if (start === end) continue
-      callback(columns.names[nameId]!, start, end)
+      callback(columns.names[nameId]!)
     }
   }
 
