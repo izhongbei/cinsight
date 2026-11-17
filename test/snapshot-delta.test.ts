@@ -117,6 +117,53 @@ test('snapshot delta: compact writes the base and removes the delta', async () =
   }
 })
 
+test('snapshot delta: compaction keeps a delta whose size changed since flatten', async () => {
+  const dir = await tempDir()
+  try {
+    const basePath = join(dir, 'symbols.sidx')
+    const table = createSymbolTable(
+      ['root'],
+      [{ path: 'a.c', mtimeMs: 1, size: 1 }],
+      [entry('alpha', 'a.c', 1)],
+      1,
+      SNAPSHOT_VERSION,
+    )
+    const deltaPath = snapshotDeltaPath(basePath)
+    await appendSnapshotDelta(deltaPath, {
+      kind: 'set',
+      path: 'b.c',
+      mtimeMs: 2,
+      size: 2,
+      entries: [entry('beta', 'b.c', 3)],
+    })
+    const expected = await snapshotDeltaBytes(deltaPath)
+    assert.ok(expected > 0)
+
+    // 另一个窗口在 flatten 之后追加了记录：大小与预期不符，delta 必须保留。
+    const conflicted = await compactSnapshot(basePath, table, { expectedDeltaBytes: expected + 1 })
+    assert.ok(conflicted.baseBytes > 0)
+    assert.equal(conflicted.deltaTruncated, false)
+    assert.equal(conflicted.deltaKeptConflict, true)
+    assert.equal(await snapshotDeltaBytes(deltaPath), expected, 'changed delta survives the compaction')
+    assert.deepEqual(
+      (await readSnapshotDeltas(deltaPath)).map((record) => record.kind),
+      ['set'],
+      'kept delta is still decodable',
+    )
+
+    // 大小与预期一致：正常删除 delta，base 仍是本次写入的整表。
+    const clean = await compactSnapshot(basePath, table, { expectedDeltaBytes: expected })
+    assert.equal(clean.deltaTruncated, true)
+    assert.equal(clean.deltaKeptConflict, false)
+    assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'matching delta is removed')
+    const loaded = await loadSnapshot(basePath)
+    assert.ok(loaded)
+    assert.equal(loaded!.entryCount, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('snapshot delta: torn record tail is truncated before append so later records stay decodable', async () => {
   const dir = await tempDir()
   try {

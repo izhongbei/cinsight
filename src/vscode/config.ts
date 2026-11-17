@@ -44,6 +44,7 @@ export interface SiConfig {
    * 自动 compaction：空闲 / 累计变更较多 / 关闭时把 delta 合并回 base。
    * 关闭后仍逐次追加 delta（不丢数据），auto 合并被推迟；但到达硬安全上限
    * （5000 个 overlay 文件变更或 32 MB delta）时仍会强制合并一次，避免查询变慢。
+   * 共享存储的符号 delta 冲突期间自动 compaction（含该上限）停用，需重载恢复。
    * 显式重建索引不受影响。
    */
   readonly autoCompact: boolean

@@ -1342,11 +1342,29 @@ export class SymbolService implements vscode.Disposable {
         return true
       }
       const started = Date.now()
-      const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
-      // delta 已被合并进新 base 并删除：本进程的预期归零；后续 deferred 追加会重新累计。
-      this.expectedDeltaBytes = 0
-      this.expectedDeltaRecords = 0
-      this.deltaConflict = false
+      const { baseBytes, deltaTruncated, deltaKeptConflict } = await compactSnapshot(
+        snapshotPath,
+        flat,
+        { expectedDeltaBytes: this.expectedDeltaBytes },
+      )
+      if (deltaKeptConflict) {
+        // 写 base 与删除 delta 之间另一个窗口追加了记录：delta 必须保留（下次加载会重放）。
+        // 预期状态保持原样（不归零），并禁用本进程后续自动 compaction，直到重载。
+        this.deltaConflict = true
+        const actualDeltaBytes = await snapshotDeltaBytes(deltaPath)
+        this.logger.warn(
+          `snapshot delta changed during compaction (${actualDeltaBytes} B, expected ` +
+            `${this.expectedDeltaBytes} B); keeping it and disabling automatic compaction ` +
+            'until reload',
+        )
+      } else {
+        // delta 已被合并进新 base 并删除：本进程的预期归零，恢复警告随损坏 delta 一起消失；
+        // 后续 deferred 追加会重新累计。
+        this.expectedDeltaBytes = 0
+        this.expectedDeltaRecords = 0
+        this.deltaConflict = false
+        this.deltaWarningValue = undefined
+      }
       // 写盘期间整表被替换（rebuild / clearCache / 再次 load）：放弃 swap，保留新索引。
       if (stale()) {
         if (this.mutableValue === undefined) {
@@ -1552,13 +1570,22 @@ export class SymbolService implements vscode.Disposable {
       }
       const deltaResult = await readSnapshotDeltasDetailed(deltaPath)
       // 记录本进程看到的 delta 状态：之后 compaction 写 base 前用它判断文件是否被另一个窗口改过。
-      this.expectedDeltaBytes = await snapshotDeltaBytes(deltaPath)
+      const deltaBytesOnDisk = await snapshotDeltaBytes(deltaPath)
+      this.expectedDeltaBytes = deltaBytesOnDisk
       this.expectedDeltaRecords = deltaResult.records.length
       this.deltaConflict = false
       if (deltaResult.error || deltaResult.droppedBytes > 0) {
+        // 头部非法（SIDD/版本不符）时整个文件都不可解码：droppedBytes 等于文件大小且没有
+        // 任何有效记录。这与「尾部写到一半被截断」是两种不同的损坏，恢复提示要区分开。
+        const corruptedWholeFile =
+          deltaResult.records.length === 0 &&
+          deltaResult.droppedBytes === deltaBytesOnDisk &&
+          deltaBytesOnDisk > 0
         const detail = deltaResult.error
           ? `cannot read snapshot delta: ${deltaResult.error}`
-          : `dropped ${deltaResult.droppedBytes} bytes of an incomplete snapshot delta tail`
+          : corruptedWholeFile
+            ? `ignored a corrupted snapshot delta (${deltaResult.droppedBytes} bytes, no valid records)`
+            : `dropped ${deltaResult.droppedBytes} bytes of an incomplete snapshot delta tail`
         this.deltaWarningValue = detail
         this.logger.warn(`snapshot delta recovery: ${detail}`)
       } else {

@@ -435,14 +435,44 @@ export async function removeSnapshotDelta(deltaPath: string): Promise<void> {
   await unlink(deltaPath).catch(() => undefined)
 }
 
+export interface SnapshotCompactionResult {
+  readonly baseBytes: number
+  /** 合并前 delta 确实存在（且已被删除）。 */
+  readonly deltaTruncated: boolean
+  /**
+   * true 表示 delta 的大小与本进程预期不符（另一个窗口在 flatten/写 base 期间追加过记录），
+   * 因此 delta 被保留、未删除；调用方必须保留预期状态而不是归零。
+   */
+  readonly deltaKeptConflict: boolean
+}
+
+export interface CompactSnapshotOptions {
+  /**
+   * 本进程预期的 delta 字节数。设置后只有在删除前重新 stat 到的大小仍等于该值时才会删除
+   * delta；否则保留 delta 并返回 `deltaKeptConflict: true`（不删另一个窗口尚未重放的记录）。
+   */
+  readonly expectedDeltaBytes?: number
+}
+
 /** 把当前表写成新 base，并删除 delta（原子写：store.saveSnapshot 内部 .tmp+rename）。 */
 export async function compactSnapshot(
   basePath: string,
   table: SymbolTable,
-): Promise<{ baseBytes: number; deltaTruncated: boolean }> {
+  options: CompactSnapshotOptions = {},
+): Promise<SnapshotCompactionResult> {
   const baseBytes = await saveSnapshot(basePath, table)
   const deltaPath = snapshotDeltaPath(basePath)
-  const had = (await snapshotDeltaBytes(deltaPath)) > 0
+  // 写 base 可能耗时较长：删除 delta 前必须重新 stat，确认文件仍是本进程 flatten 时看到的
+  // 那个大小，否则另一个窗口刚追加的记录会被这次 unlink 静默吞掉。
+  const deltaBytes = await snapshotDeltaBytes(deltaPath)
+  if (options.expectedDeltaBytes !== undefined && deltaBytes !== options.expectedDeltaBytes) {
+    return { baseBytes, deltaTruncated: false, deltaKeptConflict: true }
+  }
+  if (deltaBytes === 0) {
+    // delta 已不存在 / 为空：只需清掉 append 尾部缓存，不算截断。
+    await removeSnapshotDelta(deltaPath)
+    return { baseBytes, deltaTruncated: false, deltaKeptConflict: false }
+  }
   await removeSnapshotDelta(deltaPath)
-  return { baseBytes, deltaTruncated: had }
+  return { baseBytes, deltaTruncated: true, deltaKeptConflict: false }
 }

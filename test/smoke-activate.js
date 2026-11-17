@@ -820,6 +820,25 @@ async function checkServiceRoundTrip() {
     assert.equal(reloaded.ready, true, 'reloaded service loads the snapshot')
     assert.deepEqual(reloaded.fileSymbols('a.c').map((e) => e.name), ['beta'], 'symbol survives reload')
     assert.equal(reloaded.deltaWarning, undefined, 'clean delta has no recovery warning')
+
+    // 坏 magic：整个 delta 不可解码 -> 提示用 corrupted 措辞；成功 compaction 后提示清除。
+    fs.writeFileSync(deltaPath, Buffer.alloc(32, 0xab))
+    const corrupted = await SymbolService.create(context, logger)
+    try {
+      assert.equal(corrupted.ready, true, 'base still loads with a corrupted delta')
+      assert.ok(
+        /ignored a corrupted snapshot delta/.test(corrupted.deltaWarning ?? ''),
+        `corrupted whole-delta warning: ${corrupted.deltaWarning}`,
+      )
+      assert.ok(
+        !/incomplete snapshot delta tail/.test(corrupted.deltaWarning ?? ''),
+        'corrupted whole-file delta is not reported as a torn tail',
+      )
+      await corrupted.flush()
+      assert.equal(corrupted.deltaWarning, undefined, 'successful compaction clears the recovery warning')
+    } finally {
+      corrupted.dispose()
+    }
   } finally {
     try {
       service?.dispose()
