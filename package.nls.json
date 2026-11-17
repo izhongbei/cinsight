@@ -22,5 +22,6 @@
   "config.followSymlinks": "Follow symbolic links while walking the indexed directories.",
   "viewContainer.title": "Code Insight",
   "view.symbols.name": "Symbols",
-  "viewWelcome": "No index configured yet.\n\n[Configure Index Roots](command:si.configureRoots)\n\nPick the C/C++ directories to index. Source Insight C builds a compact function index in the background, then enables go to definition (F12), find references (Shift+F12), call hierarchy, symbol search (Ctrl+T) and this symbol tree.\n\n[Rebuild Index](command:si.rebuildIndex)"
+  "viewWelcome": "No index configured yet.\n\n[Configure Index Roots](command:si.configureRoots)\n\nPick the C/C++ directories to index. Source Insight C builds a compact function index in the background, then enables go to definition (F12), find references (Shift+F12), call hierarchy, symbol search (Ctrl+T) and this symbol tree.\n\n[Rebuild Index](command:si.rebuildIndex)",
+  "command.showCallGraph.title": "Show Call Graph"
 }

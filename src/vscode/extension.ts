@@ -25,6 +25,7 @@ import { createStatusBar } from './status'
 import { executeCommand, showInformationMessage } from './util'
 import { SymbolsTreeProvider, type SiTreeNode } from './views/symbols-tree'
 import { createFileWatcher } from './watcher'
+import { CallGraphPanel } from './views/call-graph-panel'
 
 const VIEW_ID = 'si.symbols'
 
@@ -180,6 +181,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export async function deactivate(): Promise<void> {
+  try {
+    CallGraphPanel.disposeCurrent()
+  } catch {
+    // ignore
+  }
   const service = activeService
   activeService = undefined
   // 先 flush 防抖中的增量快照，再释放 service（dispose 之后不再写盘）

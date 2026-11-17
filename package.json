@@ -2,7 +2,7 @@
   "name": "code-insight",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "publisher": "cinsight",
   "license": "MIT",
   "engines": {
@@ -50,6 +50,11 @@
       {
         "command": "si.gotoDefinition",
         "title": "%command.gotoDefinition.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.showCallGraph",
+        "title": "%command.showCallGraph.title%",
         "category": "%command.category%"
       },
       {
@@ -162,6 +167,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "si.showCallGraph",
+          "when": "view == si.symbols",
+          "group": "navigation@0"
+        },
+        {
           "command": "si.searchSymbol",
           "when": "view == si.symbols",
           "group": "navigation@1"
@@ -192,6 +202,11 @@
           "command": "si.showCallers",
           "when": "editorLangId == c || editorLangId == cpp",
           "group": "navigation@12"
+        },
+        {
+          "command": "si.showCallGraph",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@14"
         },
         {
           "command": "si.showCallees",

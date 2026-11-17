@@ -17,6 +17,7 @@ import * as vscode from 'vscode'
 
 import { suppressRebuildPrompt } from './config'
 import { sourceFileOf } from './providers/definition'
+import { showCallGraph } from './views/call-graph-panel'
 import { rankDefinitions } from './rank-definitions'
 import { showCallerQuickPick, showReferenceQuickPick, showSymbolEntriesQuickPick, showSymbolQuickPick } from './quickpick'
 import type { SymbolService } from './service'
@@ -35,6 +36,7 @@ export const COMMAND_IDS = [
   'si.gotoDefinition',
   'si.findReferences',
   'si.showCallers',
+  'si.showCallGraph',
   'si.showCallees',
   'si.openSymbolAt',
   'si.clearCache',
@@ -73,6 +75,9 @@ export function registerCommands(
   add('si.gotoDefinition', async () => gotoDefinition(service))
   add('si.findReferences', async () => findReferences(service))
   add('si.showCallers', async () => showCallers(service))
+  add('si.showCallGraph', async () => {
+    await showCallGraph(service)
+  })
   add('si.showCallees', async () => showCallees(service))
   add('si.openSymbolAt', async (...args: unknown[]) => openSymbolAt(service, ...args))
   add('si.clearCache', async () => clearCache(service))
