@@ -15,8 +15,17 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 
 import { callersOf, calleesOf } from '../core/callgraph'
-import { buildIndex, createSnapshot } from '../core/indexer'
-import { removeFileFromTable, upsertFileInTable } from '../core/symbol-table'
+import { buildIndex } from '../core/indexer'
+import { createMutableIndex, createMutableIndexFromDeltas, type MutableSymbolIndex } from '../core/overlay-index'
+import {
+  appendSnapshotDelta,
+  compactSnapshot,
+  flushSnapshotDeltaAppends,
+  readSnapshotDeltas,
+  removeSnapshotDelta,
+  snapshotDeltaBytes,
+  snapshotDeltaPath,
+} from '../core/snapshot-delta'
 import { entriesInFile, findByName, searchSymbols } from '../core/query'
 import { findReferences } from '../core/references'
 import { readSignature } from '../core/signature'
@@ -32,7 +41,7 @@ import {
   removeNameIndexDelta,
   upsertFileIndex,
 } from '../core/nameindex'
-import { loadSnapshot, saveSnapshot } from '../core/store'
+import { loadSnapshot } from '../core/store'
 import { compileExclude } from '../core/exclude'
 import {
   SNAPSHOT_VERSION,
@@ -65,7 +74,11 @@ const SNAPSHOT_FILE_NAME = 'symbols.sidx'
 const NAME_INDEX_FILE_NAME = 'symbols.names'
 /** delta 超过该大小时合并回 base（写一次 base、清空 delta） */
 const NAME_INDEX_COMPACT_BYTES = 4 * 1024 * 1024
-const SAVE_DEBOUNCE_MS = 3000
+/** 符号表 delta 超过 4MB 或累计 500 个文件变更时 compaction */
+const SNAPSHOT_COMPACT_BYTES = 4 * 1024 * 1024
+const SNAPSHOT_COMPACT_CHANGES = 500
+/** 空闲 60s 后 compaction（unref，不阻止退出） */
+const SNAPSHOT_IDLE_COMPACT_MS = 60_000
 const SIGNATURE_CACHE_CHAR_BUDGET = 8 * 1024 * 1024
 const MAX_TRACKED_CACHE_FILES = 256
 
@@ -84,9 +97,21 @@ export class SymbolService implements vscode.Disposable {
   private readonly nameIndexPathValue: string | undefined
 
   private snapshotValue: SymbolTable | undefined
+  /** 当前快照的 mutable 视图（base + overlay），增量更新只改它。 */
+  private mutableValue: MutableSymbolIndex | undefined
+  /** 串行化 delta 追加（compaction 前需要 await 它） */
+  private appendChain: Promise<void> = Promise.resolve()
+  /** compaction 进行中：新变更先入 deferred，写完 base 后回放，避免被 compaction 吞掉 */
+  private compacting = false
+  private deferredDuringCompaction: Array<{
+    readonly path: string
+    readonly file: FileRecord
+    readonly entries: readonly SymbolEntry[]
+    readonly remove: boolean
+  }> = []
   private nameIndexValue: NameIndexData | undefined
   /** 引用索引是否已加载进内存（惰性加载：只在首次查引用/调用层次时读盘） */
-  private nameIndexLoaded = false
+  private nameIndexLoadedValue = false
   private nameIndexLoadPromise: Promise<NameIndexData | undefined> | undefined
   private lastSummaryValue: BuildSummary | undefined
   private lastErrorValue: string | undefined
@@ -94,8 +119,7 @@ export class SymbolService implements vscode.Disposable {
   private buildingValue = false
   private disposed = false
   private generation = 0
-  private saveTimer: ReturnType<typeof setTimeout> | undefined
-  private pendingSave = false
+  private compactTimer: ReturnType<typeof setTimeout> | undefined
   private clearRequested = false
   private excludeCache: { readonly key: string; readonly matches: (relPath: string) => boolean } | undefined
 
@@ -496,10 +520,17 @@ export class SymbolService implements vscode.Disposable {
             // 用户取消：保留旧快照（如果存在），不提交半成品
             return undefined
           }
-          this.snapshotValue = result.snapshot
+          this.mutableValue = createMutableIndex(result.snapshot)
+          this.snapshotValue = this.mutableValue
+          this.appendChain = Promise.resolve()
+          this.deferredDuringCompaction = []
+          this.compacting = false
+          if (this.snapshotPathValue) {
+            await removeSnapshotDelta(snapshotDeltaPath(this.snapshotPathValue))
+          }
           // 构建已经写出新的 base；丢弃内存副本，下次查引用时惰性加载
           this.nameIndexValue = undefined
-          this.nameIndexLoaded = false
+          this.nameIndexLoadedValue = false
           this.nameIndexLoadPromise = undefined
           if (this.nameIndexPathValue) {
             await removeNameIndexDelta(nameIndexDeltaPath(this.nameIndexPathValue))
@@ -507,17 +538,7 @@ export class SymbolService implements vscode.Disposable {
           this.lastSummaryValue = result.summary
           this.textCache.clear()
           this.textCacheChars = 0
-          // buildIndex 约定：snapshotPath 提供时自己写盘并回填 snapshotBytes；
-          // 若 A 的实现尚未落地，这里兜底写盘，保证快照不丢。
-          if (this.snapshotPathValue && result.summary.snapshotBytes === 0) {
-            try {
-              const bytes = await saveSnapshot(this.snapshotPathValue, result.snapshot)
-              this.lastSummaryValue = { ...result.summary, snapshotBytes: bytes }
-            } catch (error) {
-              this.logger.warn('snapshot fallback save failed', error)
-            }
-          }
-          return this.lastSummaryValue ?? result.summary
+          return this.lastSummaryValue
         } finally {
           for (const disposable of tokenDisposables) {
             try {
@@ -699,25 +720,60 @@ export class SymbolService implements vscode.Disposable {
     size: number,
     remove = false,
   ): void {
-    const snapshot = this.snapshotValue
-    if (!snapshot) {
+    const index = this.mutableValue
+    if (!index) {
+      this.snapshotValue = undefined
       return
     }
-    this.snapshotValue = remove
-      ? removeFileFromTable(snapshot, relPath)
-      : upsertFileInTable(snapshot, { path: relPath, mtimeMs, size }, entries)
+    if (remove) {
+      if (!index.removeFile(relPath)) return
+    } else {
+      index.applyFile({ path: relPath, mtimeMs, size }, entries)
+    }
+    this.snapshotValue = index
     this.lastSummaryValue = undefined
     this.changeEmitter.fire()
-    this.scheduleSave()
+
+    const change = {
+      path: relPath,
+      file: { path: relPath, mtimeMs, size },
+      entries,
+      remove,
+    }
+    if (this.compacting) {
+      this.deferredDuringCompaction.push(change)
+    } else {
+      this.enqueueAppend(change)
+    }
+    void this.scheduleCompaction()
   }
 
-  /** core.createSnapshot 尚未就绪时的本地兜底（保证增量更新不丢失顺序语义）。 */
-  private snapshotSafe(
-    roots: readonly string[],
-    files: readonly FileRecord[],
-    entries: readonly SymbolEntry[],
-  ): SymbolTable {
-    return createSnapshot(roots, files, entries)
+  /** 追加 delta 串行化：失败只记日志，chain 永不 reject，保证后续 append 可继续。 */
+  private enqueueAppend(change: {
+    readonly path: string
+    readonly file: FileRecord
+    readonly entries: readonly SymbolEntry[]
+    readonly remove: boolean
+  }): void {
+    this.appendChain = this.appendChain
+      .then(() => this.appendDelta(change))
+      .catch((error) => this.logger.warn('append snapshot delta failed', error))
+  }
+
+  private async appendDelta(change: {
+    readonly path: string
+    readonly file: FileRecord
+    readonly entries: readonly SymbolEntry[]
+    readonly remove: boolean
+  }): Promise<void> {
+    const snapshotPath = this.snapshotPathValue
+    if (!snapshotPath) return
+    await appendSnapshotDelta(
+      snapshotDeltaPath(snapshotPath),
+      change.remove
+        ? { kind: 'remove', path: change.path }
+        : { kind: 'set', path: change.path, mtimeMs: change.file.mtimeMs, size: change.file.size, entries: change.entries },
+    )
   }
 
   /**
@@ -729,7 +785,7 @@ export class SymbolService implements vscode.Disposable {
     if (!nameIndexPath) {
       return undefined
     }
-    if (this.nameIndexLoaded) {
+    if (this.nameIndexLoadedValue) {
       return this.nameIndexValue
     }
     if (!this.nameIndexLoadPromise) {
@@ -738,7 +794,7 @@ export class SymbolService implements vscode.Disposable {
           const started = Date.now()
           const loaded = await loadNameIndexWithDelta(nameIndexPath)
           this.nameIndexValue = loaded
-          this.nameIndexLoaded = true
+          this.nameIndexLoadedValue = true
           this.logger.info(
             `reference index loaded lazily in ${Date.now() - started}ms` +
               (loaded ? ` (${loaded.filePaths.length} files)` : ' (missing)'),
@@ -766,7 +822,7 @@ export class SymbolService implements vscode.Disposable {
     }
     try {
       const hashes = collectIdentifierHashes(text)
-      if (this.nameIndexLoaded && this.nameIndexValue) {
+      if (this.nameIndexLoadedValue && this.nameIndexValue) {
         this.nameIndexValue = upsertFileIndex(this.nameIndexValue, relPath, hashes)
       }
       await appendNameIndexDelta(nameIndexDeltaPath(nameIndexPath), {
@@ -786,7 +842,7 @@ export class SymbolService implements vscode.Disposable {
       return
     }
     try {
-      if (this.nameIndexLoaded && this.nameIndexValue) {
+      if (this.nameIndexLoadedValue && this.nameIndexValue) {
         this.nameIndexValue = removeFileIndex(this.nameIndexValue, relPath)
       }
       await appendNameIndexDelta(nameIndexDeltaPath(nameIndexPath), {
@@ -834,7 +890,7 @@ export class SymbolService implements vscode.Disposable {
       return
     }
     this.nameIndexValue = undefined
-    this.nameIndexLoaded = false
+    this.nameIndexLoadedValue = false
     this.nameIndexLoadPromise = undefined
     for (const target of [nameIndexPath, nameIndexDeltaPath(nameIndexPath)]) {
       try {
@@ -848,75 +904,122 @@ export class SymbolService implements vscode.Disposable {
     }
   }
 
-  private scheduleSave(): void {
-    if (!this.snapshotPathValue || this.disposed) {
-      return
-    }
-    this.pendingSave = true
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-    }
-    this.saveTimer = setTimeout(() => {
-      this.saveTimer = undefined
-      void this.saveNow()
-    }, SAVE_DEBOUNCE_MS)
+  /** 阈值/空闲触发 compaction（写 base + 清 delta），不再每次保存全量写盘。 */
+  private async scheduleCompaction(): Promise<void> {
+    const snapshotPath = this.snapshotPathValue
+    if (!snapshotPath || this.disposed || this.compacting) return
     try {
-      this.saveTimer.unref?.()
+      const index = this.mutableValue
+      if (!index) return
+      const deltaBytes = await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))
+      const shouldCompact =
+        deltaBytes >= SNAPSHOT_COMPACT_BYTES || index.pendingChanges >= SNAPSHOT_COMPACT_CHANGES
+      if (!shouldCompact) {
+        this.armIdleCompaction()
+        return
+      }
+      await this.compactNow()
+    } catch (error) {
+      this.logger.warn('snapshot compaction scheduling failed', error)
+    }
+  }
+
+  private armIdleCompaction(): void {
+    if (this.compactTimer) clearTimeout(this.compactTimer)
+    if (!this.snapshotPathValue) return
+    this.compactTimer = setTimeout(() => {
+      this.compactTimer = undefined
+      void this.compactNow()
+    }, SNAPSHOT_IDLE_COMPACT_MS)
+    try {
+      this.compactTimer.unref?.()
     } catch {
       // ignore
     }
   }
 
-  private async saveNow(): Promise<void> {
-    if (this.disposed) {
-      return
-    }
-    await this.persistNow()
-  }
-
-  /** 实际落盘（dispose 时也允许尽力而为地写一次，因此不检查 disposed）。 */
-  private async persistNow(): Promise<void> {
-    const snapshot = this.snapshotValue
+  /**
+   * 实际 compaction。顺序很关键（否则会丢记录）：
+   *   1. 等所有在途 delta 追加落盘（appendChain + flushSnapshotDeltaAppends）
+   *   2. 进入 compacting 状态：新变更先入 deferred，不写 delta
+   *   3. flatten 当前 overlay（包含此前全部变更）→ 原子写 base（saveSnapshot）→ 清 delta
+   *   4. 换成基于新 base 的 mutable index，回放 deferred（内存 + delta），退出 compacting
+   */
+  private async compactNow(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
-    if (!snapshot || !snapshotPath) {
-      this.pendingSave = false
-      return
-    }
+    const index = this.mutableValue
+    if (!snapshotPath || !index || this.compacting) return
+    this.compacting = true
     try {
-      await this.ensureStorageDir()
-      const bytes = await saveSnapshot(snapshotPath, snapshot)
-      this.pendingSave = false
-      this.logger.info(`snapshot saved: ${bytes} bytes`)
+      await this.appendChain
+      await flushSnapshotDeltaAppends()
+      if (index.pendingChanges === 0 && (await snapshotDeltaBytes(snapshotDeltaPath(snapshotPath))) === 0) {
+        return
+      }
+      const flat = index.flatten()
+      const started = Date.now()
+      const { baseBytes, deltaTruncated } = await compactSnapshot(snapshotPath, flat)
+      this.logger.info(
+        `snapshot compacted: ${baseBytes} bytes in ${Date.now() - started}ms` +
+          (deltaTruncated ? ' (delta cleared)' : ''),
+      )
+
+      const next = createMutableIndex(flat)
+      const deferred = this.deferredDuringCompaction
+      this.deferredDuringCompaction = []
+      this.mutableValue = next
+      this.snapshotValue = next
+      for (const change of deferred) {
+        if (change.remove) next.removeFile(change.path)
+        else next.applyFile(change.file, change.entries)
+        this.enqueueAppend(change)
+      }
+      await this.appendChain
+      // 回放期间 await 让出事件循环，可能又有变更落入新的 deferred。这里再排空一次：
+      // 否则这些变更只改了内存、delta 没写盘，崩溃后会丢失。
+      while (this.deferredDuringCompaction.length > 0) {
+        const late = this.deferredDuringCompaction
+        this.deferredDuringCompaction = []
+        for (const change of late) {
+          if (change.remove) next.removeFile(change.path)
+          else next.applyFile(change.file, change.entries)
+          this.enqueueAppend(change)
+        }
+        await this.appendChain
+      }
     } catch (error) {
-      this.logger.warn('save snapshot failed', error)
+      this.logger.warn('snapshot compaction failed', error)
+    } finally {
+      this.compacting = false
     }
   }
 
-  /** 删除快照文件（清缓存 / 构建期间清缓存的竞态兜底）。 */
+  /** 删除快照文件与 delta（清缓存 / 构建期间清缓存的竞态兜底）。 */
   private async removeSnapshotFile(): Promise<void> {
     const snapshotPath = this.snapshotPathValue
-    if (!snapshotPath) {
-      return
-    }
-    try {
-      await fs.promises.unlink(snapshotPath)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code
-      if (code !== 'ENOENT') {
-        this.logger.warn('cannot remove snapshot file', error)
+    if (!snapshotPath) return
+    for (const target of [snapshotPath, snapshotDeltaPath(snapshotPath)]) {
+      try {
+        await fs.promises.unlink(target)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code !== 'ENOENT') this.logger.warn(`cannot remove index file ${target}`, error)
       }
     }
+    this.snapshotValue = undefined
+    this.mutableValue = undefined
+    this.appendChain = Promise.resolve()
+    this.deferredDuringCompaction = []
   }
 
-  /** deactivate 前把防抖中的增量快照落盘，并把引用索引 delta 合并回 base。 */
+  /** deactivate 前把 overlay 合并回 base（顺带清空 delta），并把引用索引 delta 合并回 base。 */
   async flush(): Promise<void> {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = undefined
+    if (this.compactTimer) {
+      clearTimeout(this.compactTimer)
+      this.compactTimer = undefined
     }
-    if (this.pendingSave) {
-      await this.persistNow()
-    }
+    await this.appendChain
+    await this.compactNow()
     await this.compactNameIndexIfNeeded(true)
   }
 
@@ -931,11 +1034,14 @@ export class SymbolService implements vscode.Disposable {
     this.textCache.clear()
     this.textCacheChars = 0
     this.excludeCache = undefined
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = undefined
+    this.mutableValue = undefined
+    this.appendChain = Promise.resolve()
+    this.deferredDuringCompaction = []
+    this.compacting = false
+    if (this.compactTimer) {
+      clearTimeout(this.compactTimer)
+      this.compactTimer = undefined
     }
-    this.pendingSave = false
     this.nameIndexValue = undefined
     await this.removeSnapshotFile()
     await this.removeNameIndexFile()
@@ -958,13 +1064,15 @@ export class SymbolService implements vscode.Disposable {
         this.logger.warn('snapshot has invalid shape; ignored')
         return
       }
-      this.snapshotValue = snapshot
+      const records = await readSnapshotDeltas(snapshotDeltaPath(snapshotPath))
+      this.mutableValue = createMutableIndexFromDeltas(snapshot, records)
+      this.snapshotValue = this.mutableValue
       // 引用索引惰性加载：只在首次查引用/调用层次时读盘
       this.nameIndexValue = undefined
-      this.nameIndexLoaded = false
+      this.nameIndexLoadedValue = false
       this.logger.info(
         `snapshot loaded: files=${snapshot.files.length} entries=${snapshot.entryCount} ` +
-          `builtAt=${new Date(snapshot.builtAt).toISOString()}`,
+          `delta=${records.length} records builtAt=${new Date(snapshot.builtAt).toISOString()}`,
       )
     } catch (error) {
       // 快照损坏/版本不符：删除后等待重建，不弹错误（spec §8）
@@ -1088,12 +1196,13 @@ export class SymbolService implements vscode.Disposable {
     }
     this.disposed = true
     this.generation += 1
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = undefined
+    if (this.compactTimer) {
+      clearTimeout(this.compactTimer)
+      this.compactTimer = undefined
     }
-    if (this.pendingSave) {
-      void this.persistNow()
+    // deactivate 已先 await flush()；这里只对尚未合并的变更做尽力而为的落盘（不检查 disposed）。
+    if (this.mutableValue && this.mutableValue.pendingChanges > 0) {
+      void this.compactNow()
     }
     for (const disposable of this.disposables) {
       try {
