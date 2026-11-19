@@ -298,6 +298,7 @@ export class SymbolService implements vscode.Disposable {
   kindCounts(): Record<SymbolKind, number> {
     const counts: Record<SymbolKind, number> = {
       function: 0, declaration: 0, macro: 0, struct: 0, union: 0, enum: 0, typedef: 0,
+      member: 0, enumConstant: 0, variable: 0,
     }
     this.snapshotValue?.forEachEntry((entry) => { counts[entry.kind] += 1 })
     return counts

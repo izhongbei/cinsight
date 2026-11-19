@@ -20,9 +20,14 @@ export const KIND_CODES: Record<SymbolKind, number> = {
   union: 4,
   enum: 5,
   typedef: 6,
+  // v5 新增（仅编码扩展；parent 列由 Task 2 加入布局）
+  member: 7,
+  enumConstant: 8,
+  variable: 9,
 }
 
-const KIND_NAMES: readonly SymbolKind[] = [
+/** kinds 列的编码 → SymbolKind 映射（与 KIND_CODES 互逆；delta 也用同一份）。 */
+export const KIND_NAMES: readonly SymbolKind[] = [
   'function',
   'declaration',
   'macro',
@@ -30,6 +35,9 @@ const KIND_NAMES: readonly SymbolKind[] = [
   'union',
   'enum',
   'typedef',
+  'member',
+  'enumConstant',
+  'variable',
 ]
 
 /** isReachable 的 BFS 深度上限（防异常 include 环/超深链拖死查询）。 */

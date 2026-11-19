@@ -3,12 +3,11 @@ import * as path from 'node:path'
 
 import type { SymbolEntry, SymbolTable } from '../shared/types'
 import { saveSnapshot } from './store'
-import { KIND_CODES } from './symbol-table'
+import { KIND_CODES, KIND_NAMES } from './symbol-table'
 
 export const SNAPSHOT_DELTA_MAGIC = 'SIDD'
 export const SNAPSHOT_DELTA_VERSION = 2
 const HEADER_BYTES = 8
-const KIND_NAMES = ['function', 'declaration', 'macro', 'struct', 'union', 'enum', 'typedef'] as const
 
 export interface SnapshotDeltaSetRecord {
   readonly kind: 'set'

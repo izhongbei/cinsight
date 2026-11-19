@@ -97,11 +97,18 @@ test('types e2e: struct/union/enum/typedef are indexed, searchable and navigable
     assert.ok(hits.some((entry) => entry.name === 'point' && entry.kind === 'struct'))
     assert.ok(hits.some((entry) => entry.name === 'point_t' && entry.kind === 'typedef'))
 
-    // 3) 文档大纲数据包含类型
-    const headerSymbols = entriesInFile(snapshot, 'inc/types.h').map((entry) => entry.name)
+    // 3) 文档大纲数据包含类型，以及 v5 的成员/枚举常量
+    const headerEntries = entriesInFile(snapshot, 'inc/types.h')
+    const headerSymbols = headerEntries.map((entry) => entry.name)
     for (const name of ['point', 'point_t', 'size_t2', 'callback_t', 'color', 'value']) {
       assert.ok(headerSymbols.includes(name), `${name} in outline data`)
     }
+    for (const name of ['x', 'y', 'i', 'f', 'COLOR_RED', 'COLOR_GREEN']) {
+      assert.ok(headerSymbols.includes(name), `${name} in outline data`)
+    }
+    const headerKinds = new Map(headerEntries.map((entry) => [entry.name, entry.kind]))
+    assert.equal(headerKinds.get('x'), 'member')
+    assert.equal(headerKinds.get('COLOR_RED'), 'enumConstant')
 
     // 4) 快照 roundtrip 保留 kind
     const snapshotPath = join(fixture.root, 'types.sidx')
@@ -113,10 +120,16 @@ test('types e2e: struct/union/enum/typedef are indexed, searchable and navigable
     assert.equal(loadedKinds.get('inc/types.h:point_t'), 'typedef')
     assert.equal(loadedKinds.get('inc/types.h:color'), 'enum')
     assert.equal(loadedKinds.get('inc/types.h:value'), 'union')
+    // v5 新 kind 走同一套 KIND_CODES/KIND_NAMES 编码，快照 roundtrip 后仍保留
+    assert.equal(loadedKinds.get('inc/types.h:x'), 'member')
+    assert.equal(loadedKinds.get('inc/types.h:COLOR_RED'), 'enumConstant')
+    assert.equal(loadedKinds.get('src/use.c:origin'), 'variable')
 
-    // 5) 使用处（struct point origin;）不会被误索引成定义
-    const useSymbols = entriesInFile(snapshot, 'src/use.c').map((entry) => entry.name)
+    // 5) 使用处（struct point origin;）不会被误索引成定义，但存活的变量自身会被索引
+    const useEntries = entriesInFile(snapshot, 'src/use.c')
+    const useSymbols = useEntries.map((entry) => entry.name)
     assert.ok(!useSymbols.includes('point'), 'usage is not a definition')
+    assert.equal(useEntries.find((entry) => entry.name === 'origin')?.kind, 'variable')
   } finally {
     await rm(fixture.root, { recursive: true, force: true })
   }

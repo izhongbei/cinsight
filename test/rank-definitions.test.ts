@@ -63,7 +63,7 @@ test('rank: closer shared path prefix wins inside the same root', () => {
   assert.equal(ranked[0]?.file, 'component/switch/drv/skb.h')
 })
 
-test('rank: definition beats declaration at the same distance', () => {
+test('rank: declaration outranks type at the same distance (v5 frozen kind order)', () => {
   const entries = [
     entry('component/switch/drv/skb.h', 10, 'declaration'),
     entry('component/switch/drv/skb.h', 40, 'struct'),
@@ -72,7 +72,7 @@ test('rank: definition beats declaration at the same distance', () => {
     sourceFile: 'component/switch/drv/forward.c',
     roots: ['component/switch'],
   })
-  assert.equal(ranked[0]?.kind, 'struct')
+  assert.equal(ranked[0]?.kind, 'declaration')
 })
 
 test('rank: type symbols prefer headers, functions prefer sources', () => {
@@ -106,7 +106,7 @@ test('rank: without context falls back to kind order then path (stable)', () => 
   const ranked = rankDefinitions(entries)
   assert.deepEqual(
     ranked.map((item) => `${item.kind}:${item.file}:${item.line}`),
-    ['struct:a/skb.h:20', 'declaration:b/skb.h:10', 'macro:a/skb.c:5'],
+    ['declaration:b/skb.h:10', 'struct:a/skb.h:20', 'macro:a/skb.c:5'],
   )
 })
 

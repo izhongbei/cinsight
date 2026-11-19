@@ -21,7 +21,10 @@ const input: DiagnosticsInput = {
   pendingChanges: 3,
   lastBuild: undefined,
   lastError: undefined,
-  kindCounts: { function: 10, declaration: 20, macro: 1, struct: 2, union: 0, enum: 1, typedef: 3 },
+  kindCounts: {
+    function: 10, declaration: 20, macro: 1, struct: 2, union: 0, enum: 1, typedef: 3,
+    member: 0, enumConstant: 0, variable: 0,
+  },
   heapUsedBytes: 200 * 1024 * 1024,
   rssBytes: 400 * 1024 * 1024,
   budget: { level: 'ok', symbols: 118_730, files: 6_838, suggestions: [] },
@@ -39,7 +42,10 @@ test('diagnostics: reports real storage sizes and index fields', () => {
   assert.match(md, /- files: 6,838/)
   assert.match(md, /- builtAt: 2023-11-14T22:13:20\.000Z/)
   assert.match(md, /- pending changes \(overlay\): 3/)
-  assert.match(md, /- kinds: function=10, declaration=20, macro=1, struct=2, union=0, enum=1, typedef=3/)
+  assert.match(
+    md,
+    /- kinds: function=10, declaration=20, macro=1, struct=2, union=0, enum=1, typedef=3, member=0, enumConstant=0, variable=0/,
+  )
   // Storage 段：base/delta/引用索引都按 provider 传入的真实字节数渲染
   assert.match(md, /- snapshot: \/storage\/symbols\.sidx \(4\.77 MB\)/)
   assert.match(md, /- snapshot delta: 4\.0 KB/)

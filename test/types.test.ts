@@ -12,12 +12,25 @@ function summarize(text: string): Array<[string, string, number, number]> {
 }
 
 test('types: struct definition with body', () => {
-  assert.deepEqual(summarize('struct point {\n  int x;\n  int y;\n};'), [['point', 'struct', 0, 3]])
+  assert.deepEqual(summarize('struct point {\n  int x;\n  int y;\n};'), [
+    ['point', 'struct', 0, 3],
+    ['x', 'member', 1, 1],
+    ['y', 'member', 2, 2],
+  ])
 })
 
 test('types: union and enum definitions', () => {
-  assert.deepEqual(summarize('union value { int i; float f; };'), [['value', 'union', 0, 0]])
-  assert.deepEqual(summarize('enum color { RED, GREEN, BLUE };'), [['color', 'enum', 0, 0]])
+  assert.deepEqual(summarize('union value { int i; float f; };'), [
+    ['value', 'union', 0, 0],
+    ['i', 'member', 0, 0],
+    ['f', 'member', 0, 0],
+  ])
+  assert.deepEqual(summarize('enum color { RED, GREEN, BLUE };'), [
+    ['color', 'enum', 0, 0],
+    ['RED', 'enumConstant', 0, 0],
+    ['GREEN', 'enumConstant', 0, 0],
+    ['BLUE', 'enumConstant', 0, 0],
+  ])
 })
 
 test('types: forward declaration is indexed as declaration, usage is not', () => {
@@ -26,6 +39,7 @@ test('types: forward declaration is indexed as declaration, usage is not', () =>
     scanSource(text).map((symbol) => [symbol.name, symbol.kind, symbol.line]),
     [
       ['opaque', 'declaration', 0],
+      ['ptr', 'variable', 1],
       ['fn', 'declaration', 2],
     ],
   )
@@ -40,6 +54,7 @@ test('types: typedef alias of a tagged struct', () => {
     summarize('typedef struct bar {\n  int a;\n} bar_t;'),
     [
       ['bar', 'struct', 0, 2],
+      ['a', 'member', 1, 1],
       ['bar_t', 'typedef', 2, 2],
     ],
   )
@@ -70,15 +85,23 @@ test('types: multiple declarators in one typedef', () => {
 test('types: struct with attribute between tag and body', () => {
   assert.deepEqual(
     summarize('struct __attribute__((packed)) packed_s {\n  int a;\n};'),
-    [['packed_s', 'struct', 0, 2]],
+    [
+      ['packed_s', 'struct', 0, 2],
+      ['a', 'member', 1, 1],
+    ],
   )
 })
 
-test('types: members are not indexed as symbols', () => {
+test('types: members are indexed with their enclosing tag as parent', () => {
   const text = 'struct ctx {\n  int state;\n  void *data;\n  void (*cb)(int);\n};'
   assert.deepEqual(
-    scanSource(text).map((symbol) => symbol.name),
-    ['ctx'],
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind, symbol.parent]),
+    [
+      ['ctx', 'struct', undefined],
+      ['state', 'member', 'ctx'],
+      ['data', 'member', 'ctx'],
+      ['cb', 'member', 'ctx'],
+    ],
   )
 })
 
@@ -93,8 +116,12 @@ test('types: types declared inside function bodies are not indexed', () => {
 test('types: comments and strings mentioning struct/typedef are ignored', () => {
   const text = ['/* struct fake { int a; }; */', 'const char *s = "typedef int fake_t;";', 'struct real { int a; };'].join('\n')
   assert.deepEqual(
-    scanSource(text).map((symbol) => symbol.name),
-    ['real'],
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind]),
+    [
+      ['s', 'variable'],
+      ['real', 'struct'],
+      ['a', 'member'],
+    ],
   )
 })
 
@@ -105,6 +132,7 @@ test('types: macro lines do not confuse type scanning', () => {
     [
       ['DECLARE', 'macro'],
       ['real_s', 'struct'],
+      ['a', 'member'],
     ],
   )
 })

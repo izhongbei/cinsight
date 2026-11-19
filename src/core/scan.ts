@@ -10,7 +10,8 @@ export type { ScannedInclude } from '../shared/types'
  *  1. `stripSources`：单遍状态机把注释、字符串、字符字面量的内容替换为空格（保留 `\r`/`\n`），
  *     支持反斜杠续行（`//` 注释、字符串内的续行）。
  *  2. `scanSource`：先做 `extern "C" {` 透明化、抽取 `#define NAME(` 函数式宏并把预处理逻辑行整行涂白，
- *     再在 `{}` 深度 0 上做「声明符 → 参数表 → 属性 → `{`/`;`」的启发式识别。
+ *     再在 `{}` 深度 0 上做「声明符 → 参数表 → 属性 → `{`/`;`」的启发式识别；
+ *     同时（v5）索引 struct/union 成员、枚举常量与文件作用域全局变量。
  *
  * 已知局限：宏展开产生的函数、`__attribute__` 位于函数名之前、C++ 模板/命名空间、
  * `typedef int f(int);` 之外的复杂函数指针、K&R 极端写法可能漏识别；文件作用域上
@@ -30,6 +31,8 @@ const CH_STAR = 42
 const CH_LPAREN = 40
 const CH_RPAREN = 41
 const CH_SEMI = 59
+const CH_COLON = 58
+const CH_EQUALS = 61
 const CH_LBRACE = 123
 const CH_RBRACE = 125
 const CH_LBRACKET = 91
@@ -997,14 +1000,602 @@ function scanTypes(text: string, lineStarts: readonly number[]): ScannedSymbol[]
     i = word.end
   }
 
-  return symbols
+  // v5：成员 / 枚举常量 / 全局变量与本函数共用同一份 clean 文本与行起始表
+  return symbols.concat(
+    scanMembersFromClean(text, lineStarts),
+    scanEnumConstantsFromClean(text, lineStarts),
+    scanGlobalsFromClean(text, lineStarts),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 成员 / 枚举常量 / 全局变量（v5）
+// ---------------------------------------------------------------------------
+
+interface NameRange {
+  readonly start: number
+  readonly end: number
+}
+
+/** 在 [start,end) 中找不在 ()/[]/{} 内的第一个 target 字符；找不到返回 -1。 */
+function findTopLevelChar(text: string, start: number, end: number, target: number): number {
+  let paren = 0
+  let bracket = 0
+  let brace = 0
+  for (let i = start; i < end; i++) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LPAREN) paren++
+    else if (code === CH_RPAREN) {
+      if (paren > 0) paren--
+    } else if (code === CH_LBRACKET) bracket++
+    else if (code === CH_RBRACKET) {
+      if (bracket > 0) bracket--
+    } else if (code === CH_LBRACE) brace++
+    else if (code === CH_RBRACE) {
+      if (brace > 0) brace--
+    } else if (code === target && paren === 0 && bracket === 0 && brace === 0) {
+      return i
+    }
+  }
+  return -1
+}
+
+/** 按顶层分隔符切分 [start,end)，返回各段区间（括号/方括号/花括号内的分隔符不切）。 */
+function splitTopLevel(
+  text: string,
+  start: number,
+  end: number,
+  separator: number,
+): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  let chunkStart = start
+  let paren = 0
+  let bracket = 0
+  let brace = 0
+  for (let i = start; i < end; i++) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LPAREN) paren++
+    else if (code === CH_RPAREN) {
+      if (paren > 0) paren--
+    } else if (code === CH_LBRACKET) bracket++
+    else if (code === CH_RBRACKET) {
+      if (bracket > 0) bracket--
+    } else if (code === CH_LBRACE) brace++
+    else if (code === CH_RBRACE) {
+      if (brace > 0) brace--
+    } else if (code === separator && paren === 0 && bracket === 0 && brace === 0) {
+      ranges.push([chunkStart, i])
+      chunkStart = i + 1
+    }
+  }
+  ranges.push([chunkStart, end])
+  return ranges
+}
+
+/** 段内是否含花括号（内联/匿名 struct/union 成员或初始化器）。 */
+function containsBrace(text: string, start: number, end: number): boolean {
+  for (let i = start; i < end; i++) {
+    if (text.charCodeAt(i) === CH_LBRACE) return true
+  }
+  return false
 }
 
 /**
- * 扫描一份 C/C++ 源文本，返回函数定义/声明、函数式宏，以及
- * struct/union/enum 标签与 typedef 名字。
+ * 跳过段内的内联类型体 `{...}`，返回最后一个 `}` 之后的位置：
+ * `union { int x; } u;` 只索引具名成员 `u`，匿名类型体内的成员不产生符号。
+ */
+function afterInlineTypeBodies(text: string, start: number, end: number): number {
+  let i = start
+  for (;;) {
+    let open = -1
+    for (let k = i; k < end; k++) {
+      if (text.charCodeAt(k) === CH_LBRACE) {
+        open = k
+        break
+      }
+    }
+    if (open < 0) return i
+    const close = matchPair(text, open, CH_LBRACE, CH_RBRACE)
+    if (close < 0 || close >= end) return end
+    i = close + 1
+  }
+}
+
+/** 顶层第一个非属性组的 `(`（`__attribute__((...))` 等整体跳过）；没有返回 -1。 */
+function findDeclaratorParen(text: string, start: number, end: number): number {
+  let i = start
+  while (i < end) {
+    const code = text.charCodeAt(i)
+    if (isIdentStartCode(code)) {
+      const word = readWordAt(text, i)!
+      if (POST_ATTRIBUTES.has(word.value)) {
+        const p = skipSpaceText(text, word.end)
+        if (text.charCodeAt(p) === CH_LPAREN) {
+          const close = matchPair(text, p, CH_LPAREN, CH_RPAREN)
+          i = close < 0 || close >= end ? end : close + 1
+          continue
+        }
+      }
+      i = word.end
+      continue
+    }
+    if (code === CH_LPAREN) return i
+    if (code === CH_LBRACKET) {
+      // 数组下标里的函数式宏不参与声明符判断
+      const close = matchPair(text, i, CH_LBRACKET, CH_RBRACKET)
+      i = close < 0 || close >= end ? end : close + 1
+      continue
+    }
+    i++
+  }
+  return -1
+}
+
+/**
+ * 从一个声明符段里取出名字：
+ * - 函数指针 `int (*cb)(void)` → `cb`
+ * - 普通声明符（含多声明符的后续段）→ 最后一个标识符，跳过 `struct/union/enum tag`
+ * 属性组与数组下标整体跳过；位域 `:`、初始化器 `=` 之前的部分由调用方先截断。
+ * 带括号但不是函数指针形态的段（原型宏等）不产生名字。
+ */
+function declaratorNameInRange(text: string, start: number, end: number): NameRange | undefined {
+  let parenAt = -1
+  let candidate: NameRange | undefined
+  let prevWord = ''
+  let i = start
+  while (i < end) {
+    const code = text.charCodeAt(i)
+    if (isIdentStartCode(code)) {
+      const word = readWordAt(text, i)!
+      if (POST_ATTRIBUTES.has(word.value)) {
+        const p = skipSpaceText(text, word.end)
+        if (text.charCodeAt(p) === CH_LPAREN) {
+          i = Math.min(skipParenGroup(text, p), end)
+          prevWord = ''
+          continue
+        }
+      }
+      if (parenAt < 0) {
+        const isTypeTag = prevWord === 'struct' || prevWord === 'union' || prevWord === 'enum'
+        if (!isTypeTag && !NAMED_KEYWORDS.has(word.value)) {
+          candidate = { start: word.start, end: word.end }
+        }
+      }
+      prevWord = word.value
+      i = word.end
+      continue
+    }
+    if (code === CH_LPAREN) {
+      if (parenAt < 0) parenAt = i
+      const close = matchPair(text, i, CH_LPAREN, CH_RPAREN)
+      i = close < 0 || close >= end ? end : close + 1
+      prevWord = ''
+      continue
+    }
+    if (code === CH_LBRACKET) {
+      const close = matchPair(text, i, CH_LBRACKET, CH_RBRACKET)
+      i = close < 0 || close >= end ? end : close + 1
+      prevWord = ''
+      continue
+    }
+    if (!isWsCode(code)) prevWord = ''
+    i++
+  }
+  if (parenAt >= 0) {
+    // 只接受函数指针形态 `(*name)`；其余带括号的段（函数声明/原型宏）不算声明符
+    let k = parenAt + 1
+    while (k < end && isWsCode(text.charCodeAt(k))) k++
+    if (text.charCodeAt(k) !== CH_STAR) return undefined
+    k++
+    while (k < end && isWsCode(text.charCodeAt(k))) k++
+    const word = readWordAt(text, k)
+    if (!word || word.end > end) return undefined
+    let after = skipSpaceText(text, word.end)
+    // 函数指针数组：`int (*handlers[4])(void);`
+    while (text.charCodeAt(after) === CH_LBRACKET) {
+      const bracketClose = matchPair(text, after, CH_LBRACKET, CH_RBRACKET)
+      if (bracketClose < 0 || bracketClose >= end) return undefined
+      after = skipSpaceText(text, bracketClose + 1)
+    }
+    if (text.charCodeAt(after) !== CH_RPAREN) return undefined
+    return NAMED_KEYWORDS.has(word.value) ? undefined : { start: word.start, end: word.end }
+  }
+  return candidate
+}
+
+/** 压入一个「名字 → 符号」的结果（成员/枚举常量/全局变量共用行号/列号语义）。 */
+function pushNamedSymbol(
+  text: string,
+  name: NameRange,
+  kind: ScannedSymbol['kind'],
+  parent: string | undefined,
+  endLine: number,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  const line = lineOf(lineStarts, name.start)
+  const symbol: ScannedSymbol = {
+    name: text.slice(name.start, name.end),
+    kind,
+    line,
+    endLine,
+    column: name.start - lineStarts[line],
+  }
+  out.push(parent === undefined ? symbol : { ...symbol, parent })
+}
+
+/** 解析 struct/union 体（`{`/`}` 之间）的成员声明。 */
+function collectMembers(
+  text: string,
+  bodyStart: number,
+  bodyEnd: number,
+  parent: string,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  // 先按顶层的 `;` 切成员声明，再在每条声明内按逗号切声明符
+  for (const [statementStart, statementEnd] of splitTopLevel(text, bodyStart, bodyEnd, CH_SEMI)) {
+    for (const [chunkStart, chunkEnd] of splitTopLevel(text, statementStart, statementEnd, CH_COMMA)) {
+      let cut = chunkEnd
+      const colon = findTopLevelChar(text, chunkStart, chunkEnd, CH_COLON)
+      if (colon >= 0) cut = Math.min(cut, colon)
+      const equals = findTopLevelChar(text, chunkStart, chunkEnd, CH_EQUALS)
+      if (equals >= 0) cut = Math.min(cut, equals)
+      // 内联/匿名类型体：跳过类型体本身；类型体后面若还有具名成员则照常索引（§3.2）
+      const declaratorStart = afterInlineTypeBodies(text, chunkStart, cut)
+      if (declaratorStart >= cut) continue
+      const name = declaratorNameInRange(text, declaratorStart, cut)
+      if (!name) continue
+      pushNamedSymbol(text, name, 'member', parent, lineOf(lineStarts, statementEnd), lineStarts, out)
+    }
+  }
+}
+
+/** 扫描 struct/union 定义的成员（仅文件作用域；匿名类型体整体跳过）。 */
+function scanMembersFromClean(text: string, lineStarts: readonly number[]): ScannedSymbol[] {
+  const n = text.length
+  const out: ScannedSymbol[] = []
+  let i = 0
+  let depth = 0
+  while (i < n) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LBRACE) {
+      depth++
+      i++
+      continue
+    }
+    if (code === CH_RBRACE) {
+      if (depth > 0) depth--
+      i++
+      continue
+    }
+    if (depth !== 0 || !isIdentStartCode(code)) {
+      i++
+      continue
+    }
+    const word = readWordAt(text, i)!
+    if (word.value === 'struct' || word.value === 'union') {
+      const p = skipTypeAttributes(text, word.end)
+      if (text.charCodeAt(p) === CH_LBRACE) {
+        // 匿名 struct/union 类型体：不产生成员符号
+        const close = matchPair(text, p, CH_LBRACE, CH_RBRACE)
+        i = close < 0 ? n : close + 1
+        continue
+      }
+      const tag = readWordAt(text, p)
+      if (!tag || NAMED_KEYWORDS.has(tag.value)) {
+        i = word.end
+        continue
+      }
+      const afterTag = skipTypeAttributes(text, tag.end)
+      if (text.charCodeAt(afterTag) !== CH_LBRACE) {
+        // `struct tag var;` / `struct tag;`：不是类型定义
+        i = tag.end
+        continue
+      }
+      const close = matchPair(text, afterTag, CH_LBRACE, CH_RBRACE)
+      if (close < 0) {
+        i = tag.end
+        continue
+      }
+      collectMembers(text, afterTag + 1, close, tag.value, lineStarts, out)
+      i = close + 1
+      continue
+    }
+    i = word.end
+  }
+  return out
+}
+
+/** 解析 enum 体（`{`/`}` 之间）：逗号分隔，忽略 `= 表达式`。 */
+function collectEnumConstants(
+  text: string,
+  bodyStart: number,
+  bodyEnd: number,
+  parent: string,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  for (const [chunkStart, chunkEnd] of splitTopLevel(text, bodyStart, bodyEnd, CH_COMMA)) {
+    let i = skipSpaceText(text, chunkStart)
+    // 跳过常量名前的属性宏
+    for (;;) {
+      const attribute = readWordAt(text, i)
+      if (!attribute || !POST_ATTRIBUTES.has(attribute.value)) break
+      const p = skipSpaceText(text, attribute.end)
+      if (text.charCodeAt(p) !== CH_LPAREN) break
+      i = skipSpaceText(text, skipParenGroup(text, p))
+    }
+    const name = readWordAt(text, i)
+    if (!name || name.end > chunkEnd) continue
+    pushNamedSymbol(text, name, 'enumConstant', parent, lineOf(lineStarts, chunkEnd), lineStarts, out)
+  }
+}
+
+/** 找从 from 起同层的 `;`（跳过 {}、()、[] 内容）；找不到返回 -1。 */
+function findStatementSemicolon(text: string, from: number): number {
+  const n = text.length
+  let nest = 0
+  for (let i = from; i < n; i++) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LBRACE || code === CH_LPAREN || code === CH_LBRACKET) nest++
+    else if (code === CH_RBRACE || code === CH_RPAREN || code === CH_RBRACKET) {
+      if (nest > 0) nest--
+    } else if (code === CH_SEMI && nest === 0) return i
+  }
+  return -1
+}
+
+/** `typedef enum [tag] { ... } alias;`：常量 parent 优先用 typedef 别名（§3.2）。 */
+function collectTypedefEnumConstants(
+  text: string,
+  start: number,
+  end: number,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  const keywordAt = skipTypeAttributes(text, skipSpaceText(text, start))
+  const enumWord = readWordAt(text, keywordAt)
+  if (!enumWord || enumWord.value !== 'enum') return
+  let p = skipTypeAttributes(text, enumWord.end)
+  let tag: string | undefined
+  if (text.charCodeAt(p) !== CH_LBRACE) {
+    const tagWord = readWordAt(text, p)
+    if (!tagWord || NAMED_KEYWORDS.has(tagWord.value)) return
+    tag = tagWord.value
+    p = skipTypeAttributes(text, tagWord.end)
+  }
+  if (text.charCodeAt(p) !== CH_LBRACE) return
+  const close = matchPair(text, p, CH_LBRACE, CH_RBRACE)
+  if (close < 0 || close >= end) return
+  // 别名：`} alias;` 的第一段声明符
+  const aliases = splitTopLevel(text, close + 1, end, CH_COMMA)
+  const alias = aliases.length > 0 ? declaratorNameInRange(text, aliases[0]![0], aliases[0]![1]) : undefined
+  const parent = alias
+    ? text.slice(alias.start, alias.end)
+    : tag !== undefined
+      ? tag
+      : '<anonymous>'
+  collectEnumConstants(text, p + 1, close, parent, lineStarts, out)
+}
+
+/** 扫描枚举定义的常量（仅文件作用域；enum 体里的值表达式忽略）。 */
+function scanEnumConstantsFromClean(text: string, lineStarts: readonly number[]): ScannedSymbol[] {
+  const n = text.length
+  const out: ScannedSymbol[] = []
+  let i = 0
+  let depth = 0
+  while (i < n) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LBRACE) {
+      depth++
+      i++
+      continue
+    }
+    if (code === CH_RBRACE) {
+      if (depth > 0) depth--
+      i++
+      continue
+    }
+    if (depth !== 0 || !isIdentStartCode(code)) {
+      i++
+      continue
+    }
+    const word = readWordAt(text, i)!
+    if (word.value === 'typedef') {
+      const end = findStatementSemicolon(text, word.end)
+      if (end < 0) {
+        i = word.end
+        continue
+      }
+      collectTypedefEnumConstants(text, word.end, end, lineStarts, out)
+      i = end + 1
+      continue
+    }
+    if (word.value === 'enum') {
+      const p = skipTypeAttributes(text, word.end)
+      if (text.charCodeAt(p) === CH_LBRACE) {
+        const close = matchPair(text, p, CH_LBRACE, CH_RBRACE)
+        if (close < 0) {
+          i = word.end
+          continue
+        }
+        collectEnumConstants(text, p + 1, close, '<anonymous>', lineStarts, out)
+        i = close + 1
+        continue
+      }
+      const tag = readWordAt(text, p)
+      if (!tag || NAMED_KEYWORDS.has(tag.value)) {
+        i = word.end
+        continue
+      }
+      const afterTag = skipTypeAttributes(text, tag.end)
+      if (text.charCodeAt(afterTag) !== CH_LBRACE) {
+        // `enum tag var;` / `enum tag;`：使用/前置声明
+        i = tag.end
+        continue
+      }
+      const close = matchPair(text, afterTag, CH_LBRACE, CH_RBRACE)
+      if (close < 0) {
+        i = tag.end
+        continue
+      }
+      collectEnumConstants(text, afterTag + 1, close, tag.value, lineStarts, out)
+      i = close + 1
+      continue
+    }
+    i = word.end
+  }
+  return out
+}
+
+/** 语句第一个记号。 */
+function firstWordIn(text: string, start: number, end: number): string | undefined {
+  const at = skipSpaceText(text, start)
+  if (at >= end) return undefined
+  return readWordAt(text, at)?.value
+}
+
+/**
+ * K&R 老式函数头的第一个 `;` 是参数声明：`)` 之后（跳过属性）若是类型/标识符，
+ * 说明后续语句是参数声明而非全局变量，调用方应跳过它们直到函数体 `{`。
+ */
+function isKrFunctionHeader(text: string, start: number, end: number): boolean {
+  const equals = findTopLevelChar(text, start, end, CH_EQUALS)
+  const bound = equals >= 0 ? equals : end
+  const paren = findDeclaratorParen(text, start, bound)
+  if (paren < 0) return false
+  const close = matchPair(text, paren, CH_LPAREN, CH_RPAREN)
+  if (close < 0 || close >= bound) return false
+  const after = skipPostAttributes(text, close + 1)
+  return after < bound && isIdentStartCode(text.charCodeAt(after))
+}
+
+/** 解析一条文件作用域声明语句的变量名（多声明符）。 */
+function collectGlobalDeclaration(
+  text: string,
+  stmtStart: number,
+  declaratorStart: number,
+  end: number,
+  lineStarts: readonly number[],
+  out: ScannedSymbol[],
+): void {
+  if (firstWordIn(text, stmtStart, end) === 'typedef') return
+  const equals = findTopLevelChar(text, declaratorStart, end, CH_EQUALS)
+  const bound = equals >= 0 ? equals : end
+  // 顶层 `(` 前若是声明符名，则是函数声明/原型宏，不是变量；函数指针 `(*name)` 例外
+  const paren = findDeclaratorParen(text, declaratorStart, bound)
+  if (paren >= 0) {
+    const after = skipSpaceText(text, paren + 1)
+    const code = after < bound ? text.charCodeAt(after) : -1
+    if (code !== CH_STAR) return
+  }
+  for (const [chunkStart, chunkEnd] of splitTopLevel(text, declaratorStart, bound, CH_COMMA)) {
+    const colon = findTopLevelChar(text, chunkStart, chunkEnd, CH_COLON)
+    const cut = colon >= 0 ? colon : chunkEnd
+    if (containsBrace(text, chunkStart, cut)) continue
+    const name = declaratorNameInRange(text, chunkStart, cut)
+    if (!name) continue
+    pushNamedSymbol(text, name, 'variable', undefined, lineOf(lineStarts, end), lineStarts, out)
+  }
+}
+
+/**
+ * 扫描文件作用域全局变量：depth 0、非 typedef、非函数声明、非类型定义体内部；
+ * 支持 static/extern/const、指针/数组/多声明符与函数指针变量。
+ */
+function scanGlobalsFromClean(text: string, lineStarts: readonly number[]): ScannedSymbol[] {
+  const n = text.length
+  const out: ScannedSymbol[] = []
+  let i = 0
+  let stmtStart = 0
+  let declaratorStart = 0
+  let krParams = false
+  while (i < n) {
+    const code = text.charCodeAt(i)
+    if (code === CH_LBRACE) {
+      const close = matchPair(text, i, CH_LBRACE, CH_RBRACE)
+      if (close < 0) break
+      if (findTopLevelChar(text, stmtStart, i, CH_EQUALS) >= 0) {
+        // 初始化器 `{...}`：语句继续到 `;`
+        i = close + 1
+        continue
+      }
+      if (krParams) {
+        krParams = false
+        i = close + 1
+        stmtStart = i
+        declaratorStart = i
+        continue
+      }
+      const first = firstWordIn(text, stmtStart, i)
+      if (first === 'struct' || first === 'union' || first === 'enum') {
+        // 类型体：`struct s { ... } var;` 的 var 在 `}` 之后
+        declaratorStart = close + 1
+        i = close + 1
+        continue
+      }
+      if (first === 'typedef') {
+        // typedef 的类型体：整条语句在 `;` 处按 typedef 跳过
+        i = close + 1
+        continue
+      }
+      // 函数体（或无法识别的顶层块）：整体跳过
+      i = close + 1
+      stmtStart = i
+      declaratorStart = i
+      continue
+    }
+    if (code === CH_SEMI) {
+      if (!krParams) {
+        collectGlobalDeclaration(text, stmtStart, declaratorStart, i, lineStarts, out)
+        if (isKrFunctionHeader(text, declaratorStart, i)) krParams = true
+      }
+      i++
+      stmtStart = i
+      declaratorStart = i
+      continue
+    }
+    i++
+  }
+  return out
+}
+
+/** 剥离/宏涂白后的文本 + 行起始表（三新扫描的独立入口共用，语义与 scanSource 一致）。 */
+function prepareForDetailScan(text: string): { clean: string; lineStarts: number[] } {
+  const prepared = blankExternCAfterStrip(stripSources(blankExternCBlocks(text)))
+  const lineStarts = computeLineStarts(prepared)
+  const { clean } = extractMacros(prepared, lineStarts)
+  return { clean, lineStarts }
+}
+
+/** 结构体/联合体成员（v5）：kind='member'，parent=结构体/联合体 tag。 */
+export function scanMembers(text: string): ScannedSymbol[] {
+  if (text.length === 0) return []
+  const { clean, lineStarts } = prepareForDetailScan(text)
+  return scanMembersFromClean(clean, lineStarts)
+}
+
+/** 枚举常量（v5）：kind='enumConstant'，parent=enum tag 或 typedef 别名。 */
+export function scanEnumConstants(text: string): ScannedSymbol[] {
+  if (text.length === 0) return []
+  const { clean, lineStarts } = prepareForDetailScan(text)
+  return scanEnumConstantsFromClean(clean, lineStarts)
+}
+
+/** 文件作用域全局变量（v5）：kind='variable'，无 parent。 */
+export function scanGlobals(text: string): ScannedSymbol[] {
+  if (text.length === 0) return []
+  const { clean, lineStarts } = prepareForDetailScan(text)
+  return scanGlobalsFromClean(clean, lineStarts)
+}
+
+/**
+ * 扫描一份 C/C++ 源文本，返回函数定义/声明、函数式宏、struct/union/enum 标签与
+ * typedef 名字，以及（v5）成员（`member`）、枚举常量（`enumConstant`）与
+ * 文件作用域全局变量（`variable`）；成员/枚举常量带 `parent`（所属类型名）。
  * 行号、列号均为 0-based；`endLine` 为函数体/类型体的配对 `}` 所在行
- * （声明、宏与 typedef 等于声明所在行）。
+ * （声明、成员、全局变量、宏与 typedef 等于声明所在行）。
  *
  * `stripped` 可选：调用方已对同一 `text` 调用过 `stripSources`（或 `scanFileMeta`）时传入，
  * 避免整文件重复剥离；缺省时内部自行剥离，行为与旧版一致。

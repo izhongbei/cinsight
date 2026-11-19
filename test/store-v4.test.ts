@@ -84,7 +84,7 @@ test('store v4: roundtrip keeps content hash, conditions and include edges', () 
 
 test('store v4: snapshots with a foreign/old version are rejected', () => {
   const encoded = encodeSnapshot(makeTable())
-  for (const version of [1, 2, 3, 5]) {
+  for (const version of [1, 2, 3, 4, 6]) {
     const patched = Buffer.from(encoded)
     patched.writeUInt32LE(version, 4)
     assert.equal(decodeSnapshot(patched), undefined, `version ${version} must be rejected`)

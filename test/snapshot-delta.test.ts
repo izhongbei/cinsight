@@ -87,6 +87,29 @@ test('snapshot delta: encode/decode clamps column to u16', () => {
   if (decoded[0]?.kind === 'set') assert.equal(decoded[0].entries[0]?.column, 0xffff)
 })
 
+test('snapshot delta: v5 member/enumConstant/variable kinds roundtrip', () => {
+  const record = {
+    kind: 'set' as const,
+    path: 'a.c',
+    mtimeMs: 1,
+    size: 1,
+    entries: [
+      { name: 'm', kind: 'member' as const, file: 'a.c', line: 1, endLine: 1, column: 2 },
+      { name: 'E', kind: 'enumConstant' as const, file: 'a.c', line: 2, endLine: 2, column: 2 },
+      { name: 'g', kind: 'variable' as const, file: 'a.c', line: 3, endLine: 3, column: 2 },
+    ],
+  }
+  const decoded = decodeSnapshotDeltaRecords(encodeSnapshotDeltaRecord(record))
+  assert.equal(decoded[0]?.kind, 'set')
+  if (decoded[0]?.kind === 'set') {
+    // delta 的 kind 字节与 KIND_CODES 共用映射；新增 kind 不能退化成 function
+    assert.deepEqual(
+      decoded[0].entries.map((item) => item.kind),
+      ['member', 'enumConstant', 'variable'],
+    )
+  }
+})
+
 test('snapshot delta: compact writes the base and removes the delta', async () => {
   const dir = await tempDir()
   try {

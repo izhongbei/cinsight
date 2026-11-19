@@ -58,17 +58,21 @@ test('parser: block comment content is ignored', () => {
 test('parser: multi-line block comment keeps line numbers stable', () => {
   const text = ['int a;', '/* comment', '   int fake(void) { }', '*/', 'int real(void) { }'].join('\n')
   assert.deepEqual(pick(scanSource(text)), [
+    { name: 'a', kind: 'variable', line: 0, endLine: 0, column: 4 },
     { name: 'real', kind: 'function', line: 4, endLine: 4, column: 4 },
   ])
 })
 
-test('parser: string literals do not produce symbols', () => {
-  assert.deepEqual(scanSource('char *s = "int fake(void) { }";'), [])
+test('parser: string literals do not produce symbols (only the variable is indexed)', () => {
+  assert.deepEqual(pick(scanSource('char *s = "int fake(void) { }";')), [
+    { name: 's', kind: 'variable', line: 0, endLine: 0, column: 6 },
+  ])
 })
 
 test('parser: escaped quotes inside string literals', () => {
   const text = 'char *s = "a\\"b int fake(void) { }"; int ok(void) { return 0; }'
   assert.deepEqual(pick(scanSource(text)), [
+    { name: 's', kind: 'variable', line: 0, endLine: 0, column: 6 },
     { name: 'ok', kind: 'function', line: 0, endLine: 0, column: text.indexOf('ok') },
   ])
 })
@@ -213,19 +217,32 @@ test('parser: control flow and operators are not symbols', () => {
 
 test('parser: struct/union definitions are type symbols, not function symbols', () => {
   const text = ['struct s { int a; };', 'struct t { void (*cb)(int); };', 'union u { int x; long y; };'].join('\n')
+  // v5：成员单独索引（kind='member'，parent 为所属 tag），不会变成函数符号
   assert.deepEqual(
-    scanSource(text).map((symbol) => [symbol.name, symbol.kind]),
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind, symbol.parent]),
     [
-      ['s', 'struct'],
-      ['t', 'struct'],
-      ['u', 'union'],
+      ['s', 'struct', undefined],
+      ['a', 'member', 's'],
+      ['t', 'struct', undefined],
+      ['cb', 'member', 't'],
+      ['u', 'union', undefined],
+      ['x', 'member', 'u'],
+      ['y', 'member', 'u'],
     ],
   )
 })
 
 test('parser: calls inside top level initialisers are not definitions', () => {
   const text = ['static int x = foo(1);', 'int arr[] = { bar(2) };', 'void (*fp)(void) = baz;'].join('\n')
-  assert.deepEqual(scanSource(text), [])
+  // v5：初始化器里的调用不产生符号，但被声明的全局变量本身要索引
+  assert.deepEqual(
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind]),
+    [
+      ['x', 'variable'],
+      ['arr', 'variable'],
+      ['fp', 'variable'],
+    ],
+  )
 })
 
 test('parser: typedef of a function type is a typedef symbol, not a function', () => {

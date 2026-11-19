@@ -5,12 +5,16 @@
 
 export type SymbolKind =
   | 'function'
+  | 'declaration'
+  | 'macro'
   | 'struct'
   | 'union'
   | 'enum'
   | 'typedef'
-  | 'declaration'
-  | 'macro'
+  // v5 新增：结构体/联合体成员、枚举常量、文件作用域全局变量
+  | 'member'
+  | 'enumConstant'
+  | 'variable'
 
 export interface SymbolEntry {
   readonly name: string
@@ -25,6 +29,8 @@ export interface SymbolEntry {
   readonly column: number
   /** 定义所在行生效的条件栈文本；undefined/'' = 无条件（B4） */
   readonly condition?: string
+  /** 成员/枚举常量的父类型名；无父级为 undefined（v5） */
+  readonly parent?: string
 }
 
 export interface FileRecord {
@@ -91,6 +97,8 @@ export interface ScannedSymbol {
   readonly column: number
   /** 定义所在行生效的条件栈文本；undefined = 无条件（B4） */
   readonly condition?: string
+  /** 成员/枚举常量的父类型名；无父级为 undefined（v5） */
+  readonly parent?: string
 }
 
 export type IndexPhase = 'walk' | 'parse' | 'index' | 'save'
@@ -176,7 +184,7 @@ export interface NameIndexData {
 
 export type ReadFileFn = (relativePath: string) => Promise<string>
 
-export const SNAPSHOT_VERSION = 4
+export const SNAPSHOT_VERSION = 5
 export const NAME_INDEX_VERSION = 1
 export const INDEXED_EXTENSIONS = ['.c', '.h', '.cc', '.cpp', '.hpp', '.hh', '.inl'] as const
 export const DEFAULT_EXCLUDE = [
@@ -185,12 +193,16 @@ export const DEFAULT_EXCLUDE = [
   '**/tmp/**',
   '**/node_modules/**',
 ] as const
+/** 搜索排序：函数/声明/类型/宏 在前，成员/枚举常量/变量 在后（v5） */
 export const SYMBOL_KIND_ORDER: Record<SymbolKind, number> = {
   function: 0,
-  struct: 1,
-  union: 2,
-  enum: 3,
-  typedef: 4,
-  declaration: 5,
+  declaration: 1,
+  struct: 2,
+  union: 3,
+  enum: 4,
+  typedef: 5,
   macro: 6,
+  member: 7,
+  enumConstant: 8,
+  variable: 9,
 }
