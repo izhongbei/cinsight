@@ -45,10 +45,13 @@ export interface ScannedSymbol {
 
 export const SNAPSHOT_VERSION = 5
 
-/** 搜索排序：函数/声明/类型/宏 在前，成员/枚举常量/变量 在后 */
+/**
+ * 搜索排序：既有 kind 沿用 0.8.0 的相对顺序（function → struct → union → enum →
+ * typedef → declaration → macro），v5 新增三类追加在尾部。
+ */
 export const SYMBOL_KIND_ORDER: Record<SymbolKind, number> = {
-  function: 0, declaration: 1, struct: 2, union: 3, enum: 4, typedef: 5,
-  macro: 6, member: 7, enumConstant: 8, variable: 9,
+  function: 0, struct: 1, union: 2, enum: 3, typedef: 4, declaration: 5, macro: 6,
+  member: 7, enumConstant: 8, variable: 9,
 }
 ```
 
@@ -65,7 +68,8 @@ export function scanGlobals(text: string): ScannedSymbol[]      // kind='variabl
 
 实现约束：
 - 成员支持：多声明符 `int a, *b;`、数组、函数指针 `int (*cb)(void);`、位域 `a:3`
-- 匿名成员/匿名联合体：跳过并计数（不产生符号）
+- 成员 parent：具名类型体（`struct tag { ... }`）用 tag；匿名类型体**仅在带 typedef 别名时**索引 depth-1 成员（`typedef struct { int x; int y; } point_t;` → parent = `point_t`，`typedef union { ... } value_t;` 同理），多个别名取第一个（`} a_t, *b_t;` → `a_t`）；**无别名的匿名类型体**（`struct { int x; } var;`）成员跳过（已知限制），函数体内的匿名类型体同样跳过
+- 具名内联成员 `struct outer { struct foo { int y; } bar; };` 只索引成员 `bar`，其内层成员不索引
 - 枚举常量：忽略 `= 表达式`；`typedef enum {A,B} Foo;` 的 parent 用 `Foo`（无 typedef 时用 tag；匿名且无 typedef 时 parent = 文件名无关的 `<anonymous>`）
 - 全局变量：`static`/`extern`/`const` 修饰、指针/数组/多声明符支持；跳过 `typedef`、函数声明（已有 declaration/function）、宏
 - 行号/结束行语义与现有符号一致（`line` = 声明符所在行）
@@ -150,7 +154,7 @@ DefinitionProvider：
 
 ## 5. 验收
 
-- 扫描正确性：成员（多声明符/函数指针/位域/数组）、枚举常量、全局变量（extern/static/const）各 ≥4 用例；匿名成员跳过
+- 扫描正确性：成员（多声明符/函数指针/位域/数组）、枚举常量、全局变量（extern/static/const）各 ≥4 用例；匿名 typedef 类型体用别名作 parent，无别名的匿名类型体成员跳过
 - 大纲：嵌套结构正确（结构体→成员、enum→常量、多层嵌套取最内层）；同文件多个同名类型按行区间归属
 - 字段跳转：`p->field`、`v.field`、`.field = x` 初始化三种上下文；无成员命中回退普通定义；候选 ≤50
 - 搜索：`@member/@enum/@var` 过滤；默认排序中函数/类型在成员/变量前

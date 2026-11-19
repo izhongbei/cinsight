@@ -109,6 +109,10 @@ test('types e2e: struct/union/enum/typedef are indexed, searchable and navigable
     const headerKinds = new Map(headerEntries.map((entry) => [entry.name, entry.kind]))
     assert.equal(headerKinds.get('x'), 'member')
     assert.equal(headerKinds.get('COLOR_RED'), 'enumConstant')
+    // 匿名 typedef struct（`typedef struct { ... } size_t2;`）的成员也会进入索引；
+    // parent 目前只在扫描层（Task 2 才进快照列），这里只断言 kind。
+    assert.equal(headerEntries.find((entry) => entry.name === 'width')?.kind, 'member')
+    assert.equal(headerEntries.find((entry) => entry.name === 'height')?.kind, 'member')
 
     // 4) 快照 roundtrip 保留 kind
     const snapshotPath = join(fixture.root, 'types.sidx')

@@ -926,7 +926,7 @@ function scanTypes(text: string, lineStarts: readonly number[]): ScannedSymbol[]
     if (keyword === 'struct' || keyword === 'union' || keyword === 'enum') {
       let p = skipTypeAttributes(text, word.end)
       if (text.charCodeAt(p) === CH_LBRACE) {
-        // 匿名类型：跳过整个定义
+        // 匿名类型：本体跳过（`typedef ... { ... } alias;` 的别名成员由 scanMembers 处理，§3.2）
         const close = matchPair(text, p, CH_LBRACE, CH_RBRACE)
         i = close < 0 ? n : close + 1
         continue
@@ -1224,6 +1224,41 @@ function pushNamedSymbol(
   out.push(parent === undefined ? symbol : { ...symbol, parent })
 }
 
+/**
+ * 关键字之前是否处于同一条 `typedef` 语句（用于匿名类型体的别名成员索引）。
+ *
+ * 只在 depth 0 调用：从关键字向左找到最近的语句边界（`;`/`{`/`}`），该边界之后的
+ * 第一个记号是 `typedef` 时返回 true；`struct { ... } var;` 这类无 typedef 的匿名类型
+ * 体返回 false（成员保持不索引，见 §3.2 的已知限制）。
+ */
+function isTypedefStatementAt(text: string, keywordStart: number): boolean {
+  let k = keywordStart - 1
+  while (k >= 0) {
+    const code = text.charCodeAt(k)
+    if (code === CH_SEMI || code === CH_LBRACE || code === CH_RBRACE) break
+    k--
+  }
+  let p = k + 1
+  while (p < keywordStart && isWsCode(text.charCodeAt(p))) p++
+  const word = readWordAt(text, p)
+  return word !== undefined && word.end <= keywordStart && word.value === 'typedef'
+}
+
+/**
+ * `typedef struct { ... } alias;` 中类型体之后的第一个声明符名（别名）。
+ *
+ * 多声明符（`} a_t, *b_t;`）取第一个别名作为 parent；属性组（`__attribute__((...))`）
+ * 由 `declaratorNameInRange` 整体跳过。找不到语句 `;` 或没有声明符时返回 undefined。
+ */
+function trailingTypedefAlias(text: string, afterBody: number): string | undefined {
+  const end = findStatementSemicolon(text, afterBody)
+  if (end < 0) return undefined
+  const first = splitTopLevel(text, afterBody, end, CH_COMMA)[0]
+  if (first === undefined) return undefined
+  const name = declaratorNameInRange(text, first[0], first[1])
+  return name === undefined ? undefined : text.slice(name.start, name.end)
+}
+
 /** 解析 struct/union 体（`{`/`}` 之间）的成员声明。 */
 function collectMembers(
   text: string,
@@ -1251,7 +1286,13 @@ function collectMembers(
   }
 }
 
-/** 扫描 struct/union 定义的成员（仅文件作用域；匿名类型体整体跳过）。 */
+/**
+ * 扫描 struct/union 定义的成员（仅文件作用域）。
+ *
+ * 具名类型体（`struct tag { ... }`）的 parent = tag；匿名类型体只有在
+ * `typedef struct/union { ... } alias;` 形态下才索引 depth-1 成员，parent = 第一个别名；
+ * 没有 typedef 别名的匿名类型体（`struct { int x; } var;`）整体跳过（§3.2 已知限制）。
+ */
 function scanMembersFromClean(text: string, lineStarts: readonly number[]): ScannedSymbol[] {
   const n = text.length
   const out: ScannedSymbol[] = []
@@ -1277,9 +1318,17 @@ function scanMembersFromClean(text: string, lineStarts: readonly number[]): Scan
     if (word.value === 'struct' || word.value === 'union') {
       const p = skipTypeAttributes(text, word.end)
       if (text.charCodeAt(p) === CH_LBRACE) {
-        // 匿名 struct/union 类型体：不产生成员符号
+        // 匿名类型体：仅在 typedef 语句里时用尾部别名作 parent（§3.2）
         const close = matchPair(text, p, CH_LBRACE, CH_RBRACE)
-        i = close < 0 ? n : close + 1
+        if (close < 0) {
+          i = n
+          continue
+        }
+        if (isTypedefStatementAt(text, word.start)) {
+          const alias = trailingTypedefAlias(text, close + 1)
+          if (alias !== undefined) collectMembers(text, p + 1, close, alias, lineStarts, out)
+        }
+        i = close + 1
         continue
       }
       const tag = readWordAt(text, p)
@@ -1569,7 +1618,12 @@ function prepareForDetailScan(text: string): { clean: string; lineStarts: number
   return { clean, lineStarts }
 }
 
-/** 结构体/联合体成员（v5）：kind='member'，parent=结构体/联合体 tag。 */
+/**
+ * 结构体/联合体成员（v5）：kind='member'。
+ *
+ * parent：具名类型体用 tag；`typedef struct/union { ... } alias;` 的匿名类型体用第一个
+ * 别名；无 typedef 别名的匿名类型体（`struct { int x; } var;`）不产生成员（§3.2）。
+ */
 export function scanMembers(text: string): ScannedSymbol[] {
   if (text.length === 0) return []
   const { clean, lineStarts } = prepareForDetailScan(text)

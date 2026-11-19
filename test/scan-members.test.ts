@@ -34,6 +34,50 @@ test('scanMembers: named inline union member kept, its body members skipped', ()
   assert.deepEqual(members.map((m) => [m.name, m.parent]), [['u', 'outer']])
 })
 
+test('scanMembers: anonymous typedef struct members use the alias as parent (multi declarator)', () => {
+  const text = [
+    'typedef struct {',
+    '  int x, *y;',
+    '  char name[8];',
+    '} point_t;',
+  ].join('\n')
+  const members = scanMembers(text)
+  assert.deepEqual(
+    members.map((m) => [m.name, m.kind, m.parent]),
+    [
+      ['x', 'member', 'point_t'],
+      ['y', 'member', 'point_t'],
+      ['name', 'member', 'point_t'],
+    ],
+  )
+})
+
+test('scanMembers: typedef with several aliases uses the first alias as parent', () => {
+  const text = 'typedef struct { int a; } a_t, *b_t;'
+  assert.deepEqual(scanMembers(text).map((m) => [m.name, m.parent]), [['a', 'a_t']])
+})
+
+test('scanMembers: anonymous typedef union members use the alias as parent', () => {
+  const text = ['typedef union {', '  int i;', '  float f;', '} value_t;'].join('\n')
+  assert.deepEqual(
+    scanMembers(text).map((m) => [m.name, m.kind, m.parent]),
+    [
+      ['i', 'member', 'value_t'],
+      ['f', 'member', 'value_t'],
+    ],
+  )
+})
+
+test('scanMembers: anonymous struct without a typedef alias keeps members skipped', () => {
+  const text = ['struct { int x; int y; } var;', 'typedef int plain_t;'].join('\n')
+  assert.deepEqual(scanMembers(text), [])
+})
+
+test('scanMembers: named inline struct member kept, its body members skipped', () => {
+  const text = ['struct outer {', '  struct foo { int y; } bar;', '};'].join('\n')
+  assert.deepEqual(scanMembers(text).map((m) => [m.name, m.parent]), [['bar', 'outer']])
+})
+
 test('scanMembers: tag usages, forward declarations and function-body types are not members', () => {
   const text = [
     'struct opaque;',

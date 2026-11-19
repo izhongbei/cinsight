@@ -1,6 +1,6 @@
 /**
  * 类型符号（struct / union / enum 标签、typedef 名字）的解析与可跳转性测试。
- * 覆盖匿名结构体、函数指针 typedef、多重声明符、前置声明、属性宏、成员不索引等。
+ * 覆盖匿名结构体（typedef 别名成员）、函数指针 typedef、多重声明符、前置声明、属性宏等。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -45,8 +45,15 @@ test('types: forward declaration is indexed as declaration, usage is not', () =>
   )
 })
 
-test('types: typedef of anonymous struct', () => {
-  assert.deepEqual(summarize('typedef struct {\n  int a;\n} foo_t;'), [['foo_t', 'typedef', 2, 2]])
+test('types: typedef of anonymous struct indexes members under the alias', () => {
+  const text = 'typedef struct {\n  int a;\n} foo_t;'
+  assert.deepEqual(
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind, symbol.parent]),
+    [
+      ['a', 'member', 'foo_t'],
+      ['foo_t', 'typedef', undefined],
+    ],
+  )
 })
 
 test('types: typedef alias of a tagged struct', () => {
@@ -140,6 +147,9 @@ test('types: macro lines do not confuse type scanning', () => {
 test('types: typedef ending on its own line reports the semicolon line as endLine', () => {
   assert.deepEqual(
     summarize('typedef struct {\n  int a;\n} multi_line_t\n;'),
-    [['multi_line_t', 'typedef', 2, 3]],
+    [
+      ['a', 'member', 1, 1],
+      ['multi_line_t', 'typedef', 2, 3],
+    ],
   )
 })
