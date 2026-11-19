@@ -41,6 +41,31 @@ test('scanGlobals: struct usages are variables, forward declarations are not', (
   ])
 })
 
+test('scanGlobals: every initialised declarator in a multi-declarator statement is indexed', () => {
+  const text = [
+    'int a = 1, b = 2;',
+    'static const int x = 1, y = 2, *z;',
+    'static u32 g_A = 0, g_B = 0, g_C = 0;',
+    'int t[] = {1,2,3}, u = 4;',
+    'int p = f(1, 2), q = 3;',
+    'int f(int a, int b);',
+  ].join('\n')
+  assert.deepEqual(scanGlobals(text).map((g) => [g.name, g.line, g.endLine]), [
+    ['a', 0, 0],
+    ['b', 0, 0],
+    ['x', 1, 1],
+    ['y', 1, 1],
+    ['z', 1, 1],
+    ['g_A', 2, 2],
+    ['g_B', 2, 2],
+    ['g_C', 2, 2],
+    ['t', 3, 3],
+    ['u', 3, 3],
+    ['p', 4, 4],
+    ['q', 4, 4],
+  ])
+})
+
 test('scanGlobals: extern/const/static and multi-line declarations', () => {
   const text = [
     'static const unsigned int',

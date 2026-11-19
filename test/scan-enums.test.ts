@@ -18,6 +18,28 @@ test('scanEnumConstants: values ignored, typedef alias as parent', () => {
     ['P2', 'plain'],
   ])
   assert.ok(constants.every((c) => c.kind === 'enumConstant'))
+  // endLine 指向枚举常量自身所在行，而不是最后的 `}` 行（最后一个常量无尾逗号）
+  assert.deepEqual(constants.map((c) => [c.name, c.line, c.endLine]), [
+    ['RTK_MODE_A', 1, 1],
+    ['RTK_MODE_B', 2, 2],
+    ['P1', 4, 4],
+    ['P2', 4, 4],
+  ])
+})
+
+test('scanEnumConstants: macro-generated enumerators are skipped, normal ones kept', () => {
+  const text = [
+    'typedef enum {',
+    '  CINIT(FILE, LONG) = 1,',
+    '  CINIT(URL, OBJECT) = 2,',
+    '  PLAIN_A = 3,',
+    '  PLAIN_B',
+    '} CURLoption;',
+  ].join('\n')
+  assert.deepEqual(scanEnumConstants(text).map((c) => [c.name, c.parent, c.endLine]), [
+    ['PLAIN_A', 'CURLoption', 3],
+    ['PLAIN_B', 'CURLoption', 4],
+  ])
 })
 
 test('scanEnumConstants: anonymous enum uses typedef alias or <anonymous>', () => {
@@ -45,5 +67,13 @@ test('scanEnumConstants: enum inside function body is ignored; tag parent withou
   const text = ['void f(void) {', '  enum local { L1 };', '}', 'enum outer { O1 };'].join('\n')
   assert.deepEqual(scanEnumConstants(text).map((c) => [c.name, c.parent, c.line]), [
     ['O1', 'outer', 3],
+  ])
+})
+
+test('scanEnumConstants: endLine stays on the enumerator line without a trailing comma', () => {
+  const text = ['enum e {', '  E1,', '  E2', '};'].join('\n')
+  assert.deepEqual(scanEnumConstants(text).map((c) => [c.name, c.line, c.endLine]), [
+    ['E1', 1, 1],
+    ['E2', 2, 2],
   ])
 })

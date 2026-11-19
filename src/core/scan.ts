@@ -851,7 +851,12 @@ function extractTypedefSymbols(
 
   const endLine = lineOf(lineStarts, end)
   for (const [chunkStartIdx, chunkEnd] of chunks) {
-    const name = declaratorNameIn(text, chunkStartIdx, chunkEnd)
+    // 有类型体时，声明符（别名）在配对的 `}` 之后：必须从该 `}` 之后开始找名字，
+    // 否则函数指针成员（`typedef struct { int (*cb)(void *); } ssl_sec_t;`）里的
+    // `(` 会让体内标识符 `cb` 被误认成 typedef 名，真正的别名反而丢失。
+    const declaratorStart = afterInlineTypeBodies(text, chunkStartIdx, chunkEnd)
+    if (declaratorStart >= chunkEnd) continue
+    const name = declaratorNameIn(text, declaratorStart, chunkEnd)
     if (!name) continue
     const line = lineOf(lineStarts, name.start)
     out.push({
@@ -1377,7 +1382,13 @@ function collectEnumConstants(
     }
     const name = readWordAt(text, i)
     if (!name || name.end > chunkEnd) continue
-    pushNamedSymbol(text, name, 'enumConstant', parent, lineOf(lineStarts, chunkEnd), lineStarts, out)
+    // 宏生成的枚举项（如 `CINIT(FILE, LONG) = 1`）不是枚举常量：名字后紧跟 `(`，
+    // 而合法枚举常量后面不可能出现 `(`。
+    const afterName = skipSpaceText(text, name.end)
+    if (afterName < chunkEnd && text.charCodeAt(afterName) === CH_LPAREN) continue
+    // endLine 与 name/line 一致：最后一个常量无尾逗号时不能取到结尾 `}` 所在行
+    const line = lineOf(lineStarts, name.start)
+    pushNamedSymbol(text, name, 'enumConstant', parent, line, lineStarts, out)
   }
 }
 
@@ -1530,18 +1541,25 @@ function collectGlobalDeclaration(
   out: ScannedSymbol[],
 ): void {
   if (firstWordIn(text, stmtStart, end) === 'typedef') return
-  const equals = findTopLevelChar(text, declaratorStart, end, CH_EQUALS)
-  const bound = equals >= 0 ? equals : end
-  // 顶层 `(` 前若是声明符名，则是函数声明/原型宏，不是变量；函数指针 `(*name)` 例外
-  const paren = findDeclaratorParen(text, declaratorStart, bound)
+  // 先按顶层逗号切出完整声明符列表，再逐段在自己的顶层 `=` 处截断：初始化器可能含逗号
+  // （`int t[] = {1,2,3}, u = 4;`），不能先按第一个 `=` 把整条语句截断。
+  const chunks = splitTopLevel(text, declaratorStart, end, CH_COMMA)
+  // 语句级函数声明守卫：首个声明符分隔符（第一个顶层逗号）之前若出现声明符名后的
+  // 顶层 `(`，则是函数声明/原型宏，整条跳过；函数指针 `(*name)` 例外，
+  // 初始化器 `= f(1)` 里的括号不参与判断。
+  const firstEquals = findTopLevelChar(text, chunks[0]![0], chunks[0]![1], CH_EQUALS)
+  const firstBound = firstEquals >= 0 ? firstEquals : chunks[0]![1]
+  const paren = findDeclaratorParen(text, chunks[0]![0], firstBound)
   if (paren >= 0) {
     const after = skipSpaceText(text, paren + 1)
-    const code = after < bound ? text.charCodeAt(after) : -1
+    const code = after < firstBound ? text.charCodeAt(after) : -1
     if (code !== CH_STAR) return
   }
-  for (const [chunkStart, chunkEnd] of splitTopLevel(text, declaratorStart, bound, CH_COMMA)) {
-    const colon = findTopLevelChar(text, chunkStart, chunkEnd, CH_COLON)
-    const cut = colon >= 0 ? colon : chunkEnd
+  for (const [chunkStart, chunkEnd] of chunks) {
+    const equals = findTopLevelChar(text, chunkStart, chunkEnd, CH_EQUALS)
+    const bound = equals >= 0 ? equals : chunkEnd
+    const colon = findTopLevelChar(text, chunkStart, bound, CH_COLON)
+    const cut = colon >= 0 ? colon : bound
     if (containsBrace(text, chunkStart, cut)) continue
     const name = declaratorNameInRange(text, chunkStart, cut)
     if (!name) continue

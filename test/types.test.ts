@@ -153,3 +153,20 @@ test('types: typedef ending on its own line reports the semicolon line as endLin
     ],
   )
 })
+
+test('types: anonymous typedef struct with a function-pointer member keeps the trailing alias', () => {
+  const text = [
+    'typedef struct {',
+    '  int (*cb)(void *arg);',
+    '  int x;',
+    '} ssl_sec_t;',
+  ].join('\n')
+  assert.deepEqual(
+    scanSource(text).map((symbol) => [symbol.name, symbol.kind, symbol.parent]),
+    [
+      ['cb', 'member', 'ssl_sec_t'],
+      ['x', 'member', 'ssl_sec_t'],
+      ['ssl_sec_t', 'typedef', undefined],
+    ],
+  )
+})
