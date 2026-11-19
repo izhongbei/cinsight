@@ -1531,6 +1531,23 @@ function isKrFunctionHeader(text: string, start: number, end: number): boolean {
   return after < bound && isIdentStartCode(text.charCodeAt(after))
 }
 
+/**
+ * 语句在 `{` 之前是否为函数声明符（有顶层 `)` 且没有顶层 `=`）。
+ *
+ * 仅用于区分「返回类型以 struct/union/enum 开头的函数体」与「类型体」：
+ * 类型定义（`struct tag {`、`typedef struct {`）的 `{` 之前没有顶层 `)`；
+ * 初始化器（`int a[] = {`）在 `{` 之前已有 `=`，由调用方先行排除。
+ * 属性组（`__attribute__((...))`）内的括号由 `findDeclaratorParen` 整体跳过，
+ * 因此 `struct s __attribute__((packed)) { ... };` 仍按类型体处理。
+ */
+function isFunctionBodyBrace(text: string, stmtStart: number, braceAt: number): boolean {
+  if (findTopLevelChar(text, stmtStart, braceAt, CH_EQUALS) >= 0) return false
+  const paren = findDeclaratorParen(text, stmtStart, braceAt)
+  if (paren < 0) return false
+  const close = matchPair(text, paren, CH_LPAREN, CH_RPAREN)
+  return close >= 0 && close < braceAt
+}
+
 /** 解析一条文件作用域声明语句的变量名（多声明符）。 */
 function collectGlobalDeclaration(
   text: string,
@@ -1597,9 +1614,18 @@ function scanGlobalsFromClean(text: string, lineStarts: readonly number[]): Scan
       }
       const first = firstWordIn(text, stmtStart, i)
       if (first === 'struct' || first === 'union' || first === 'enum') {
-        // 类型体：`struct s { ... } var;` 的 var 在 `}` 之后
-        declaratorStart = close + 1
+        if (!isFunctionBodyBrace(text, stmtStart, i)) {
+          // 类型体：`struct s { ... } var;` 的 var 在 `}` 之后
+          declaratorStart = close + 1
+          i = close + 1
+          continue
+        }
+        // 返回类型以类型关键字开头的函数定义（`struct point *make(void) { ... }`）：
+        // 跳过函数体并把语句起点前移到 `}` 之后，否则下一条 `;` 语句会按旧的
+        // `struct` 分类，使随后的 typedef 被误索引为全局变量（review finding）。
         i = close + 1
+        stmtStart = i
+        declaratorStart = i
         continue
       }
       if (first === 'typedef') {

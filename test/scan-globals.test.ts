@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { scanGlobals } from '../src/core/scan'
+import { scanGlobals, scanSource } from '../src/core/scan'
 
 test('scanGlobals: file-scope variables only, skip functions/typedefs/params', () => {
   const text = [
@@ -78,4 +78,75 @@ test('scanGlobals: extern/const/static and multi-line declarations', () => {
     ['errno', 2, 2],
     ['g_names', 3, 3],
   ])
+})
+
+test('scanGlobals: typedef after a struct-returning definition is not indexed', () => {
+  const text = 'struct point *make(void) { return 0; }\ntypedef int foo_t;'
+  assert.deepEqual(scanGlobals(text), [])
+  // scanSource：typedef foo_t 只出现一次，且不产生伪造的 variable foo_t
+  const symbols = scanSource(text)
+  assert.ok(symbols.some((s) => s.name === 'make' && s.kind === 'function'))
+  assert.deepEqual(symbols.filter((s) => s.name === 'foo_t').map((s) => s.kind), ['typedef'])
+  assert.deepEqual(symbols.filter((s) => s.kind === 'variable'), [])
+})
+
+test('scanGlobals: typedef variants after struct/union/enum-returning definitions', () => {
+  const cases: Array<{ head: string; tail: string; typedefs: string[] }> = [
+    {
+      head: 'struct point *make(void) { return 0; }',
+      tail: 'typedef int a_t, b_t;',
+      typedefs: ['a_t', 'b_t'],
+    },
+    {
+      head: 'union value *make(void) { return 0; }',
+      tail: 'typedef enum { X } E;',
+      typedefs: ['E'],
+    },
+    {
+      head: 'enum color get(void) { return 0; }',
+      tail: 'typedef void (*cb_t)(int);',
+      typedefs: ['cb_t'],
+    },
+  ]
+  for (const { head, tail, typedefs } of cases) {
+    const text = `${head}\n${tail}`
+    assert.deepEqual(scanGlobals(text), [], `typedef 之后的函数定义不应产生全局变量：${tail}`)
+    const symbols = scanSource(text)
+    assert.deepEqual(symbols.filter((s) => s.kind === 'variable'), [])
+    assert.deepEqual(symbols.filter((s) => s.kind === 'typedef').map((s) => s.name), typedefs)
+  }
+})
+
+test('scanGlobals: real globals after a struct-returning definition are still indexed', () => {
+  const text = [
+    'struct point *make(void) { return 0; }',
+    'int g;',
+    'static struct point *origin;',
+    'struct point *make2(void) { return 0; } int h;',
+  ].join('\n')
+  assert.deepEqual(scanGlobals(text).map((g) => [g.name, g.line]), [
+    ['g', 1],
+    ['origin', 2],
+    ['h', 3],
+  ])
+})
+
+test('scanGlobals: locals inside a struct-returning body are still ignored', () => {
+  const text = [
+    'enum color get(void) {',
+    '  typedef int inner_t;',
+    '  struct local { int x; } v;',
+    '  int local_var = 1;',
+    '  return 0;',
+    '}',
+    'typedef int foo_t;',
+    'int g;',
+  ].join('\n')
+  assert.deepEqual(scanGlobals(text).map((g) => g.name), ['g'])
+})
+
+test('scanGlobals: mixed function declarator and variables in one statement', () => {
+  // 当前语义：函数声明符自身跳过，但同语句的普通声明符仍索引（语句级整条跳过已不再成立）
+  assert.deepEqual(scanGlobals('int a, f(void);').map((g) => g.name), ['a'])
+  assert.deepEqual(scanGlobals('int (*fp)(void), x;').map((g) => g.name), ['fp', 'x'])
 })

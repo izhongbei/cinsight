@@ -166,3 +166,7 @@ DefinitionProvider：
 - 函数内局部变量/参数、`obj->field` 类型推断（后续版本）
 - 成员专用引用聚合
 - C++ namespace/class
+
+## 7. 已知限制
+
+- 类型体之后先出现 `__attribute__((...))` 再出现别名时（`typedef struct { ... } __attribute__((packed)) foo_t;`），别名 `foo_t` 的 typedef 符号仍会丢失；成员仍以该别名作为 parent（`trailingTypedefAlias` 属性感知，`extractTypedefSymbols` 的别名提取未做属性感知）。
