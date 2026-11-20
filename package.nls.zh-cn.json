@@ -1,6 +1,6 @@
 {
   "displayName": "Code Insight",
-  "description": "面向大型 C/C++ 工程的代码导航（Code Insight）：持久函数索引，支持跳转定义、查找引用、调用层次、符号搜索、悬停签名、大纲与符号树（参考 Source Insight）。",
+  "description": "面向大型 C/C++ 工程的代码导航（Code Insight）：持久符号索引，支持跳转定义、查找引用、调用层次、符号搜索、悬停签名、大纲与符号树（参考 Source Insight）。",
   "command.category": "Code Insight",
   "command.configureRoots.title": "配置索引目录",
   "command.rebuildIndex.title": "重建索引",
@@ -27,6 +27,6 @@
   "config.followSymlinks": "遍历索引目录时是否跟随符号链接。",
   "viewContainer.title": "Code Insight",
   "view.symbols.name": "符号",
-  "viewWelcome": "尚未配置索引目录。\n\n[配置索引目录](command:si.configureRoots)\n\n选择要索引的 C/C++ 目录后，Source Insight C 会在后台建立紧凑的函数索引，随后即可使用跳转定义（F12）、查找引用（Shift+F12）、调用层次、符号搜索（Ctrl+T）与左侧符号树。\n\n[重建索引](command:si.rebuildIndex)",
+  "viewWelcome": "尚未配置索引目录。\n\n[配置索引目录](command:si.configureRoots)\n\n选择要索引的 C/C++ 目录后，Source Insight C 会在后台建立紧凑的符号索引，随后即可使用跳转定义（F12）、查找引用（Shift+F12）、调用层次、符号搜索（Ctrl+T）与左侧符号树。\n\n[重建索引](command:si.rebuildIndex)",
   "command.showCallGraph.title": "调用关系图"
 }

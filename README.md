@@ -18,7 +18,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Include-aware jump** | Definitions reachable from the current file through the resolved `#include` graph are listed first — a **soft** ordering: candidates are reordered, never dropped |
 | **Duplicate folding** | Files with identical content (same 64-bit content hash) plus the same name and kind are folded into one `F12` location; `Show Definition Candidates` expands every copy |
 | **Conditional annotations** | Symbols inside `#if` / `#ifdef` / `#ifndef` blocks show the raw condition text in candidates, hover and list details (the text is not evaluated; conventional file-level include guards are transparent) |
-| **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Symbols` (lists signature, location and kind; accepts `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` filters) |
+| **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Symbols` (lists name, `file:line` location and kind/parent — no signature; accepts `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` filters) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
 | **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style relation panel: the current function in the middle, **callers on the left, callees on the right**, expandable node by node, click a name to jump |
@@ -133,24 +133,24 @@ Measured on a module set of **6,838 C/H files / 75 MB** (0.9.0 saved warm run; 0
 
 | Metric | 0.9.0 result (0.8.0 history) |
 |---|---|
-| Symbols | **206,430**: 51,165 members + 26,936 enum constants + 9,510 globals = 87,611 new symbols; 78,101 carry a `parent` (37.8% of all symbols — every member and enum constant), 9,002 distinct parent names (0.8.0: 118,730 symbols, no members/enums/globals) |
+| Symbols | **206,430**: 51,165 members + 26,936 enum constants + 9,510 globals = 87,611 new-kind symbols, **+87,700 vs 0.8.0** (the extra 89 are existing-kind count changes from B3 scan/typedef fixes); 78,101 carry a `parent` (37.8% of all symbols — every member and enum constant), 9,002 distinct parent names (0.8.0: 118,730 symbols, no members/enums/globals) |
 | Include graph | 34,538 raw `#include` directives → 6,820 resolved edges in the indexed roots (**19.7%**, per-file de-duplicated; 3,027 files; system headers and out-of-root targets add no edge; unchanged vs 0.8.0) |
 | Conditional symbols | 40,890 / 206,430 (**19.8%**) record a condition; 2,309 distinct texts (0.8.0: 27,967 / 118,730 = 23.6%, 2,070 texts). The ratio is lower because the new members/enums/globals are mostly unconditional; the absolute count grew by 12,923 |
 | Content hashes | 6,838 / 6,838 files (64-bit; unchanged vs 0.8.0) |
 | Index build, single strip (4 workers) | **2.14 s** canonical warm run; interleaved A/B runs **2.14–2.45 s (median ~2.24 s)** vs **1.64–1.85 s (median ~1.68 s)** for 0.8.0 on the same corpus — **+34%** total, parse phase **median 1.86 s vs 1.38 s (+35%)**. The <20% build-overhead target is **not met**. 0.8.0 history: 1.71–1.89 s typical (median ~1.84 s; 1.97–2.13 s before the single-strip fix) |
 | Snapshot size / load (columnar v5) | **10.16 MB / 40 ms** in the saved run (0.8.0 v4: 5.78 MB / 31 ms) — **+75.8%**, above the <35% target. The growth is the 87,611 new symbols at 27 B each, the larger name table and the new parent table (186.6 KB) |
-| Hashing / include scan cost | 101 ms for 74.9 MB hashed (742 MB/s); 0.67 s raw include scan + 0.13 s resolution (single-threaded, page-warm; unchanged vs 0.8.0) |
+| Hashing / include scan cost | **102 ms** for 74.9 MB hashed (**737 MB/s**); **672 ms** raw include scan + **121 ms** resolution (single-threaded, page-warm; 0.8.0 history: 101 ms / 742 MB/s, 0.67 s + 0.13 s) |
 | Definition ranking + grouping (`F12`) | rank avg **0.91 ms** / group avg **1.38 ms** on the hottest name (`public`, 1,001 definitions); cold first call 4.61 ms; warm max observed 1.14 ms rank / 2.50 ms group (0.8.0: ~0.52 ms / ~0.84 ms on a 470-definition name) |
 | **Field jump (`->` / `.`)** | **0.94 ms avg / 1.22 ms max** on the hottest member name (`public`, 1,001 member definitions, top-50 cap; `findByName` + kind filter + rank + group) — within the **<5 ms** target |
 | Per-file save (incremental symbol index) | **1.1 KB / 1 ms** appended (v3 delta); overlay update **<1 ms** (23-symbol file; 0.8.0: ~1 KB v2 delta) |
 | Delta append tail validation | **0.10 ms avg** steady-state; **0.51 ms** at a 4.13 MB delta (warm cache); **7.30 ms** cold read + offset scan of a 4.22 MB tail (0.8.0: 0.11 / 0.74 / 5.48 ms) |
 | Delta compaction (206,430 symbols) | **60 ms** to write a 10.16 MB base in the saved run (0.8.0: 45 ms for 5.78 MB) |
-| Symbol search (limit 50) | **5–8 ms** (0.8.0: 4–5 ms) |
+| Symbol search (limit 50) | **8 ms** (0.8.0: 4–5 ms) |
 | Exact name lookup | <1 ms |
 | Signature reconstruction (first read) | 1 ms in the saved run (page-cache dependent; 0.8.0: 1–10 ms) |
 | Find references, full scan | 144 ms in the saved run (0.8.0 saved run: 162 ms) |
 | Find references, **indexed** | **1–2 ms** (1 candidate file out of 6,838) |
-| Reference index size / load (lazy, first use) | 3.57 MB / 13–14 ms (0.8.0: 3.57 MB / 15 ms; 68k-file corpus: 69 MB / ~194 ms) |
+| Reference index size / load (lazy, first use) | 3.57 MB / **19 ms** (0.8.0: 3.57 MB / 15 ms; 68k-file corpus: 69 MB / ~194 ms) |
 | Callers / callees | 7 ms / 0 ms (0.8.0: 6 ms / 1 ms) |
 | Snapshot-resident memory (after load) | **~84 MB** vs **~75 MB** for the 0.8.0 v4 snapshot measured the same way (**+9 MB, +12%**) |
 | Peak RSS during build | 544 MB in the saved run; 463–544 MB across runs (0.8.0 canonical saved run: 461.5 MB) |
@@ -217,7 +217,7 @@ MIT
 | **include 感知跳转** | 当前文件经已解析 `#include` 图可达的定义排在前面——**软排序**：只重排、不丢候选 |
 | **重复副本折叠** | 内容完全相同（64 位内容哈希一致）且名字/种类相同的文件在 `F12` 中折叠为一个位置；`显示定义候选`（`si.showDefinitionCandidates`）可展开每个副本 |
 | **条件编译标注** | `#if` / `#ifdef` / `#ifndef` 块内的符号在候选、悬停与列表详情中显示原始条件文本（不求值；传统文件级 include guard 透明） |
-| **符号搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索符号`（列出签名、位置与种类；支持 `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` 过滤） |
+| **符号搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索符号`（列出名字、位置（`file:line`）与种类/parent——不含签名；支持 `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` 过滤） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
 | **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：中间当前函数，**左调用者、右被调用者**，可逐层展开、点击名字跳转 |
@@ -225,7 +225,7 @@ MIT
 | **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` 与定义/声明位置；成员/枚举常量/全局变量额外显示 parent/种类 |
 | **文档大纲** | `Ctrl+Shift+O` 列出当前文件的函数、类型，以及嵌套在类型下的成员与枚举常量 |
 | **索引诊断** | 命令 `Code Insight: 索引诊断` 打开 Markdown 报告：base/delta 体积、待合并变更、各类符号数、上次构建摘要、预算状态与内存占用 |
-| **索引管理** | 状态栏显示索引状态与函数数量；命令：配置索引目录、重建索引、清除缓存 |
+| **索引管理** | 状态栏显示索引状态与符号数量；命令：配置索引目录、重建索引、清除缓存 |
 
 ## 安装
 
@@ -257,7 +257,7 @@ cursor --install-extension code-insight-0.9.0.vsix
 
 1. 打开你的 C 工程目录（`File → Open Folder`）。
 2. 命令面板执行 **`Code Insight: 配置索引目录`**，勾选要索引的目录（例如 `component`、`plat`、`plugin`）。
-3. 确认重建，状态栏显示进度，完成后显示 `$(symbol-function) <符号数> symbols`。
+3. 确认重建，状态栏显示进度，完成后显示 `$(symbol-function) <符号数> 个符号`。
 4. 打开任意 `.c` 文件，光标放到函数调用上按 `F12`。
 
 > 默认**不索引任何目录**，由你显式选择，避免误索引内核副本、第三方库和构建产物。默认排除 `.git`、`build`、`tmp`、`node_modules`。
@@ -319,24 +319,24 @@ cursor --install-extension code-insight-0.9.0.vsix
 
 | 指标 | 0.9.0 结果（0.8.0 历史） |
 |---|---|
-| 符号 | **206,430**：成员 51,165 + 枚举常量 26,936 + 全局变量 9,510 = 新增 87,611 个符号；78,101 个带 `parent`（占全部符号 37.8%，所有成员与枚举常量都有），9,002 种 parent 名（0.8.0：118,730 符号，无成员/枚举/全局） |
+| 符号 | **206,430**：成员 51,165 + 枚举常量 26,936 + 全局变量 9,510 = 87,611 个新增种类符号，相对 0.8.0 **+87,700**（多出的 89 个来自 B3 扫描/typedef 修复导致的既有种类数量变化）；78,101 个带 `parent`（占全部符号 37.8%，所有成员与枚举常量都有），9,002 种 parent 名（0.8.0：118,730 符号，无成员/枚举/全局） |
 | include 图 | 34,538 条原始 `#include` 指令 → 索引根内 6,820 条边（**19.7%**，按文件去重；3,027 个文件；系统头文件与根外目标不建边；与 0.8.0 相同） |
 | 条件符号 | 40,890 / 206,430（**19.8%**）带条件标注，2,309 种文本（0.8.0：27,967 / 118,730 = 23.6%，2,070 种文本）。比例下降是因为新增的成员/枚举/全局大多无条件；带条件的绝对数量增加了 12,923 个 |
 | 内容哈希 | 6,838 / 6,838 个文件（64 位；与 0.8.0 相同） |
 | 建索引（单遍剥离，4 workers） | 保存运行 **2.14 s**；交替 A/B 运行 **2.14–2.45 s（中位数约 2.24 s）**，同语料 0.8.0 为 **1.64–1.85 s（中位数约 1.68 s）**——总计 **+34%**，parse 阶段 **中位数 1.86 s vs 1.38 s（+35%）**。**<20% 的构建开销目标未达成**。0.8.0 历史：热缓存典型 1.71–1.89 s（中位数约 1.84 s；单遍剥离修复前 1.97–2.13 s） |
 | 快照体积 / 加载（列式 v5） | 保存运行 **10.16 MB / 40 ms**（0.8.0 v4：5.78 MB / 31 ms）——**+75.8%**，超过 <35% 目标。增长来自 87,611 个新符号（每符号 27 B）、更大的名字表与新增的 parent 表（186.6 KB） |
-| 哈希 / include 扫描成本 | 74.9 MB 内容哈希 101 ms（742 MB/s）；原始 include 扫描单线程 0.67 s + 解析 0.13 s（页缓存热；与 0.8.0 相同） |
+| 哈希 / include 扫描成本 | 74.9 MB 内容哈希 **102 ms**（**737 MB/s**）；原始 include 扫描单线程 **672 ms** + 解析 **121 ms**（页缓存热；0.8.0 历史：101 ms / 742 MB/s、0.67 s + 0.13 s） |
 | 定义排序 + 分组（`F12`） | 最热名字（`public`，1,001 个定义）上 rank 均值 **0.91 ms** / group 均值 **1.38 ms**；首次冷调用 4.61 ms；热路径最大观测 rank 1.14 ms / group 2.50 ms（0.8.0：470 个定义时 rank 约 0.52 ms / group 约 0.84 ms） |
 | **字段跳转（`->` / `.`）** | 最热成员名（`public`，1,001 个成员定义，截断 50）上 **均值 0.94 ms / 最大 1.22 ms**（`findByName` + kind 过滤 + rank + group）——满足 **<5 ms** 目标 |
 | 保存单文件（增量符号索引） | 追加 **1.1 KB / 1 ms**（v3 delta）；overlay 更新 **<1 ms**（23 符号文件；0.8.0：约 1 KB v2 delta） |
 | delta 尾部校验 | 稳态均值 **0.10 ms**；4.13 MB delta 附近 **0.51 ms**（热缓存）；冷读 + 偏移扫描 4.22 MB 尾部 **7.30 ms**（0.8.0：0.11 / 0.74 / 5.48 ms） |
 | delta compaction（206,430 符号） | 保存运行写出 10.16 MB base 用 **60 ms**（0.8.0：5.78 MB / 45 ms） |
-| 符号搜索（上限 50） | **5–8 ms**（0.8.0：4–5 ms） |
+| 符号搜索（上限 50） | **8 ms**（0.8.0：4–5 ms） |
 | 按名精确查找 | <1 ms |
 | 签名重建（首次读取） | 保存运行 1 ms（与页缓存有关；0.8.0：1–10 ms） |
 | 查找引用，全量扫描 | 保存运行 144 ms（0.8.0 保存运行 162 ms） |
 | 查找引用，**倒排索引** | **1–2 ms**（候选文件 1 个 / 6,838 个） |
-| 引用索引体积 / 加载（惰性，首次使用） | 3.57 MB / 13–14 ms（0.8.0：3.57 MB / 15 ms；68k 文件语料：69 MB / 约 194 ms） |
+| 引用索引体积 / 加载（惰性，首次使用） | 3.57 MB / **19 ms**（0.8.0：3.57 MB / 15 ms；68k 文件语料：69 MB / 约 194 ms） |
 | 调用者 / 被调用者 | 7 ms / 0 ms（0.8.0：6 ms / 1 ms） |
 | 加载后快照常驻内存 | **约 84 MB**，同法测得 0.8.0 v4 快照约 **75 MB**（**+9 MB，+12%**） |
 | 构建期峰值 RSS | 保存运行 544 MB；各轮 463–544 MB（0.8.0 保存的基准运行 461.5 MB） |
@@ -366,6 +366,7 @@ cursor --install-extension code-insight-0.9.0.vsix
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。
 - **同一个工作区打开多个窗口会共享同一份索引**（`context.storageUri`）。共享存储安全检查只覆盖**符号 delta**（`symbols.sidx.delta`）；引用索引 delta（`symbols.names.delta`）在 rebuild/compaction 时仍会被删除。若另一个窗口也在追加符号 delta，本窗口会在删除前重新核对大小，保留该 delta，并在本次进程生命周期内禁用自动 compaction（保护对方的记录），因此此时不会触发 5,000 个文件变更 / 32 MB 的安全上限。并发窗口可能看到过期结果，直到重新加载索引——**重新加载窗口即可恢复**。目前建议**一个工作区只开一个窗口**。
 - 倒排索引会让索引占用增加约三分之一；标识符以 32 位哈希存储，碰撞只会增加候选文件（命中前仍精确校验），不会漏报。
+- 需要 C/C++ 语言标识（`.c`/`.h` 以 `c`/`cpp` 打开，内置语法即可提供）。
 
 ## 隐私与安全
 
