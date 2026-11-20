@@ -4,7 +4,7 @@
  */
 import * as vscode from 'vscode'
 
-import type { SymbolEntry, SymbolKind } from '../shared/types'
+import type { SymbolEntry, SymbolKind, SymbolTable } from '../shared/types'
 import { dirOfRel } from './paths'
 
 /** 光标处的标识符（允许 `foo`、`obj->member` 的成员、宏名）。 */
@@ -96,6 +96,13 @@ export function toVscodeSymbolKind(kind: SymbolKind): vscode.SymbolKind {
       return vscode.SymbolKind.Enum
     case 'typedef':
       return vscode.SymbolKind.Class
+    // B3 v5 新增三类：大纲里成员/枚举常量/全局变量用 VS Code 原生图标
+    case 'member':
+      return vscode.SymbolKind.Field
+    case 'enumConstant':
+      return vscode.SymbolKind.EnumMember
+    case 'variable':
+      return vscode.SymbolKind.Variable
     case 'declaration':
     case 'function':
     default:
@@ -118,9 +125,77 @@ export function kindLabel(kind: SymbolKind): string {
       return vscode.l10n.t('Enum')
     case 'typedef':
       return vscode.l10n.t('Typedef')
+    case 'member':
+      return vscode.l10n.t('Member')
+    case 'enumConstant':
+      return vscode.l10n.t('Enum Constant')
+    case 'variable':
+      return vscode.l10n.t('Variable')
     case 'function':
     default:
       return vscode.l10n.t('Function')
+  }
+}
+
+/** 可作为「成员归属」父类型的符号种类（struct/union/enum/typedef）。 */
+const PARENT_KINDS: readonly SymbolKind[] = ['struct', 'union', 'enum', 'typedef']
+
+/**
+ * 成员/枚举常量父类型的种类：查快照里的同名类型符号，同文件优先，其次按
+ * struct > union > enum > typedef 取第一个（typedef 别名只在前者都不存在时使用）。
+ * 查不到（旧快照/无表/父级已被删）返回 undefined，调用方退化掉 `struct` 前缀。
+ */
+export function parentKindOf(entry: SymbolEntry, table?: SymbolTable): SymbolKind | undefined {
+  if (!entry.parent || !table) {
+    return undefined
+  }
+  try {
+    const candidates = table
+      .findByName(entry.parent)
+      .filter((candidate) => PARENT_KINDS.includes(candidate.kind))
+    if (candidates.length === 0) {
+      return undefined
+    }
+    const sameFile = candidates.filter((candidate) => candidate.file === entry.file)
+    const pool = sameFile.length > 0 ? sameFile : candidates
+    for (const kind of PARENT_KINDS) {
+      if (pool.some((candidate) => candidate.kind === kind)) {
+        return kind
+      }
+    }
+    return pool[0]?.kind
+  } catch (error) {
+    console.error('[code-insight] parent kind lookup failed', error)
+    return undefined
+  }
+}
+
+/**
+ * 成员/枚举常量/全局变量的归属描述（B3 §3.7），hover 与搜索列表共用：
+ * `member of struct sk_buff` / `enumerator of enum foo` / `variable`。
+ * 其他符号种类返回 undefined（调用方使用 kindLabel）。
+ */
+export function memberPhrase(entry: SymbolEntry, parentKind?: SymbolKind): string | undefined {
+  switch (entry.kind) {
+    case 'member':
+      if (!entry.parent) {
+        return vscode.l10n.t('Member')
+      }
+      if (parentKind === 'struct') {
+        return vscode.l10n.t('member of struct {0}', entry.parent)
+      }
+      if (parentKind === 'union') {
+        return vscode.l10n.t('member of union {0}', entry.parent)
+      }
+      return vscode.l10n.t('member of {0}', entry.parent)
+    case 'enumConstant':
+      return entry.parent
+        ? vscode.l10n.t('enumerator of enum {0}', entry.parent)
+        : vscode.l10n.t('Enumerator')
+    case 'variable':
+      return vscode.l10n.t('variable')
+    default:
+      return undefined
   }
 }
 

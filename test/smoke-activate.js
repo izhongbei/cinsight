@@ -2014,6 +2014,245 @@ async function checkCallHierarchyIncludeAware() {
   }
 }
 
+/**
+ * B3 Task 4（字段跳转 / 大纲嵌套 / 悬停归属 / @kind 搜索）：
+ * 用真实 provider + 真实 createSymbolTable（+ 真实 searchSymbols）验证 v5 新符号的 UI 行为。
+ * fake service 只提供查询入口（definitions/fileSymbols/search/snapshot/路径换算），
+ * 这样断言覆盖的是编译产物里的真实逻辑，而不是测试内自造的排序。
+ */
+async function checkMemberSymbolUi() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { registerCommands } = require(path.join(dist, 'src/vscode/commands.js'))
+  const { registerDefinitionProvider } = require(
+    path.join(dist, 'src/vscode/providers/definition.js'),
+  )
+  const { registerDocumentSymbolProvider } = require(
+    path.join(dist, 'src/vscode/providers/document-symbol.js'),
+  )
+  const { registerHoverProvider } = require(path.join(dist, 'src/vscode/providers/hover.js'))
+  const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
+  const { searchSymbols } = require(path.join(dist, 'src/core/query.js'))
+  const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
+
+  const workspaceRoot = EXT_ROOT
+  const sourceFile = 'src/main.c'
+  const headerFile = 'inc/skbuff.h'
+  const entries = [
+    { name: 'sk_buff', kind: 'struct', file: headerFile, line: 0, endLine: 3, column: 7 },
+    { name: 'len', kind: 'member', file: headerFile, line: 1, endLine: 1, column: 6, parent: 'sk_buff' },
+    { name: 'data', kind: 'member', file: headerFile, line: 2, endLine: 2, column: 7, parent: 'sk_buff' },
+    { name: 'E', kind: 'enum', file: headerFile, line: 4, endLine: 7, column: 12 },
+    { name: 'E_A', kind: 'enumConstant', file: headerFile, line: 5, endLine: 5, column: 1, parent: 'E' },
+    { name: 'E_B', kind: 'enumConstant', file: headerFile, line: 6, endLine: 6, column: 1, parent: 'E' },
+    { name: 'g', kind: 'variable', file: headerFile, line: 8, endLine: 8, column: 4 },
+    { name: 'f', kind: 'function', file: headerFile, line: 9, endLine: 9, column: 4 },
+    // 同名全局变量：用来证明字段访问只落到成员、普通 F12 仍能看到全部候选
+    { name: 'len', kind: 'variable', file: sourceFile, line: 0, endLine: 0, column: 4 },
+  ]
+  const table = createSymbolTable(
+    ['.'],
+    [sourceFile, headerFile].map((file) => ({ path: file, mtimeMs: 0, size: 0 })),
+    entries,
+    1,
+    SNAPSHOT_VERSION,
+    { includes: new Map([[sourceFile, [headerFile]]]) },
+  )
+  const entryByName = (name) => entries.filter((entry) => entry.name === name)
+  const service = {
+    configuredRoots: ['.'],
+    snapshot: table,
+    workspaceRoot,
+    definitions: (name) => entryByName(name),
+    fileSymbols: (relPath) => table.entriesInFile(relPath),
+    search: (query, limit, kinds) => searchSymbols(table, query, { limit: limit ?? 200, kinds }),
+    signature: async (entry) => `int ${entry.name};`,
+    toRelative: (absPath) => path.relative(workspaceRoot, absPath).split(path.sep).join('/'),
+    toAbsolute: (relPath) => path.join(workspaceRoot, relPath),
+  }
+  const headerText = [
+    'struct sk_buff {',
+    '\tint len;',
+    '\tchar *data;',
+    '};',
+    'typedef enum E {',
+    '\tE_A,',
+    '\tE_B',
+    '} E;',
+    'int g;',
+    'int f(void) { return 0; }',
+  ].join('\n')
+  const headerDocument = new TextDocument(
+    Uri.file(path.join(workspaceRoot, headerFile)),
+    headerText,
+  )
+  const cancelToken = { isCancellationRequested: false }
+
+  // ---- 字段跳转：p->f / v.f / .f = 都只解析到 kind='member' ----
+  const definitionDisposable = registerDefinitionProvider(service)
+  try {
+    const provider = registrations.providers
+      .filter(([kind]) => kind === 'definition')
+      .pop()[2]
+    const contexts = [
+      ['skb->len;', 7, 'p->field'],
+      ['v.len;', 3, 'v.field'],
+      ['.len = 1;', 2, '.field designated initializer'],
+    ]
+    for (const [lineText, position, label] of contexts) {
+      const document = new TextDocument(Uri.file(path.join(workspaceRoot, sourceFile)), lineText + '\n')
+      const locations = await provider.provideDefinition(document, new Position(0, position), cancelToken)
+      assert.ok(Array.isArray(locations), `${label}: definition provider returns locations`)
+      assert.equal(locations.length, 1, `${label}: resolves to the single member candidate`)
+      assert.equal(
+        locations[0].uri.fsPath,
+        path.join(workspaceRoot, headerFile),
+        `${label}: jumps to the header holding the member`,
+      )
+      assert.equal(locations[0].range.start.line, 1, `${label}: jumps to the member line`)
+    }
+
+    // 无成员命中：回退普通定义流程（`p->g` 落到全局变量 g）
+    const fallbackDocument = new TextDocument(
+      Uri.file(path.join(workspaceRoot, sourceFile)),
+      'p->g;\n',
+    )
+    const fallback = await provider.provideDefinition(
+      fallbackDocument,
+      new Position(0, 3),
+      cancelToken,
+    )
+    assert.ok(Array.isArray(fallback) && fallback.length === 1, 'field access without member falls back')
+    assert.equal(fallback[0].range.start.line, 8, 'fallback jumps to the global variable declaration')
+  } finally {
+    definitionDisposable.dispose()
+  }
+
+  // ---- 大纲嵌套：struct 成员 / enum 常量挂到类型下，global 与函数留顶层 ----
+  const documentSymbolDisposable = registerDocumentSymbolProvider(service)
+  try {
+    const provider = registrations.providers
+      .filter(([kind]) => kind === 'documentSymbol')
+      .pop()[2]
+    const symbols = provider.provideDocumentSymbols(headerDocument, cancelToken)
+    assert.deepEqual(
+      symbols.map((symbol) => symbol.name),
+      ['sk_buff', 'E', 'g', 'f'],
+      'outline keeps types/globals/functions at the top level',
+    )
+    const structSymbol = symbols[0]
+    assert.deepEqual(
+      structSymbol.children.map((child) => child.name),
+      ['len', 'data'],
+      'struct members are nested under the struct',
+    )
+    assert.equal(structSymbol.children[0].kind, SymbolKind.Field, 'member uses SymbolKind.Field')
+    assert.equal(structSymbol.children[0].detail, 'Member', 'member detail is the kind label')
+    assert.equal(structSymbol.children[0].range.start.line, 1, 'nested member keeps its own range')
+    const enumSymbol = symbols[1]
+    assert.deepEqual(
+      enumSymbol.children.map((child) => child.name),
+      ['E_A', 'E_B'],
+      'enum constants are nested under the enum',
+    )
+    assert.equal(enumSymbol.children[0].kind, SymbolKind.EnumMember, 'enum constant uses SymbolKind.EnumMember')
+    assert.equal(symbols[2].kind, SymbolKind.Variable, 'global uses SymbolKind.Variable')
+    assert.deepEqual(symbols[2].children, [], 'global has no children')
+    assert.deepEqual(symbols[3].children, [], 'function has no children')
+  } finally {
+    documentSymbolDisposable.dispose()
+  }
+
+  // ---- 悬停：成员/枚举常量/全局变量补归属行，且不破坏原有分组/位置行 ----
+  const hoverDisposable = registerHoverProvider(service)
+  try {
+    const provider = registrations.providers
+      .filter(([kind]) => kind === 'hover')
+      .pop()[2]
+    const memberHover = await provider.provideHover(headerDocument, new Position(1, 6), cancelToken)
+    assert.ok(memberHover, 'member hover returns a Hover')
+    const memberMarkdown = memberHover.contents[0].value
+    assert.match(memberMarkdown, /member of struct sk_buff/, 'member hover shows the parent struct')
+    assert.match(memberMarkdown, /in this file/, 'member hover keeps the inclusion summary line')
+
+    const enumHover = await provider.provideHover(headerDocument, new Position(5, 2), cancelToken)
+    assert.ok(enumHover, 'enum constant hover returns a Hover')
+    assert.match(
+      enumHover.contents[0].value,
+      /enumerator of enum E/,
+      'enum constant hover shows the parent enum',
+    )
+
+    const variableHover = await provider.provideHover(headerDocument, new Position(8, 5), cancelToken)
+    assert.ok(variableHover, 'global hover returns a Hover')
+    assert.match(variableHover.contents[0].value, /\n\nvariable\n\n/, 'global hover is marked variable')
+  } finally {
+    hoverDisposable.dispose()
+  }
+
+  // ---- si.searchSymbol：@member / @var 过滤 + detail 显示 kind+parent ----
+  const previousEditor = vscode.window.activeTextEditor
+  const customBaseline = registrations.customQuickPicks.length
+  const commands = registerCommands(undefined, service)
+  try {
+    vscode.window.activeTextEditor = {
+      document: headerDocument,
+      selection: { active: new Position(1, 6) },
+    }
+    const handler = [...registrations.commands]
+      .reverse()
+      .find(([id]) => id === 'si.searchSymbol')[1]
+    const pending = handler()
+    const pick = registrations.customQuickPicks[customBaseline]
+    assert.ok(pick, 'searchSymbol creates an editable QuickPick')
+
+    pick._onChange('@member le')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      ['len'],
+      '@member filters out the same-name global variable',
+    )
+    assert.match(
+      pick.items[0].detail,
+      /member of struct sk_buff/,
+      'member QuickPick detail shows kind + parent',
+    )
+
+    pick._onChange('@var le')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      ['len'],
+      '@var returns the global variable of the same name',
+    )
+    assert.match(pick.items[0].detail, /^Variable/, '@var detail keeps the plain kind label')
+
+    pick._onChange('@type sk')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      ['sk_buff'],
+      '@type filters to type symbols',
+    )
+
+    pick._onChange('len')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      ['len', 'len'],
+      'without @kind the search keeps both candidates (order preserved)',
+    )
+
+    pick.selectedItems = [pick.items[0]]
+    pick._onAccept()
+    await pending
+  } finally {
+    commands.dispose()
+    vscode.window.activeTextEditor = previousEditor
+    registrations.quickPickResponses.length = 0
+  }
+}
+
 async function main() {
   const extension = require(path.join(EXT_ROOT, 'dist/src/vscode/extension.js'))
   assert.equal(typeof extension.activate, 'function', 'extension.activate must be a function')
@@ -2049,6 +2288,7 @@ async function main() {
   await checkDefinitionCandidatesCommand()
   await checkListAnnotations()
   await checkCallHierarchyIncludeAware()
+  await checkMemberSymbolUi()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -2078,6 +2318,7 @@ async function main() {
   console.log('  zh-cn labels: 包含/未包含/副本/条件 OK')
   console.log('  call hierarchy include-aware: included definition ranks before a closer non-included one OK')
   console.log('  gotoDefinition single multi-copy group: copy picker (not direct representative) OK')
+  console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
 }
 
 main()

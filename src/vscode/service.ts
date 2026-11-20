@@ -375,14 +375,14 @@ export class SymbolService implements vscode.Disposable {
 
   // ---- 查询入口（Provider / 命令使用） ----
 
-  search(query: string, limit?: number): SymbolEntry[] {
+  search(query: string, limit?: number, kinds?: readonly SymbolKind[]): SymbolEntry[] {
     const snapshot = this.snapshotValue
     if (!snapshot || !query || !query.trim()) {
       return []
     }
     try {
       const effectiveLimit = limit ?? Math.max(1, readConfig().searchLimit)
-      return searchSymbols(snapshot, query, { limit: effectiveLimit })
+      return searchSymbols(snapshot, query, { limit: effectiveLimit, kinds })
     } catch (error) {
       this.logger.error('searchSymbols failed', error)
       return []

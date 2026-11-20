@@ -10,7 +10,7 @@ import * as vscode from 'vscode'
 import { groupDefinitions, type DefinitionGroup } from '../../core/definition-groups'
 import type { SymbolService } from '../service'
 import { rankDefinitions } from '../rank-definitions'
-import { getWordAt, noopDisposable } from '../util'
+import { getWordAt, memberPhrase, noopDisposable, parentKindOf } from '../util'
 import { C_CPP_SELECTOR, sourceFileOf } from './definition'
 
 /**
@@ -73,6 +73,11 @@ class SourceInsightHoverProvider implements vscode.HoverProvider {
 
       const sections: string[] = []
       sections.push(`\`\`\`c\n${signature}\n\`\`\``)
+      // 成员/枚举常量/全局变量：签名后补一行归属（B3 §3.7）；其他种类保持原样。
+      const phrase = memberPhrase(best, parentKindOf(best, this.service.snapshot))
+      if (phrase) {
+        sections.push(phrase)
+      }
       sections.push(summarizeGroup(group, sourceFile))
       sections.push(
         vscode.l10n.t('Definition: {0}:{1}', best.file, String(best.line + 1)),

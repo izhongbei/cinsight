@@ -6,6 +6,7 @@
 import * as vscode from 'vscode'
 
 import { type DefinitionGroup } from '../core/definition-groups'
+import { parseSearchQuery } from '../core/search-query'
 import type { CallerHit, ReferenceHit, SymbolEntry, SymbolTable } from '../shared/types'
 import {
   includedFor,
@@ -14,7 +15,7 @@ import {
 } from './list-annotations'
 import { baseName, normalizeRelative } from './paths'
 import type { SymbolService } from './service'
-import { executeCommand, kindLabel, openLocation } from './util'
+import { executeCommand, kindLabel, memberPhrase, openLocation, parentKindOf } from './util'
 
 const SEARCH_DEBOUNCE_MS = 120
 
@@ -75,6 +76,20 @@ function showAndWait<T extends vscode.QuickPickItem>(
   })
 }
 
+/**
+ * 列表 detail 的符号描述：成员/枚举常量用归属文案（`member of struct sk_buff`，
+ * 同时体现 kind 与 parent），其他种类沿用 kindLabel。
+ */
+function symbolDetailBase(entry: SymbolEntry, table: SymbolTable | undefined): string {
+  if (entry.kind === 'member' || entry.kind === 'enumConstant') {
+    const phrase = memberPhrase(entry, parentKindOf(entry, table))
+    if (phrase) {
+      return phrase
+    }
+  }
+  return kindLabel(entry.kind)
+}
+
 function toSymbolItem(
   entry: SymbolEntry,
   sourceFile: string | undefined,
@@ -84,8 +99,9 @@ function toSymbolItem(
     label: entry.name,
     description: `${entry.file}:${entry.line + 1}`,
     // 设计 §3.6：有源文件锚点 + 快照时标注 included/not included；条件条目再标条件。
+    // B3 §3.5：成员/枚举常量的 detail 显示 kind + parent。
     detail: withListAnnotations(
-      kindLabel(entry.kind),
+      symbolDetailBase(entry, table),
       includedFor(table, sourceFile, entry.file),
       entry.condition,
     ),
@@ -103,7 +119,9 @@ export async function showSymbolQuickPick(
       return
     }
     const quickPick = vscode.window.createQuickPick<SymbolQuickPickItem>()
-    quickPick.placeholder = vscode.l10n.t('Search functions and macros across the index')
+    quickPick.placeholder = vscode.l10n.t(
+      'Search symbols across the index (filter with @func, @type, @macro, @member, @enum, @var)',
+    )
     quickPick.matchOnDescription = true
     quickPick.matchOnDetail = true
     quickPick.ignoreFocusOut = true
@@ -125,9 +143,11 @@ export async function showSymbolQuickPick(
           timer = setTimeout(() => {
             try {
               const table = service.snapshot
-              quickPick.items = value.trim()
+              // @kind 过滤词（B3 §3.5）：`@member len` -> 只在成员里搜 len。
+              const parsed = parseSearchQuery(value)
+              quickPick.items = parsed.query
                 ? service
-                    .search(value)
+                    .search(parsed.query, undefined, parsed.kinds)
                     .map((entry) => toSymbolItem(entry, sourceFile, table))
                 : []
             } catch (error) {
