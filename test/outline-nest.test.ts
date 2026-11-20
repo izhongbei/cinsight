@@ -111,6 +111,19 @@ test('buildOutlineTree: same-name types in one file are matched by range', () =>
   assert.deepEqual(second.children.map((node) => node.entry.name), ['a'])
 })
 
+test('buildOutlineTree: same-line type definitions nest by parent name, not file order', () => {
+  const tree = buildOutlineTree([
+    entry('foo', 'struct', 0, 0),
+    entry('a', 'member', 0, 0, 'foo'),
+    entry('bar', 'struct', 0, 0),
+    entry('b', 'member', 0, 0, 'bar'),
+  ])
+  assert.deepEqual(names(tree), ['foo', 'bar'])
+  assert.deepEqual(childrenOf(tree, 'foo'), ['a'])
+  // 区间跨度/起点都相同：必须按 child.parent 归到 bar，而不是文件里先出现的 foo
+  assert.deepEqual(childrenOf(tree, 'bar'), ['b'])
+})
+
 test('buildOutlineTree: empty input yields an empty outline', () => {
   assert.deepEqual(buildOutlineTree([]), [])
 })

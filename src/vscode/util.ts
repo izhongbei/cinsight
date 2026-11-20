@@ -191,7 +191,8 @@ export function memberPhrase(entry: SymbolEntry, parentKind?: SymbolKind): strin
     case 'enumConstant':
       return entry.parent
         ? vscode.l10n.t('enumerator of enum {0}', entry.parent)
-        : vscode.l10n.t('Enumerator')
+        : // 没有 parent 时与 kindLabel 保持同一个人可读名称（不再用 "Enumerator"）。
+          kindLabel('enumConstant')
     case 'variable':
       return vscode.l10n.t('variable')
     default:

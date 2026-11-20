@@ -133,7 +133,7 @@ DefinitionProvider：
 
 - DocumentSymbolProvider：`entriesInFile` 中 `struct/union/enum` 为顶层节点；`member`/`enumConstant` 挂到满足 `type.line <= child.line && child.endLine <= type.endLine` 的**最内层**类型下；匹配不到时按 `entry.parent` 名字兜底；无法归属则留在顶层
 - Hover：`member of struct Foo` / `enumerator of enum Bar` / `variable`；沿用现有签名/位置行
-- `toVscodeSymbolKind`/`kindLabel` 增加三类：Field(17)/EnumMember(20)/Variable(13)（VS Code `SymbolKind` 数值）
+- `toVscodeSymbolKind`/`kindLabel` 增加三类：Field(7)/EnumMember(21)/Variable(12)（VS Code `SymbolKind` 真实数值；实现使用符号常量 `vscode.SymbolKind.*`，不硬编码数字）
 
 ### 3.8 预算默认值
 

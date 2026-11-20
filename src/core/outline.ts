@@ -35,7 +35,14 @@ function spanOf(entry: SymbolEntry): number {
   return Math.max(0, entry.endLine - entry.line)
 }
 
-/** 包含 child 的最内层容器（区间跨度最小者；同跨度取先出现者，保证稳定）。 */
+/**
+ * 包含 child 的最内层容器。
+ *
+ * 先比区间跨度（最小者最内层）。跨度相同时（典型：同一行定义多个类型，
+ * `struct foo { int a; }; struct bar { int b; };`）不能只按文件顺序：
+ * 优先取名字等于 `child.parent` 的容器，其次取起点离 child 最近的前置容器，
+ * 最后才按文件顺序（保持稳定）。
+ */
 function innermostContainer(
   child: SymbolEntry,
   containers: readonly SymbolEntry[],
@@ -47,9 +54,26 @@ function innermostContainer(
       continue
     }
     const span = spanOf(container)
-    if (span < bestSpan) {
+    if (best === undefined || span < bestSpan) {
       best = container
       bestSpan = span
+      continue
+    }
+    if (span > bestSpan) {
+      continue
+    }
+    // 同跨度：名字与 parent 一致者优先（v5 同文件同名类型也能各归各的）。
+    const named = child.parent !== undefined && container.name === child.parent
+    const bestNamed = child.parent !== undefined && best.name === child.parent
+    if (named !== bestNamed) {
+      if (named) {
+        best = container
+      }
+      continue
+    }
+    // 再按「最近的前置起点」；起点也相同则保持文件顺序。
+    if (container.line > best.line) {
+      best = container
     }
   }
   return best

@@ -90,12 +90,20 @@ function symbolDetailBase(entry: SymbolEntry, table: SymbolTable | undefined): s
   return kindLabel(entry.kind)
 }
 
+/**
+ * 符号条目。`alwaysShow` 只给动态搜索（`showSymbolQuickPick`）：宿主会拿输入框的
+ * 原始值（如 `@member le`）重新过滤 items，而 label/description/detail 里没有这个词，
+ * 不设置就会把所有结果都隐藏。过滤已经由 `searchSymbols`（解析后的 query + kinds）
+ * 完成，因此这里绕过宿主过滤、保持我们自己的排名顺序。
+ * 静态 `showQuickPick` 列表仍交给宿主过滤，不设置该字段。
+ */
 function toSymbolItem(
   entry: SymbolEntry,
   sourceFile: string | undefined,
   table: SymbolTable | undefined,
+  dynamic = false,
 ): SymbolQuickPickItem {
-  return {
+  const item: SymbolQuickPickItem = {
     label: entry.name,
     description: `${entry.file}:${entry.line + 1}`,
     // 设计 §3.6：有源文件锚点 + 快照时标注 included/not included；条件条目再标条件。
@@ -107,6 +115,7 @@ function toSymbolItem(
     ),
     entry,
   }
+  return dynamic ? { ...item, alwaysShow: true } : item
 }
 
 /** si.searchSymbol：输入即搜（120 ms 防抖），选中后跳转。 */
@@ -148,7 +157,7 @@ export async function showSymbolQuickPick(
               quickPick.items = parsed.query
                 ? service
                     .search(parsed.query, undefined, parsed.kinds)
-                    .map((entry) => toSymbolItem(entry, sourceFile, table))
+                    .map((entry) => toSymbolItem(entry, sourceFile, table, true))
                 : []
             } catch (error) {
               console.error('[code-insight] symbol quick pick search failed', error)

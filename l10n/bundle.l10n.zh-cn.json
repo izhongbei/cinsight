@@ -42,7 +42,6 @@
   "Enum": "枚举",
   "Enum Constant": "枚举常量",
   "enumerator of enum {0}": "枚举 {0} 的枚举常量",
-  "Enumerator": "枚举常量",
   "Failed to update the Code Insight index roots setting.": "更新 Code Insight 索引目录设置失败。",
   "Files: {0}": "文件：{0}",
   "Finding callees of \"{0}\"…": "正在查找“{0}”调用的函数…",

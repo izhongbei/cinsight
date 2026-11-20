@@ -443,8 +443,36 @@ const vscode = {
       return item
     },
     createQuickPick: () => {
+      // 模拟真实宿主的输入过滤：输入框的原始值会重新过滤已设置 items 的可见列表，
+      // 只有 `alwaysShow: true` 的条目能绕过（动态搜索靠它保住自己的排名结果）。
+      const hostVisibleItems = () => {
+        const value = String(quickPick.value ?? '').trim().toLowerCase()
+        if (!value) return quickPick._allItems
+        return quickPick._allItems.filter((item) => {
+          if (!item) return false
+          if (item.alwaysShow) return true
+          const fields = [item.label]
+          if (quickPick.matchOnDescription) fields.push(item.description)
+          if (quickPick.matchOnDetail) fields.push(item.detail)
+          return fields.some(
+            (field) => typeof field === 'string' && field.toLowerCase().includes(value),
+          )
+        })
+      }
       const quickPick = {
-        items: [],
+        _allItems: [],
+        value: '',
+        get items() {
+          // 读取到的是宿主过滤之后用户真正看到的候选（模拟 VS Code QuickPick）
+          return hostVisibleItems()
+        },
+        set items(next) {
+          quickPick._allItems = Array.isArray(next) ? next : []
+        },
+        /** 未经过滤的原始 items（调试/断言用） */
+        get allItems() {
+          return quickPick._allItems
+        },
         placeholder: '',
         matchOnDescription: false,
         matchOnDetail: false,
@@ -454,7 +482,10 @@ const vscode = {
         _onAccept: undefined,
         _onHide: undefined,
         onDidChangeValue: (listener) => {
-          quickPick._onChange = listener
+          quickPick._onChange = (value) => {
+            quickPick.value = value
+            listener(value)
+          }
           return disposable('quickPickValue')
         },
         onDidAccept: (listener) => {
@@ -2033,6 +2064,7 @@ async function checkMemberSymbolUi() {
   const { createSymbolTable } = require(path.join(dist, 'src/core/symbol-table.js'))
   const { searchSymbols } = require(path.join(dist, 'src/core/query.js'))
   const { SNAPSHOT_VERSION } = require(path.join(dist, 'src/shared/types.js'))
+  const { kindLabel, memberPhrase } = require(path.join(dist, 'src/vscode/util.js'))
 
   const workspaceRoot = EXT_ROOT
   const sourceFile = 'src/main.c'
@@ -2087,6 +2119,27 @@ async function checkMemberSymbolUi() {
   )
   const cancelToken = { isCancellationRequested: false }
 
+  // ---- 枚举常量的英文标签统一：kindLabel 与无 parent 的 memberPhrase 都用 "Enum Constant" ----
+  assert.equal(kindLabel('enumConstant'), 'Enum Constant', 'kindLabel uses one enum constant label')
+  const bareEnumConstant = {
+    name: 'BARE',
+    kind: 'enumConstant',
+    file: headerFile,
+    line: 0,
+    endLine: 0,
+    column: 0,
+  }
+  assert.equal(
+    memberPhrase(bareEnumConstant),
+    'Enum Constant',
+    'parentless enum constant reuses the same label',
+  )
+  assert.equal(
+    memberPhrase({ ...bareEnumConstant, parent: 'E' }, 'enum'),
+    'enumerator of enum E',
+    'hover phrase for an enum constant with a parent is unchanged',
+  )
+
   // ---- 字段跳转：p->f / v.f / .f = 都只解析到 kind='member' ----
   const definitionDisposable = registerDefinitionProvider(service)
   try {
@@ -2125,6 +2178,39 @@ async function checkMemberSymbolUi() {
     assert.equal(fallback[0].range.start.line, 8, 'fallback jumps to the global variable declaration')
   } finally {
     definitionDisposable.dispose()
+  }
+
+  // ---- 字段跳转候选上限：60 个成员候选只交出前 50 个（MAX_FIELD_CANDIDATES） ----
+  const cappedEntries = Array.from({ length: 60 }, (_, index) => ({
+    name: 'dup',
+    kind: 'member',
+    file: `inc/dup-${String(index).padStart(2, '0')}.h`,
+    line: index,
+    endLine: index,
+    column: 4,
+  }))
+  const cappedService = {
+    ...service,
+    definitions: (name) => (name === 'dup' ? cappedEntries : []),
+  }
+  const cappedDisposable = registerDefinitionProvider(cappedService)
+  try {
+    const cappedProvider = registrations.providers
+      .filter(([kind]) => kind === 'definition')
+      .pop()[2]
+    const cappedDocument = new TextDocument(
+      Uri.file(path.join(workspaceRoot, sourceFile)),
+      'p->dup;\n',
+    )
+    const capped = await cappedProvider.provideDefinition(
+      cappedDocument,
+      new Position(0, 3),
+      cancelToken,
+    )
+    assert.ok(Array.isArray(capped), 'capped field jump returns locations')
+    assert.equal(capped.length, 50, 'field jump caps member candidates at 50')
+  } finally {
+    cappedDisposable.dispose()
   }
 
   // ---- 大纲嵌套：struct 成员 / enum 常量挂到类型下，global 与函数留顶层 ----
@@ -2217,6 +2303,12 @@ async function checkMemberSymbolUi() {
       /member of struct sk_buff/,
       'member QuickPick detail shows kind + parent',
     )
+    // 宿主会用输入框原始值（含 @member）重新过滤 items；动态搜索必须 alwaysShow
+    assert.ok(
+      pick.allItems.length > 0 &&
+        pick.allItems.every((item) => item.alwaysShow === true),
+      'dynamic search items carry alwaysShow to bypass the host filter',
+    )
 
     pick._onChange('@var le')
     await new Promise((resolve) => setTimeout(resolve, 180))
@@ -2235,12 +2327,26 @@ async function checkMemberSymbolUi() {
       '@type filters to type symbols',
     )
 
-    pick._onChange('len')
+    // @enum 端到端：经过真实 QuickPick（含宿主过滤）仍能看到枚举常量
+    pick._onChange('@enum E_')
     await new Promise((resolve) => setTimeout(resolve, 180))
     assert.deepEqual(
       pick.items.map((item) => item.label),
-      ['len', 'len'],
-      'without @kind the search keeps both candidates (order preserved)',
+      ['E_A', 'E_B'],
+      '@enum searches enum constants through the real QuickPick path',
+    )
+    assert.match(
+      pick.items[0].detail,
+      /enumerator of enum E/,
+      '@enum detail shows the parent enum',
+    )
+
+    pick._onChange('E_')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      ['E_A', 'E_B'],
+      'without @kind the search keeps candidate order (distinct names make order observable)',
     )
 
     pick.selectedItems = [pick.items[0]]
