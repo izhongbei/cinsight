@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.1 — 2026-11-20
+
+### English
+
+- **Symlinked directories are now offered as index roots.** `Configure Index Roots` lists directories that are symbolic links (label suffix `(symlink)`, description `Symbolic link`) without recursing into them, so the picker can no longer escape the workspace or walk a link cycle. Selecting one indexes its target: `walkFiles` already follows a root link via `readdir` even with `sourceInsight.followSymlinks=false`, so indexing then works.
+- **Browse selections through a symlink target are mapped back.** The Browse dialog may return the target's real absolute path outside the workspace (for example `/outside/private/sub`); it is now mapped to the workspace-relative `<symlink>/<suffix>` path (`private/sub`) when the target is reachable through a top-level or one-level-deep directory symlink. Only genuinely unmappable paths are skipped, with a clearer warning that asks the user to select the symlinked directory inside the workspace instead.
+- `sourceInsight.followSymlinks` is unchanged: it still controls whether symlinks **nested inside** an indexed tree are traversed. A root that is itself a symlink is always followed.
+- New dependency-free core helper `src/core/workspace-dirs.ts` (`listCandidateDirectories`, `mapOutsidePathToWorkspace`; node `fs`/`path` only, no `vscode`), covered by real-filesystem tests in `test/workspace-dirs.test.ts` (real `mkdtemp` workspace and real symlinks; skipped gracefully where symlinks are not permitted).
+- 368 tests pass.
+
+### 中文
+
+- **符号链接目录现在是可选的索引根**：`配置索引目录` 会列出指向目录的符号链接（标签后缀 `(symlink)`、说明 `符号链接`），但不会递归进入链接，避免候选列表逃出工作区或陷入链接环。选中后索引其目标：即使 `sourceInsight.followSymlinks=false`，`walkFiles` 通过 `readdir` 也会跟随作为根的链接，因此随后索引即可正常工作。
+- **通过符号链接目标选择的 Browse 路径会映射回工作区**：Browse 对话框可能返回工作区之外的目标真实绝对路径（例如 `/outside/private/sub`）；当目标可通过顶层或下一层目录符号链接到达时，现在会映射为工作区内 `<链接名>/<后缀>` 相对路径（`private/sub`）。只有确实无法映射的路径才会被跳过，并提示改为选择工作区内的符号链接目录。
+- `sourceInsight.followSymlinks` 语义不变：仍只控制是否遍历索引树**内部嵌套**的符号链接；作为索引根的符号链接始终会被跟随。
+- 新增零依赖 core helper `src/core/workspace-dirs.ts`（`listCandidateDirectories`、`mapOutsidePathToWorkspace`；仅用 node `fs`/`path`，不依赖 `vscode`），并由 `test/workspace-dirs.test.ts` 的真实文件系统测试覆盖（真实 `mkdtemp` 工作区与真实符号链接；平台不允许创建链接时优雅跳过）。
+- 368 个单测通过。
+
 ## 0.9.0 — 2026-11-20
 
 ### English

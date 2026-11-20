@@ -62,7 +62,7 @@ Requires a host with **VS Code ≥ 1.90** (Cursor 3.x qualifies). No C/C++ exten
 3. Confirm the rebuild; the status bar shows progress, then `$(symbol-function) <count> symbols`.
 4. Open any `.c` file, put the cursor on a function call and press `F12`.
 
-> Nothing is indexed by default — you choose explicitly, so kernel copies, vendor libraries and build output stay out. `.git`, `build`, `tmp` and `node_modules` are excluded by default.
+> Nothing is indexed by default — you choose explicitly, so kernel copies, vendor libraries and build output stay out. `.git`, `build`, `tmp` and `node_modules` are excluded by default. Directories that are symbolic links are listed in the picker too (marked `(symlink)`); choosing one indexes its target, and a Browse selection made through the target's real path is mapped back to the workspace-relative path.
 
 ## Commands
 
@@ -181,6 +181,7 @@ Measured on a module set of **6,838 C/H files / 75 MB** (0.9.0 saved warm run; 0
 - **Duplicate folding only applies to identical content**: files must share the same 64-bit content hash (plus the same name and kind); the same code with different whitespace, line endings or comments keeps separate entries.
 - Reference scanning is textual (with comment/string stripping), not semantic; same-named but unrelated symbols match too; first searches on huge roots are bound by disk throughput.
 - Single-root workspaces only (the first workspace folder); `indexRoots` must be workspace-relative.
+- **Symlinked directories are supported as index roots.** The *Configure Index Roots* picker lists directories that are symbolic links (marked `(symlink)`) but never recurses into them, so the workspace never escapes through an unexpected link; selecting one indexes its target (the OS follows a root link even when it is the root itself). Browse selections made through a target's real path outside the workspace are mapped back to the workspace-relative `<symlink>/<suffix>` path when the target is reachable through a top-level or one-level-deep directory symlink; only genuinely unmappable paths are skipped with a warning. `sourceInsight.followSymlinks` still controls whether symlinks *nested inside* the indexed tree are traversed.
 - **Multiple windows on the same workspace share the index** (`context.storageUri`). The shared-storage safety check covers the **symbols delta** (`symbols.sidx.delta`) only; the reference-index delta (`symbols.names.delta`) is still deleted on rebuild/compaction. If another window appends to the symbols delta, this window re-checks its size right before deleting it, keeps that delta, and disables automatic compaction for the rest of the process lifetime to protect the other window's records — so the 5,000-change / 32 MB safety cap does not run in that state. Concurrent windows may see stale results until the index is reloaded; **reload the window to recover**. **One window per workspace is recommended for now.**
 - The reference index adds roughly one third to on-disk index storage; identifiers are stored as 32-bit hashes, so collisions can only add candidate files (they are verified before reporting).
 - Requires the C/C++ language id (`.c`/`.h` opened as `c`/`cpp`, which the built-in grammar provides).
@@ -263,7 +264,7 @@ cursor --install-extension code-insight-0.9.0.vsix
 3. 确认重建，状态栏显示进度，完成后显示 `$(symbol-function) <符号数> 个符号`。
 4. 打开任意 `.c` 文件，光标放到函数调用上按 `F12`。
 
-> 默认**不索引任何目录**，由你显式选择，避免误索引内核副本、第三方库和构建产物。默认排除 `.git`、`build`、`tmp`、`node_modules`。
+> 默认**不索引任何目录**，由你显式选择，避免误索引内核副本、第三方库和构建产物。默认排除 `.git`、`build`、`tmp`、`node_modules`。符号链接目录同样会出现在选择列表中（标注 `(symlink)`）：选中后索引其目标；用 Browse 对话框选中目标的真实路径时，也会映射回工作区内相对路径。
 
 ## 命令
 
@@ -370,6 +371,7 @@ cursor --install-extension code-insight-0.9.0.vsix
 - **重复副本折叠只对内容完全相同生效**：必须 64 位内容哈希一致（且名字/种类相同）；仅空白/换行/注释不同的相同代码不会折叠。
 - 引用扫描是文本级（已剥离注释/字符串），不是语义级；首次在大仓库上受磁盘吞吐限制。
 - 只支持单根工作区（取第一个 workspace folder）；`indexRoots` 必须是工作区内相对路径。
+- **支持把符号链接目录作为索引根。** *配置索引目录* 会列出指向目录的符号链接（标注 `(symlink)`），但不会递归进入链接，避免通过意外链接逃出工作区；选中后索引其目标（根本身是符号链接时，操作系统会跟随根链接）。用 Browse 对话框在目标真实路径（工作区外）下选择时，只要目标能通过顶层或下一层目录符号链接到达，就会映射回工作区内 `<链接名>/<后缀>` 路径；只有确实无法映射的路径才会告警跳过。`sourceInsight.followSymlinks` 仍然只控制是否遍历索引树**内部嵌套**的符号链接。
 - **同一个工作区打开多个窗口会共享同一份索引**（`context.storageUri`）。共享存储安全检查只覆盖**符号 delta**（`symbols.sidx.delta`）；引用索引 delta（`symbols.names.delta`）在 rebuild/compaction 时仍会被删除。若另一个窗口也在追加符号 delta，本窗口会在删除前重新核对大小，保留该 delta，并在本次进程生命周期内禁用自动 compaction（保护对方的记录），因此此时不会触发 5,000 个文件变更 / 32 MB 的安全上限。并发窗口可能看到过期结果，直到重新加载索引——**重新加载窗口即可恢复**。目前建议**一个工作区只开一个窗口**。
 - 倒排索引会让索引占用增加约三分之一；标识符以 32 位哈希存储，碰撞只会增加候选文件（命中前仍精确校验），不会漏报。
 - 需要 C/C++ 语言标识（`.c`/`.h` 以 `c`/`cpp` 打开，内置语法即可提供）。

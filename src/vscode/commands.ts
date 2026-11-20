@@ -13,13 +13,12 @@
  *   si.clearCache      清空内存索引 + 删除符号快照
  *   si.showIndexDiagnostics  在 Markdown 编辑器里展示索引诊断报告
  */
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import * as vscode from 'vscode'
 
 import { groupDefinitions } from '../core/definition-groups'
 import { renderDiagnosticsMarkdown } from '../core/diagnostics'
 import { DEFAULT_INDEX_BUDGET, evaluateBudget } from '../core/index-budget'
+import { listCandidateDirectories, mapOutsidePathToWorkspace } from '../core/workspace-dirs'
 import { suppressRebuildPrompt } from './config'
 import { sourceFileOf } from './providers/definition'
 import { showCallGraph } from './views/call-graph-panel'
@@ -146,10 +145,12 @@ async function configureRoots(service: SymbolService): Promise<void> {
   })
   for (const candidate of candidates) {
     items.push({
-      label: candidate,
-      description: vscode.l10n.t('Directory'),
-      value: candidate,
-      picked: currentRoots.has(candidate),
+      label: candidate.symlink ? `${candidate.path}  (symlink)` : candidate.path,
+      description: candidate.symlink
+        ? vscode.l10n.t('Symbolic link')
+        : vscode.l10n.t('Directory'),
+      value: candidate.path,
+      picked: currentRoots.has(candidate.path),
     })
   }
   items.push({
@@ -178,7 +179,7 @@ async function configureRoots(service: SymbolService): Promise<void> {
     }
   }
   if (browsed) {
-    for (const directory of await browseDirectories(service, workspaceRoot)) {
+    for (const directory of await browseDirectories(workspaceRoot)) {
       selected.add(directory)
     }
     // 只点了「浏览…」但没选到任何（工作区内）目录：保持原配置不变，避免误清空
@@ -218,35 +219,7 @@ async function configureRoots(service: SymbolService): Promise<void> {
   }
 }
 
-async function listCandidateDirectories(workspaceRoot: string): Promise<string[]> {
-  const skip = new Set(['.git', 'node_modules', '.vscode', '.svn', '.hg', 'out', 'dist'])
-  const result: string[] = []
-  const walk = async (rel: string, depth: number): Promise<void> => {
-    if (depth > 2) {
-      return
-    }
-    const absolute = rel ? path.join(workspaceRoot, rel.split('/').join(path.sep)) : workspaceRoot
-    let entries: fs.Dirent[]
-    try {
-      entries = await fs.promises.readdir(absolute, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || skip.has(entry.name)) {
-        continue
-      }
-      const childRel = rel ? `${rel}/${entry.name}` : entry.name
-      result.push(childRel)
-      await walk(childRel, depth + 1)
-    }
-  }
-  await walk('', 1)
-  result.sort((a, b) => a.localeCompare(b))
-  return result
-}
-
-async function browseDirectories(service: SymbolService, workspaceRoot: string): Promise<string[]> {
+async function browseDirectories(workspaceRoot: string): Promise<string[]> {
   const result: string[] = []
   try {
     if (typeof vscode.window.showOpenDialog !== 'function') {
@@ -263,14 +236,19 @@ async function browseDirectories(service: SymbolService, workspaceRoot: string):
       if (typeof fsPath !== 'string' || !fsPath) {
         continue
       }
-      const relative = service.toRelative(fsPath)
-      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      // Browse 对话框返回的可能是符号链接目标的真实路径（在工作区之外）：
+      // 先尝试映射回 `<symlinkName>/<suffix>`，只有映射失败才告警跳过。
+      const mapped = await mapOutsidePathToWorkspace(workspaceRoot, fsPath)
+      if (mapped === undefined) {
         await showWarningMessage(
-          vscode.l10n.t('{0} is outside the workspace folder and was skipped.', fsPath),
+          vscode.l10n.t(
+            '{0} is outside the workspace folder and could not be mapped through a symlink; select the symlinked directory inside the workspace instead.',
+            fsPath,
+          ),
         )
         continue
       }
-      result.push(relative === '' ? '.' : relative)
+      result.push(mapped === '' ? '.' : mapped)
     }
   } catch (error) {
     console.error('[code-insight] browse directories failed', error)
