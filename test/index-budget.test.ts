@@ -5,6 +5,14 @@ import { DEFAULT_INDEX_BUDGET, evaluateBudget } from '../src/core/index-budget'
 
 const BUDGET = DEFAULT_INDEX_BUDGET
 
+test('budget: v5 default thresholds (3M symbols / 120k files / 6M hard max)', () => {
+  assert.deepEqual(DEFAULT_INDEX_BUDGET, {
+    maxSymbols: 3_000_000,
+    maxFiles: 120_000,
+    hardMaxSymbols: 6_000_000,
+  })
+})
+
 test('budget: ok below thresholds', () => {
   const report = evaluateBudget({ symbols: 100, files: 10, budget: BUDGET })
   assert.equal(report.level, 'ok')
@@ -21,21 +29,21 @@ test('budget: symbols === maxSymbols is still ok (strict > boundary)', () => {
 test('budget: warn between max and hard max', () => {
   const report = evaluateBudget({ symbols: BUDGET.maxSymbols + 1, files: 10, budget: BUDGET })
   assert.equal(report.level, 'warn')
-  assert.ok(report.message?.includes('2,000,000'))
+  assert.ok(report.message?.includes('3,000,000'))
   assert.ok(report.suggestions.length > 0)
 })
 
 test('budget: symbols === hardMaxSymbols is still warn (strict > boundary)', () => {
   const report = evaluateBudget({ symbols: BUDGET.hardMaxSymbols, files: 10, budget: BUDGET })
   assert.equal(report.level, 'warn')
-  assert.ok(report.message?.includes('2,000,000'))
+  assert.ok(report.message?.includes('3,000,000'))
   assert.ok(report.suggestions.some((s) => s.includes('indexRoots')))
 })
 
 test('budget: exceeded above hard max', () => {
   const report = evaluateBudget({ symbols: BUDGET.hardMaxSymbols + 1, files: 10, budget: BUDGET })
   assert.equal(report.level, 'exceeded')
-  assert.ok(report.message?.includes('hard maximum 5,000,000'))
+  assert.ok(report.message?.includes('hard maximum 6,000,000'))
   assert.ok(report.suggestions.some((s) => s.includes('indexRoots')))
 })
 

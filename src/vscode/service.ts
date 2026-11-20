@@ -931,9 +931,14 @@ export class SymbolService implements vscode.Disposable {
           endLine: symbol.endLine,
           column: symbol.column,
         }
+        // v5：保存路径同样要透传 parent（成员/枚举常量），否则 delta v3 会写入空 parent
+        const withParent =
+          symbol.parent === undefined || symbol.parent === ''
+            ? entry
+            : { ...entry, parent: symbol.parent }
         // 无条件条目不 materialize condition（与快照/v4 契约的旧形状一致）
-        if (symbol.condition === undefined || symbol.condition === '') return entry
-        return { ...entry, condition: symbol.condition }
+        if (symbol.condition === undefined || symbol.condition === '') return withParent
+        return { ...withParent, condition: symbol.condition }
       })
       // 单遍产出：保存的文本已读入，哈希与 include 文本都从这份内存文本算，零额外 IO；
       // include 目标只在「当前索引内」解析（不读、不扫其他文件），未命中的丢弃。

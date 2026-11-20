@@ -292,7 +292,7 @@ const configurationValues = {
   exclude: ['**/.git/**', '**/build/**', '**/tmp/**', '**/node_modules/**'],
   maxFileSizeKB: 4096,
   concurrency: 2,
-  maxSymbols: 2000000,
+  maxSymbols: 3000000,
   maxFiles: 120000,
   autoCompact: true,
   searchLimit: 200,
@@ -678,7 +678,7 @@ async function checkBudgetUi() {
   const commandBaseline = registrations.executedCommands.length
   const service = await SymbolService.create(undefined, smokeLogger)
   service.snapshotValue = {
-    entryCount: 2_500_000,
+    entryCount: 3_000_001,
     files: [],
     builtAt: Date.now(),
     roots: ['src'],
@@ -694,14 +694,14 @@ async function checkBudgetUi() {
     assert.equal(registrations.warnings.length - warningBaseline, 0, 'warn must not prompt')
 
     // exceeded：error 图标 + error 背景色 + 恰好一次提示（带按钮）
-    service.snapshotValue.entryCount = 6_000_000
+    service.snapshotValue.entryCount = 6_000_001
     controller.update()
     assert.match(item.text, /^\$\(error\) /, 'exceeded status uses $(error) icon')
     assert.equal(item.backgroundColor?.id, 'statusBarItem.errorBackground')
     assert.equal(registrations.warnings.length - warningBaseline, 1, 'exceeded prompts exactly once')
     const warning = registrations.warnings[warningBaseline]
     assert.ok(warning.items.includes('Reconfigure Index Roots'), 'prompt has reconfigure button')
-    assert.match(warning.message, /hard maximum 5,000,000/, 'prompt carries budget message')
+    assert.match(warning.message, /hard maximum 6,000,000/, 'prompt carries budget message')
 
     // 再次 update（同一轮 exceeded）不应重复提示
     controller.update()
@@ -723,7 +723,7 @@ async function checkBudgetUi() {
     assert.equal(item.backgroundColor, undefined, 'ok status clears background color')
 
     // 再次 exceeded：重置后应再次提示
-    service.snapshotValue.entryCount = 6_000_000
+    service.snapshotValue.entryCount = 6_000_001
     controller.update()
     assert.equal(
       registrations.warnings.length - warningBaseline,
@@ -884,13 +884,36 @@ async function waitForDeltaRecords(deltaPath, readSnapshotDeltas, predicate, lab
 }
 
 /**
- * 真实 service 级 round trip（不 stub 状态机）：
+ * v5：service 构建/保存/重载后成员/枚举常量/全局变量的 kind 与 parent 不丢。
+ * parent 缺失时 SymbolEntry 不应 materialize 出该属性（与快照/delta 契约一致）。
+ */
+function assertSavedParentSymbols(symbols, label) {
+  const one = (name) => {
+    const found = symbols.find((entry) => entry.name === name)
+    assert.ok(found, `${label}: ${name} should be indexed`)
+    return found
+  }
+  const member = one('a')
+  assert.equal(member.kind, 'member', `${label}: member kind`)
+  assert.equal(member.parent, 's', `${label}: member parent`)
+  for (const name of ['E_A', 'E_B']) {
+    const constant = one(name)
+    assert.equal(constant.kind, 'enumConstant', `${label}: enum constant kind`)
+    assert.equal(constant.parent, 'E', `${label}: enum constant parent`)
+  }
+  const global = one('g')
+  assert.equal(global.kind, 'variable', `${label}: global kind`)
+  assert.equal(global.parent, undefined, `${label}: global has no parent`)
+  assert.equal(Object.hasOwn(global, 'parent'), false, `${label}: global must not materialize parent`)
+}
+
+/**
  * 临时 workspace + 独立 storage -> 建索引 -> 通过公开的 updateFile 保存一个改动
- * -> 断言 delta 落盘（含 hash/include/condition 元数据）-> 不 compaction 直接重载（delta 重放）
- * -> flush（compaction）-> 重新 create service -> 符号/include/哈希/条件仍在。
+ * -> 断言 delta 落盘（含 hash/include/condition/parent 元数据）-> 不 compaction 直接重载（delta 重放）
+ * -> flush（compaction）-> 重新 create service -> 符号/include/哈希/条件/parent 仍在。
  *
  * 这里也覆盖 Task 2 review 指出的时序风险：保存路径写的 delta v3 set 记录必须带
- * includes/哈希/条件，否则「base + delta 重放」会清空 include 边或丢条件。
+ * includes/哈希/条件/parent，否则「base + delta 重放」会清空 include 边或丢条件/parent。
  */
 async function checkServiceRoundTrip() {
   const dist = path.join(EXT_ROOT, 'dist')
@@ -932,6 +955,12 @@ async function checkServiceRoundTrip() {
     assert.ok(summary, 'service rebuild returns a summary')
     assert.equal(service.ready, true)
     assert.deepEqual(service.fileSymbols('a.c').map((e) => e.name), ['alpha'])
+    // 构建路径（indexer: ScannedSymbol → SymbolEntry）也必须透传 v5 parent
+    const builtHeaderSymbols = service.fileSymbols('inc/x.h')
+    const builtMember = builtHeaderSymbols.find((entry) => entry.name === 'len')
+    assert.ok(builtMember, 'build indexes struct members')
+    assert.equal(builtMember.kind, 'member', 'build keeps member kind')
+    assert.equal(builtMember.parent, 'sk_buff', 'build keeps member parent')
     // 构建路径也写 v4 元数据：include 边 + 内容哈希
     assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h'], 'build resolves include edges')
     assert.equal(service.snapshot.isReachable('a.c', 'inc/x.h'), true)
@@ -939,10 +968,14 @@ async function checkServiceRoundTrip() {
     assert.equal(await snapshotDeltaBytes(deltaPath), 0, 'fresh build has no delta')
 
     // 走真实的公开保存路径（文件监听器最终也是调用 updateFile）。
-    // 保存后文件新增 include inc/y.h 与一个 #ifdef 符号：直接验证 applyIncludes/条件/哈希。
+    // 保存后文件新增 include inc/y.h、v5 成员/枚举/全局与一个 #ifdef 符号：
+    // 直接验证 applyIncludes/条件/哈希与 parent 透传。
     const savedText = [
       '#include "inc/x.h"',
       '#include "inc/y.h"',
+      'struct s { int a; };',
+      'typedef enum { E_A, E_B } E;',
+      'int g;',
       'int beta(void) { return 2; }',
       '#ifdef RTK_MODULE',
       'int guarded(void) { return 3; }',
@@ -955,7 +988,8 @@ async function checkServiceRoundTrip() {
     await service.updateFile(sourceFile)
 
     const savedSymbols = service.fileSymbols('a.c')
-    assert.deepEqual(savedSymbols.map((e) => e.name), ['beta', 'guarded'])
+    assert.deepEqual(savedSymbols.map((e) => e.name), ['s', 'a', 'E_A', 'E_B', 'E', 'g', 'beta', 'guarded'])
+    assertSavedParentSymbols(savedSymbols, 'save overlay')
     assert.equal(savedSymbols.find((e) => e.name === 'guarded').condition, '#ifdef RTK_MODULE', 'condition in overlay')
     assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'save applies overlay include edges')
     assert.equal(service.snapshot.isReachable('a.c', 'inc/y.h'), true)
@@ -969,7 +1003,11 @@ async function checkServiceRoundTrip() {
     )
     assert.equal(records.length, 1, 'one delta record for one save')
     assert.equal(records[0]?.kind, 'set')
-    assert.deepEqual(records[0]?.entries?.map((e) => e.name), ['beta', 'guarded'])
+    const savedEntries = records[0]?.entries ?? []
+    assert.deepEqual(savedEntries.map((e) => e.name), ['s', 'a', 'E_A', 'E_B', 'E', 'g', 'beta', 'guarded'])
+    assert.equal(savedEntries.find((e) => e.name === 'a')?.parent, 's', 'delta v3 carries member parent')
+    assert.equal(savedEntries.find((e) => e.name === 'E_B')?.parent, 'E', 'delta v3 carries enum parent')
+    assert.equal(savedEntries.find((e) => e.name === 'g')?.parent, undefined, 'delta v3 global has no parent')
     assert.deepEqual(records[0]?.includes, ['inc/x.h', 'inc/y.h'], 'delta v3 record carries include targets')
     assert.equal(records[0]?.contentHashLo, hashContent64(savedText).lo, 'delta v3 record carries hash lo')
     assert.equal(records[0]?.contentHashHi, hashContent64(savedText).hi, 'delta v3 record carries hash hi')
@@ -978,7 +1016,8 @@ async function checkServiceRoundTrip() {
     replayed = await SymbolService.create(context, logger)
     assert.equal(replayed.ready, true, 'service loads base + delta')
     const replayedSymbols = replayed.fileSymbols('a.c')
-    assert.deepEqual(replayedSymbols.map((e) => e.name), ['beta', 'guarded'], 'symbols survive delta replay')
+    assert.deepEqual(replayedSymbols.map((e) => e.name), ['s', 'a', 'E_A', 'E_B', 'E', 'g', 'beta', 'guarded'], 'symbols survive delta replay')
+    assertSavedParentSymbols(replayedSymbols, 'delta replay')
     assert.equal(replayedSymbols.find((e) => e.name === 'guarded').condition, '#ifdef RTK_MODULE', 'condition survives delta replay')
     assert.deepEqual(replayed.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'include edges survive delta replay')
     assert.equal(replayed.snapshot.isReachable('a.c', 'inc/y.h'), true)
@@ -991,7 +1030,8 @@ async function checkServiceRoundTrip() {
     reloaded = await SymbolService.create(context, logger)
     assert.equal(reloaded.ready, true, 'reloaded service loads the snapshot')
     const reloadedSymbols = reloaded.fileSymbols('a.c')
-    assert.deepEqual(reloadedSymbols.map((e) => e.name), ['beta', 'guarded'], 'symbols survive reload')
+    assert.deepEqual(reloadedSymbols.map((e) => e.name), ['s', 'a', 'E_A', 'E_B', 'E', 'g', 'beta', 'guarded'], 'symbols survive reload')
+    assertSavedParentSymbols(reloadedSymbols, 'reload')
     assert.equal(reloadedSymbols.find((e) => e.name === 'guarded').condition, '#ifdef RTK_MODULE', 'condition survives compaction')
     assert.deepEqual(reloaded.snapshot.includedFiles('a.c'), ['inc/x.h', 'inc/y.h'], 'include edges survive compaction')
     assert.equal(reloaded.snapshot.isReachable('a.c', 'inc/y.h'), true)
@@ -2026,7 +2066,7 @@ async function main() {
   console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
   console.log('  rootsChanged: normalized-equivalent roots stay silent, order-only change prompts OK')
   console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
-  console.log('  service round trip: updateFile -> delta v3 (hash/includes/condition) -> replay -> compaction -> reload OK')
+  console.log('  service round trip: updateFile -> delta v3 (hash/includes/condition/parent) -> replay -> compaction -> reload OK')
   console.log('  legacy v4 snapshot: discarded on load, rebuilt with hash/include/condition metadata OK')
   console.log('  include removal: explicit [] in delta, base edges cleared on replay/reload, removeFile drops cached path/edges OK')
   console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')

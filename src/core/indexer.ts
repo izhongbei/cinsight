@@ -107,7 +107,7 @@ export function createSnapshot(
   return createSymbolTable(roots, files, entries, Date.now(), SNAPSHOT_VERSION, { includes })
 }
 
-/** 扫描结果 → 索引条目（无条件条目不 materialize condition，保持旧快照形状）。 */
+/** 扫描结果 → 索引条目（无 condition/parent 条目不 materialize 可选属性，保持旧快照形状）。 */
 function toSymbolEntries(file: FileRecord, symbols: readonly ScannedSymbol[]): SymbolEntry[] {
   return symbols.map((symbol) => {
     const entry: SymbolEntry = {
@@ -118,9 +118,14 @@ function toSymbolEntries(file: FileRecord, symbols: readonly ScannedSymbol[]): S
       endLine: symbol.endLine,
       column: symbol.column,
     }
+    // v5：成员/枚举常量的 parent 必须透传（全局变量等无 parent 的条目保持旧形状）
+    const withParent =
+      symbol.parent === undefined || symbol.parent === ''
+        ? entry
+        : { ...entry, parent: symbol.parent }
     // 无条件条目不 materialize condition（与 SymbolEntry/快照的旧形状一致）
-    if (symbol.condition === undefined || symbol.condition === '') return entry
-    return { ...entry, condition: symbol.condition }
+    if (symbol.condition === undefined || symbol.condition === '') return withParent
+    return { ...withParent, condition: symbol.condition }
   })
 }
 

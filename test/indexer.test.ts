@@ -13,6 +13,7 @@ import type {
   IndexProgress,
   ReadFileFn,
   SymbolEntry,
+  SymbolTable,
 } from '../src/shared/types'
 
 const FIXTURES = path.resolve(__dirname, '..', '..', 'test', 'fixtures')
@@ -105,6 +106,51 @@ test('indexer/store: binary snapshot roundtrip preserves every field', async () 
     assert.deepEqual(loaded, snapshot)
     assert.equal(loaded!.version, SNAPSHOT_VERSION)
     assert.deepEqual([...loaded!.roots], ['proj/plat', 'proj/component'])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** v5 新符号：成员/枚举常量必须带 parent；全局变量不带（也不 materialize 空 parent）。 */
+function assertParentFields(snapshot: SymbolTable): void {
+  const one = (name: string): SymbolEntry => {
+    const entries = snapshot.findByName(name)
+    assert.ok(entries.length > 0, `${name} should be indexed`)
+    return entries[0]!
+  }
+
+  const member = one('a')
+  assert.equal(member.kind, 'member')
+  assert.equal(member.parent, 's')
+  assert.equal(member.file, 'types.h')
+  assert.equal(member.line, 0)
+
+  for (const name of ['E_A', 'E_B']) {
+    const constant = one(name)
+    assert.equal(constant.kind, 'enumConstant')
+    assert.equal(constant.parent, 'E')
+    assert.equal(constant.file, 'types.h')
+  }
+
+  const global = one('g')
+  assert.equal(global.kind, 'variable')
+  assert.equal(global.parent, undefined)
+  assert.equal(Object.hasOwn(global, 'parent'), false, 'unparented entry must not materialize parent')
+}
+
+test('indexer: build keeps member/enumConstant parent through snapshot roundtrip', async () => {
+  const dir = tempDir('si-indexer-parent-')
+  try {
+    writeFiles(dir, {
+      'types.h': ['struct s { int a; };', 'typedef enum { E_A, E_B } E;', 'int g;', ''].join('\n'),
+    })
+    const snapshotPath = path.join(dir, 'storage', 'symbols.sidx')
+    const result = await buildIndex({ ...makeOptions(dir), snapshotPath })
+    assertParentFields(result.snapshot)
+
+    const loaded = await loadSnapshot(snapshotPath)
+    assert.ok(loaded, 'snapshot should load')
+    assertParentFields(loaded!)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

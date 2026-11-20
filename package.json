@@ -129,7 +129,7 @@
         },
         "sourceInsight.maxSymbols": {
           "type": "number",
-          "default": 2000000,
+          "default": 3000000,
           "description": "%config.maxSymbols.description%"
         },
         "sourceInsight.maxFiles": {

@@ -88,7 +88,7 @@ The editor context menu offers go-to-definition, find-references and callers/cal
 | `sourceInsight.exclude` | `["**/.git/**","**/build/**","**/tmp/**","**/node_modules/**"]` | Excluded globs (`*`, `**`, `?`) |
 | `sourceInsight.maxFileSizeKB` | `4096` | Skip source files larger than this |
 | `sourceInsight.concurrency` | `4` | Worker threads used while building the index |
-| `sourceInsight.maxSymbols` | `2000000` | Warn (status bar) when the index has more symbols than this |
+| `sourceInsight.maxSymbols` | `3000000` | Warn (status bar) when the index has more symbols than this |
 | `sourceInsight.maxFiles` | `120000` | Warn (status bar) when the index has more files than this |
 | `sourceInsight.autoCompact` | `true` | Merge index deltas back into the base snapshot on idle / after many changes / on close. When `false` automatic merges are deferred (deltas are still appended durably), but a safety compaction still runs at 5,000 changed files or a 32 MB delta; queries may slow down with a large overlay. While a shared-storage symbols-delta conflict is active, automatic compaction (including this safety cap) stays off until the window is reloaded |
 | `sourceInsight.searchLimit` | `200` | Maximum results per search |
@@ -258,7 +258,7 @@ cursor --install-extension code-insight-0.8.0.vsix
 | `sourceInsight.exclude` | `["**/.git/**","**/build/**","**/tmp/**","**/node_modules/**"]` | 排除的 glob（`*` / `**` / `?`） |
 | `sourceInsight.maxFileSizeKB` | `4096` | 超过该大小的源文件跳过 |
 | `sourceInsight.concurrency` | `4` | 建索引的 worker 线程数 |
-| `sourceInsight.maxSymbols` | `2000000` | 符号数超过该值时状态栏警告 |
+| `sourceInsight.maxSymbols` | `3000000` | 符号数超过该值时状态栏警告 |
 | `sourceInsight.maxFiles` | `120000` | 文件数超过该值时状态栏警告 |
 | `sourceInsight.autoCompact` | `true` | 空闲 / 累计变更较多 / 关闭时把索引增量合并回 base。`false` 时自动合并被推迟（delta 仍逐次追加，不丢数据），但到达安全上限（累计 5000 个文件变更或 32 MB delta）时仍会强制合并一次；overlay 很大时查询可能变慢。共享存储的符号 delta 冲突期间，自动 compaction（含该安全上限）会停用，直到重新加载窗口 |
 | `sourceInsight.searchLimit` | `200` | 单次搜索返回上限 |

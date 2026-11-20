@@ -7,9 +7,9 @@ export interface IndexBudget {
 }
 
 export const DEFAULT_INDEX_BUDGET: IndexBudget = {
-  maxSymbols: 2_000_000,
+  maxSymbols: 3_000_000,
   maxFiles: 120_000,
-  hardMaxSymbols: 5_000_000,
+  hardMaxSymbols: 6_000_000,
 }
 
 export type BudgetLevel = 'ok' | 'warn' | 'exceeded'
