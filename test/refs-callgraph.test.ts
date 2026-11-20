@@ -324,6 +324,36 @@ test('calleesOf: 函数体内注释/字符串里的调用不算被调', async ()
   assert.ok(!callees.some((e) => e.name === 'foo'))
 })
 
+test('calleesOf: 只解析 function，同名成员/全局变量/枚举常量不能冒充被调函数', async () => {
+  const text = [
+    'void op_apply(void) {',
+    '  ops->apply(1);',
+    '  ops->notify(2);',
+    '  register_cb(apply);',
+    '}',
+  ].join('\n')
+  const snapshot = makeSnapshot([
+    makeEntry({ name: 'op_apply', file: 'v.c', line: 0, endLine: 4, column: 5 }),
+    // 同一个名字同时是成员 / 全局变量 / 枚举常量 / 函数：只有函数算被调。
+    makeEntry({ name: 'apply', kind: 'member', file: 'v.h', line: 0, parent: 'ops_table' }),
+    makeEntry({ name: 'apply', kind: 'variable', file: 'v.c', line: 10 }),
+    makeEntry({ name: 'apply', kind: 'enumConstant', file: 'v.h', line: 5, parent: 'E' }),
+    makeEntry({ name: 'apply', kind: 'function', file: 'impl.c', line: 0 }),
+    // 只有成员、没有同名函数的调用（`ops->notify(...)`）必须被忽略。
+    makeEntry({ name: 'notify', kind: 'member', file: 'v.h', line: 1, parent: 'ops_table' }),
+  ])
+  const readFile: ReadFileFn = async (rel) => {
+    if (rel === 'v.c') return text
+    throw new Error(`ENOENT ${rel}`)
+  }
+
+  const callees = await calleesOf(snapshot, 'op_apply', readFile)
+  assert.deepEqual(
+    callees.map((entry) => [entry.name, entry.kind, entry.file]),
+    [['apply', 'function', 'impl.c']],
+  )
+})
+
 test('calleesOf: signal 取消抛 AbortError', async () => {
   const controller = new AbortController()
   controller.abort()

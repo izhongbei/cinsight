@@ -286,8 +286,10 @@ export async function calleesOf(
         continue
       }
 
-      // 回查索引：宏/系统函数/未索引名字直接忽略。
-      const target = findByName(snapshot, calleeName).find((entry) => entry.kind !== 'macro')
+      // 回查索引：只接受可调用符号（function）。成员/全局变量/枚举常量即使同名，
+      // 也不能因为 `ops->fn(...)`、`obj.fn(...)` 这类成员调用语法被当成被调函数；
+      // 宏不是被调函数，维持原有的忽略行为。
+      const target = findByName(snapshot, calleeName).find((entry) => entry.kind === 'function')
       if (target !== undefined) {
         const key = `${target.file}|${target.line}|${target.name}`
         if (!seen.has(key)) {

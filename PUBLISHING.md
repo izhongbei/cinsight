@@ -45,7 +45,7 @@ cd tools/vscode-source-insight
 
 3. **发布前验证**（`scripts/release.sh` 会自动跑前面三步）：
    ```bash
-   npm run compile && node --test dist/test/*.test.js   # 358/358
+   npm run compile && node --test dist/test/*.test.js   # 364/364
    node test/smoke-activate.js                          # SMOKE OK
    npm run perf -- plat                                  # 记录性能（可选，须传目录）
    npx vsce ls                                          # 确认打包文件清单（应为 60 个文件、~210KB）
@@ -190,7 +190,7 @@ VSCE_PAT=xxx npm run publish:vsce
 npm run release -- --channel=vsix --skip-tests
 ```
 
-脚本行为：校验 `node_modules` 与 `publisher` 是否为 `local` → 可选 `npm version` → `tsc` → 358 个单测 → 激活冒烟 → `vsce package` → 按 `--channel` 调用 `ovsx` / `vsce` 发布 → 打印下一步链接。
+脚本行为：校验 `node_modules` 与 `publisher` 是否为 `local` → 可选 `npm version` → `tsc` → 364 个单测 → 激活冒烟 → `vsce package` → 按 `--channel` 调用 `ovsx` / `vsce` 发布 → 打印下一步链接。
 
 ---
 
@@ -198,7 +198,7 @@ npm run release -- --channel=vsix --skip-tests
 
 仓库内已有 **`.github/workflows/publish.yml`**：`push` tag `v*` 或手动 `workflow_dispatch` 时执行
 
-1. `npm ci` → `npm test`（358 个单测）→ 激活冒烟 → `vsce package` → 上传 vsix artifact
+1. `npm ci` → `npm test`（364 个单测）→ 激活冒烟 → `vsce package` → 上传 vsix artifact
 2. **Open VSX**：`npx ovsx publish code-insight-*.vsix -p "$OVSX_PAT" --skip-duplicate`
    （Cursor / VS Code forks 用户）
 3. **VS Code Marketplace**：`npx @vscode/vsce@4.1.0 publish --oidc`
@@ -282,7 +282,7 @@ release:
 ```bash
 npm install              # 安装构建/测试依赖
 npm run compile          # tsc -> dist/
-npm test                 # 编译 + 358 个 node:test 单元测试
+npm test                 # 编译 + 364 个 node:test 单元测试
 npm run smoke            # mock vscode 激活冒烟（无需真实编辑器）
 npm run perf -- plat     # 对指定目录建索引并测查询耗时（必填相对 workspace 的目录）
 npm run package          # 生成 code-insight-<version>.vsix

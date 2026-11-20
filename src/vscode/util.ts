@@ -140,18 +140,27 @@ export function kindLabel(kind: SymbolKind): string {
 /** 可作为「成员归属」父类型的符号种类（struct/union/enum/typedef）。 */
 const PARENT_KINDS: readonly SymbolKind[] = ['struct', 'union', 'enum', 'typedef']
 
+/** 扫描器给匿名类型占位用的 parent 名；UI 上应视为「没有父级」。 */
+const ANONYMOUS_PARENT = '<anonymous>'
+
+/** 有效父类型名：匿名类型（`<anonymous>`）与缺失 parent 一律返回 undefined。 */
+function namedParentOf(entry: SymbolEntry): string | undefined {
+  return entry.parent && entry.parent !== ANONYMOUS_PARENT ? entry.parent : undefined
+}
+
 /**
  * 成员/枚举常量父类型的种类：查快照里的同名类型符号，同文件优先，其次按
  * struct > union > enum > typedef 取第一个（typedef 别名只在前者都不存在时使用）。
  * 查不到（旧快照/无表/父级已被删）返回 undefined，调用方退化掉 `struct` 前缀。
  */
 export function parentKindOf(entry: SymbolEntry, table?: SymbolTable): SymbolKind | undefined {
-  if (!entry.parent || !table) {
+  const parent = namedParentOf(entry)
+  if (!parent || !table) {
     return undefined
   }
   try {
     const candidates = table
-      .findByName(entry.parent)
+      .findByName(parent)
       .filter((candidate) => PARENT_KINDS.includes(candidate.kind))
     if (candidates.length === 0) {
       return undefined
@@ -176,21 +185,22 @@ export function parentKindOf(entry: SymbolEntry, table?: SymbolTable): SymbolKin
  * 其他符号种类返回 undefined（调用方使用 kindLabel）。
  */
 export function memberPhrase(entry: SymbolEntry, parentKind?: SymbolKind): string | undefined {
+  const parent = namedParentOf(entry)
   switch (entry.kind) {
     case 'member':
-      if (!entry.parent) {
+      if (!parent) {
         return vscode.l10n.t('Member')
       }
       if (parentKind === 'struct') {
-        return vscode.l10n.t('member of struct {0}', entry.parent)
+        return vscode.l10n.t('member of struct {0}', parent)
       }
       if (parentKind === 'union') {
-        return vscode.l10n.t('member of union {0}', entry.parent)
+        return vscode.l10n.t('member of union {0}', parent)
       }
-      return vscode.l10n.t('member of {0}', entry.parent)
+      return vscode.l10n.t('member of {0}', parent)
     case 'enumConstant':
-      return entry.parent
-        ? vscode.l10n.t('enumerator of enum {0}', entry.parent)
+      return parent
+        ? vscode.l10n.t('enumerator of enum {0}', parent)
         : // 没有 parent 时与 kindLabel 保持同一个人可读名称（不再用 "Enumerator"）。
           kindLabel('enumConstant')
     case 'variable':

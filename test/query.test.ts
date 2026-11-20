@@ -204,6 +204,73 @@ test('readSignature: __attribute__ 保留到 { 之前才停', async () => {
   assert.equal(sig, 'int bar(void) __attribute__((noreturn))')
 })
 
+test('readSignature: 多行枚举常量只取常量名与同行值，不读进枚举体尾部', async () => {
+  const text = [
+    'enum color {',
+    '  RED,',
+    '  GREEN = 2,',
+    '  BLUE = (1 << 3),',
+    '  LAST = MACRO(1, 2)',
+    '};',
+  ].join('\n')
+  const readFile = virtualReadFile({ 'src/a.h': text })
+  const constant = (name: string, line: number): SymbolEntry =>
+    makeEntry({ name, kind: 'enumConstant', file: 'src/a.h', line, column: 2 })
+
+  // RED 没有值：只输出名字，不能把后面的 GREEN/BLUE/`}` 读进来。
+  assert.equal(await readSignature(readFile, constant('RED', 1)), 'RED')
+  assert.equal(await readSignature(readFile, constant('GREEN', 2)), 'GREEN = 2')
+  assert.equal(await readSignature(readFile, constant('BLUE', 3)), 'BLUE = (1 << 3)')
+  // 嵌套逗号（宏参数）不截断，行尾没有逗号也能收住。
+  assert.equal(await readSignature(readFile, constant('LAST', 4)), 'LAST = MACRO(1, 2)')
+
+  // 单行枚举：签名只含常量自身，不含枚举声明前缀/后缀。
+  const inline = await readSignature(
+    virtualReadFile({ 'src/b.h': 'enum color { RED, GREEN, BLUE };\n' }),
+    makeEntry({ name: 'RED', kind: 'enumConstant', file: 'src/b.h', line: 0, column: 13 }),
+  )
+  assert.equal(inline, 'RED')
+})
+
+test('readSignature: 成员/全局变量签名停在声明行，不读结构体后续内容', async () => {
+  const text = [
+    'struct sk_buff {',
+    '  int len;',
+    '  unsigned flags : 3;',
+    '  void (*free_fn)(struct sk_buff *skb);',
+    '};',
+    'static int packet_count = 0;',
+  ].join('\n')
+  const readFile = virtualReadFile({ 'src/a.h': text })
+  const entry = (name: string, kind: 'member' | 'variable', line: number, column: number) =>
+    makeEntry({ name, kind, file: 'src/a.h', line, column })
+
+  assert.equal(await readSignature(readFile, entry('len', 'member', 1, 6)), 'int len')
+  assert.equal(
+    await readSignature(readFile, entry('flags', 'member', 2, 11)),
+    'unsigned flags : 3',
+  )
+  assert.equal(
+    await readSignature(readFile, entry('free_fn', 'member', 3, 9)),
+    'void (*free_fn)(struct sk_buff *skb)',
+  )
+  assert.equal(
+    await readSignature(readFile, entry('packet_count', 'variable', 5, 11)),
+    'static int packet_count = 0',
+  )
+})
+
+test('readSignature: 枚举常量在列号漂移时按行内同名标识符回退', async () => {
+  const text = ['enum color {', '  RED = 1,', '};'].join('\n')
+  const sig = await readSignature(
+    virtualReadFile({ 'src/a.h': text }),
+    // 快照列号过期（旧文本 2 空格 vs 当前 4 空格）时仍能重建签名。
+    makeEntry({ name: 'RED', kind: 'enumConstant', file: 'src/a.h', line: 1, column: 0 }),
+  )
+
+  assert.equal(sig, 'RED = 1')
+})
+
 test('readSignature: 函数式宏按续行拼接并去掉续行反斜杠', async () => {
   const text = '#define MAX(a,b) \\\n  ((a)>(b)?(a):(b))\n'
   const sig = await readSignature(

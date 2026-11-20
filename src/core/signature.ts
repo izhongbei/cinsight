@@ -138,6 +138,50 @@ function buildSignature(lines: readonly string[], startLine: number): string | u
   return signature.length > 0 ? signature : undefined
 }
 
+/**
+ * 枚举常量：只取常量名（同行有 `= 值` 时一并取上），绝不跨行读到枚举体尾部。
+ *
+ * 枚举常量的 `line`/`endLine` 都指向自身所在行，若复用 buildSignature 会从常量行
+ * 开始找括号平衡的 `{`/`;`，一直读到枚举定义结束的 `;`，得到 `RED, GREEN, BLUE }`
+ * 这类正文残片。这里只按当前行重建：名字 + 可选 `= 表达式`（在顶层 `,`/`;` 处截断）。
+ */
+function buildEnumConstantSignature(
+  lines: readonly string[],
+  entry: SymbolEntry,
+): string | undefined {
+  const line = lines[entry.line]
+  if (line === undefined) return undefined
+  const stripped = stripSources(line)
+  // 快照列号来自扫描器；若与当前磁盘文本漂移，退化为行内查找同名标识符。
+  let start = Math.max(0, Math.min(entry.column, stripped.length))
+  if (stripped.slice(start, start + entry.name.length) !== entry.name) {
+    const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const found = new RegExp(`\\b${escaped}\\b`).exec(stripped)
+    if (found === null) return entry.name
+    start = found.index
+  }
+  let i = start + entry.name.length
+  while (stripped[i] === ' ' || stripped[i] === '\t') i++
+  if (stripped[i] !== '=') return entry.name
+
+  // 跳过 '='，截到同层 `,`/`;`/`}`；值跨行（括号未闭合）时只保留常量名。
+  i += 1
+  const valueStart = i
+  let depth = 0
+  while (i < stripped.length) {
+    const ch = stripped[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) break
+      depth--
+    } else if (depth === 0 && (ch === ',' || ch === ';')) break
+    i++
+  }
+  if (depth !== 0) return entry.name
+  const value = normalizeSignature(stripped.slice(valueStart, i))
+  return value.length > 0 ? `${entry.name} = ${value}` : entry.name
+}
+
 /** 函数式宏：按续行拼成一行，去掉行尾续行反斜杠。 */
 function buildMacroSignature(lines: readonly string[], entry: SymbolEntry): string | undefined {
   const endLine = Math.min(lines.length, Math.max(entry.line, entry.endLine) + 1)
@@ -166,6 +210,7 @@ export async function readSignature(
   const lines = text.split('\n')
   if (entry.line < 0 || entry.line >= lines.length) return undefined
   if (entry.kind === 'macro') return buildMacroSignature(lines, entry)
+  if (entry.kind === 'enumConstant') return buildEnumConstantSignature(lines, entry)
   return buildSignature(lines, entry.line)
 }
 
