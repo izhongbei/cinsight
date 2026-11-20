@@ -8,6 +8,7 @@
 - **Browse selections through a symlink target are mapped back.** The Browse dialog may return the target's real absolute path outside the workspace (for example `/outside/private/sub`); it is now mapped to the workspace-relative `<symlink>/<suffix>` path (`private/sub`) when the target is reachable through a top-level or one-level-deep directory symlink. Only genuinely unmappable paths are skipped, with a clearer warning that asks the user to select the symlinked directory inside the workspace instead.
 - `sourceInsight.followSymlinks` is unchanged: it still controls whether symlinks **nested inside** an indexed tree are traversed. A root that is itself a symlink is always followed.
 - New dependency-free core helper `src/core/workspace-dirs.ts` (`listCandidateDirectories`, `mapOutsidePathToWorkspace`; node `fs`/`path` only, no `vscode`), covered by real-filesystem tests in `test/workspace-dirs.test.ts` (real `mkdtemp` workspace and real symlinks; skipped gracefully where symlinks are not permitted).
+- **Multi-root workspaces are still unsupported.** Only the first workspace folder is indexed; *Configure Index Roots* now warns when more than one folder is open, and the out-of-root Browse warning explains the limitation and the workarounds (open a parent folder that contains all roots as a single-folder workspace, or use one window per folder).
 - 368 tests pass.
 
 ### 中文
@@ -16,6 +17,7 @@
 - **通过符号链接目标选择的 Browse 路径会映射回工作区**：Browse 对话框可能返回工作区之外的目标真实绝对路径（例如 `/outside/private/sub`）；当目标可通过顶层或下一层目录符号链接到达时，现在会映射为工作区内 `<链接名>/<后缀>` 相对路径（`private/sub`）。只有确实无法映射的路径才会被跳过，并提示改为选择工作区内的符号链接目录。
 - `sourceInsight.followSymlinks` 语义不变：仍只控制是否遍历索引树**内部嵌套**的符号链接；作为索引根的符号链接始终会被跟随。
 - 新增零依赖 core helper `src/core/workspace-dirs.ts`（`listCandidateDirectories`、`mapOutsidePathToWorkspace`；仅用 node `fs`/`path`，不依赖 `vscode`），并由 `test/workspace-dirs.test.ts` 的真实文件系统测试覆盖（真实 `mkdtemp` 工作区与真实符号链接；平台不允许创建链接时优雅跳过）。
+- **多根工作区仍不支持**：只索引第一个 workspace folder；当打开的 folder 多于一个时，*配置索引目录* 会明确提示；Browse 越界告警也说明了该限制与绕过方式（把包含所有根目录的父文件夹作为单工作区打开，或每个文件夹单独开窗口）。
 - 368 个单测通过。
 
 ## 0.9.0 — 2026-11-20

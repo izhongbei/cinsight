@@ -7,7 +7,6 @@
   "$(sync~spin) Indexing…": "$(sync~spin) 正在索引…",
   "$(sync~spin) Indexing {0}%": "$(sync~spin) 正在索引 {0}%",
   "$(warning) {0} symbols": "$(warning) {0} 个符号",
-  "{0} is outside the workspace folder and could not be mapped through a symlink; select the symlinked directory inside the workspace instead.": "{0} 位于工作区文件夹之外，且无法通过符号链接映射回工作区；请改为选择工作区内的符号链接目录。",
   "Add to index roots": "加入索引目录",
   "… and {0} more": "… 还有 {0} 项",
   "… and {0} more (raise sourceInsight.treeSymbolLimit)": "… 还有 {0} 项（可调大 sourceInsight.treeSymbolLimit）",
@@ -109,5 +108,7 @@
   "Workspace": "工作区",
   "workspace root": "工作区根目录",
   "{0} copies": "{0} 份副本",
-  "{0} identical copies": "{0} 份内容相同的副本"
+  "{0} identical copies": "{0} 份内容相同的副本",
+  "{0} is outside the indexed workspace folder. Multi-root workspaces are not supported yet (only the first folder is indexed): open a parent folder that contains all roots, or use one window per folder. If the path is reached through a symlink, select the symlinked directory inside the workspace instead.": "{0} 位于被索引的工作区文件夹之外。当前还不支持多根工作区（只索引第一个文件夹）：请打开包含所有根目录的父文件夹，或每个文件夹单独开一个窗口。如果该路径是通过符号链接到达的，请改为选择工作区内的符号链接目录。",
+  "Multi-root workspaces are not supported yet: only the first folder ({0}) is indexed. Open a parent folder as a single workspace, or use one window per folder.": "当前还不支持多根工作区：只索引第一个文件夹（{0}）。请打开包含所有根目录的父文件夹作为单个工作区，或每个文件夹单独开一个窗口。"
 }

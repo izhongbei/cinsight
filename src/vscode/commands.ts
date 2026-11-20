@@ -129,6 +129,15 @@ async function configureRoots(service: SymbolService): Promise<void> {
     )
     return
   }
+  const folders = vscode.workspace.workspaceFolders ?? []
+  if (folders.length > 1) {
+    await showWarningMessage(
+      vscode.l10n.t(
+        'Multi-root workspaces are not supported yet: only the first folder ({0}) is indexed. Open a parent folder as a single workspace, or use one window per folder.',
+        folders[0]?.name ?? workspaceRoot,
+      ),
+    )
+  }
   if (typeof vscode.window.showQuickPick !== 'function') {
     return
   }
@@ -242,7 +251,7 @@ async function browseDirectories(workspaceRoot: string): Promise<string[]> {
       if (mapped === undefined) {
         await showWarningMessage(
           vscode.l10n.t(
-            '{0} is outside the workspace folder and could not be mapped through a symlink; select the symlinked directory inside the workspace instead.',
+            '{0} is outside the indexed workspace folder. Multi-root workspaces are not supported yet (only the first folder is indexed): open a parent folder that contains all roots, or use one window per folder. If the path is reached through a symlink, select the symlinked directory inside the workspace instead.',
             fsPath,
           ),
         )
