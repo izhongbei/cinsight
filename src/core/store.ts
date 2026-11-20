@@ -10,7 +10,7 @@ import {
 } from './symbol-table'
 
 /**
- * 二进制快照读写（v4，列式 + include 图 + 内容哈希 + 条件栈）。
+ * 二进制快照读写（v5，列式 + include 图 + 内容哈希 + 条件栈 + parent 列）。
  *
  * 布局（小端）：
  * ```
@@ -19,9 +19,11 @@ import {
  * files:  [pathLen u32, path utf8, mtimeMs f64, size u32, hashLo u32, hashHi u32] × fileCount
  * names:  [len u32, utf8] × nameCount
  * conditions: count u32 | [len u32, utf8] × count   // 0 号固定为 ''（无条件）
+ * parents: count u32 | [len u32, utf8] × count      // 0 号固定为 ''（无 parent）
  * nameIds u32[entryCount] | fileIndexes u32[entryCount]
  * lines u32[entryCount] | endLines u32[entryCount]
- * columns u16[entryCount] | kinds u8[entryCount] | conditionIds u32[entryCount]
+ * columns u16[entryCount] | kinds u8[entryCount]
+ * conditionIds u32[entryCount] | parentIds u32[entryCount]
  * nameOffsets u32[nameCount+1] | fileEntryOffsets u32[fileCount+1]
  * fileEntryIndexes u32[entryCount]
  * includeOffsets u32[fileCount+1] | includeTargets u32[edgeCount]
@@ -34,8 +36,11 @@ const MAGIC = 'SIDX'
 const MAGIC_BYTES = 4
 /** magic(4) + version(4) + builtAt(8) + fileCount(4) + entryCount(4) + nameCount(4) + rootsLen(4) */
 const HEADER_BYTES = 32
-/** 每条 entry 的定长部分：nameId/fileIndex/line/endLine(u32×4) + column(u16) + kind(u8) + conditionId(u32) */
-const ENTRY_BYTES = 4 + 4 + 4 + 4 + 2 + 1 + 4
+/**
+ * 每条 entry 的定长部分：nameId/fileIndex/line/endLine(u32×4) + column(u16) + kind(u8)
+ * + conditionId(u32) + parentId(u32)
+ */
+const ENTRY_BYTES = 4 + 4 + 4 + 4 + 2 + 1 + 4 + 4
 /** 每个 file 的定长部分：mtime(f64) + size(u32) + hashLo(u32) + hashHi(u32) */
 const FILE_FIXED_BYTES = 8 + 4 + 4 + 4
 
@@ -64,6 +69,7 @@ export function encodeSnapshot(table: SymbolTable): Buffer {
   const entryCount = columns.nameIds.length
   const nameCount = columns.names.length
   const conditionCount = columns.conditions.length
+  const parentCount = columns.parents.length
 
   let size = HEADER_BYTES + rootsJson.length
   const filePathBytes: number[] = []
@@ -83,6 +89,13 @@ export function encodeSnapshot(table: SymbolTable): Buffer {
   for (const condition of columns.conditions) {
     const length = Buffer.byteLength(condition, 'utf8')
     conditionBytes.push(length)
+    size += 4 + length
+  }
+  const parentBytes: number[] = []
+  size += 4
+  for (const parent of columns.parents) {
+    const length = Buffer.byteLength(parent, 'utf8')
+    parentBytes.push(length)
     size += 4 + length
   }
   size += entryCount * ENTRY_BYTES
@@ -144,6 +157,16 @@ export function encodeSnapshot(table: SymbolTable): Buffer {
     buffer.write(columns.conditions[conditionId]!, offset, 'utf8')
     offset += length
   }
+  // parent 字符串表（0 号为 ''）
+  buffer.writeUInt32LE(parentCount, offset)
+  offset += 4
+  for (let parentId = 0; parentId < parentCount; parentId++) {
+    const length = parentBytes[parentId]!
+    buffer.writeUInt32LE(length, offset)
+    offset += 4
+    buffer.write(columns.parents[parentId]!, offset, 'utf8')
+    offset += length
+  }
 
   const writeU32 = (values: Uint32Array): void => {
     for (let index = 0; index < values.length; index++) {
@@ -164,6 +187,7 @@ export function encodeSnapshot(table: SymbolTable): Buffer {
     offset += 1
   }
   writeU32(columns.conditionIds)
+  writeU32(columns.parentIds)
   writeU32(columns.nameOffsets)
   writeU32(columns.fileEntryOffsets)
   writeU32(columns.fileEntryIndexes)
@@ -243,6 +267,20 @@ export function decodeSnapshot(buffer: Buffer): SymbolTable | undefined {
   }
   if (conditionCount === 0) return undefined // 0 号 '' 必须存在
 
+  if (offset + 4 > buffer.length) return undefined
+  const parentCount = buffer.readUInt32LE(offset)
+  offset += 4
+  const parents: string[] = new Array(parentCount)
+  for (let parentId = 0; parentId < parentCount; parentId++) {
+    if (offset + 4 > buffer.length) return undefined
+    const length = buffer.readUInt32LE(offset)
+    offset += 4
+    if (offset + length > buffer.length) return undefined
+    parents[parentId] = buffer.toString('utf8', offset, offset + length)
+    offset += length
+  }
+  if (parentCount === 0) return undefined // 0 号 '' 必须存在
+
   const readU32Array = (count: number): Uint32Array | undefined => {
     if (offset + count * 4 > buffer.length) return undefined
     const array = new Uint32Array(count)
@@ -275,6 +313,13 @@ export function decodeSnapshot(buffer: Buffer): SymbolTable | undefined {
   if (!conditionIds) return undefined
   for (let index = 0; index < entryCount; index++) {
     if (conditionIds[index]! >= conditionCount) return undefined
+  }
+
+  const parentIds = readU32Array(entryCount)
+  if (!parentIds) return undefined
+  // parentId 必须落在 parent 字符串表内（0 = 无 parent）；越界视为损坏快照，整体丢弃。
+  for (let index = 0; index < entryCount; index++) {
+    if (parentIds[index]! >= parentCount) return undefined
   }
 
   const nameOffsets = readU32Array(nameCount + 1)
@@ -315,6 +360,8 @@ export function decodeSnapshot(buffer: Buffer): SymbolTable | undefined {
       kinds: kindsArray,
       conditions,
       conditionIds,
+      parents,
+      parentIds,
       fileEntryOffsets,
       fileEntryIndexes,
       contentHashLo: readHashColumn(files, 'contentHashLo'),

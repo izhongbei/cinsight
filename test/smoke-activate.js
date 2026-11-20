@@ -886,10 +886,10 @@ async function waitForDeltaRecords(deltaPath, readSnapshotDeltas, predicate, lab
 /**
  * 真实 service 级 round trip（不 stub 状态机）：
  * 临时 workspace + 独立 storage -> 建索引 -> 通过公开的 updateFile 保存一个改动
- * -> 断言 delta 落盘（含 v4 元数据）-> 不 compaction 直接重载（delta 重放）
+ * -> 断言 delta 落盘（含 hash/include/condition 元数据）-> 不 compaction 直接重载（delta 重放）
  * -> flush（compaction）-> 重新 create service -> 符号/include/哈希/条件仍在。
  *
- * 这里也覆盖 Task 2 review 指出的时序风险：保存路径写的 delta v2 set 记录必须带
+ * 这里也覆盖 Task 2 review 指出的时序风险：保存路径写的 delta v3 set 记录必须带
  * includes/哈希/条件，否则「base + delta 重放」会清空 include 边或丢条件。
  */
 async function checkServiceRoundTrip() {
@@ -970,11 +970,11 @@ async function checkServiceRoundTrip() {
     assert.equal(records.length, 1, 'one delta record for one save')
     assert.equal(records[0]?.kind, 'set')
     assert.deepEqual(records[0]?.entries?.map((e) => e.name), ['beta', 'guarded'])
-    assert.deepEqual(records[0]?.includes, ['inc/x.h', 'inc/y.h'], 'delta v2 record carries include targets')
-    assert.equal(records[0]?.contentHashLo, hashContent64(savedText).lo, 'delta v2 record carries hash lo')
-    assert.equal(records[0]?.contentHashHi, hashContent64(savedText).hi, 'delta v2 record carries hash hi')
+    assert.deepEqual(records[0]?.includes, ['inc/x.h', 'inc/y.h'], 'delta v3 record carries include targets')
+    assert.equal(records[0]?.contentHashLo, hashContent64(savedText).lo, 'delta v3 record carries hash lo')
+    assert.equal(records[0]?.contentHashHi, hashContent64(savedText).hi, 'delta v3 record carries hash hi')
 
-    // 时序风险：不 compaction 直接重载 = base + delta 重放。元数据必须全部从 v2 记录还原。
+    // 时序风险：不 compaction 直接重载 = base + delta 重放。元数据必须全部从 v3 记录还原。
     replayed = await SymbolService.create(context, logger)
     assert.equal(replayed.ready, true, 'service loads base + delta')
     const replayedSymbols = replayed.fileSymbols('a.c')
@@ -1137,7 +1137,7 @@ async function checkLegacySnapshotUpgrade() {
 
 /**
  * 保存路径的 include 权威语义与 removeFile 的缓存维护：
- *  - 保存后没有任何 include 时，delta v2 记录必须是显式 `[]`（不是缺省字段），
+ *  - 保存后没有任何 include 时，delta v3 记录必须是显式 `[]`（不是缺省字段），
  *    「base + delta」重放与 compaction 后的 base 都必须清掉旧边；
  *  - removeFile 必须同时清 overlay 边与「索引内路径集合」缓存中的该文件。
  */
@@ -1175,7 +1175,7 @@ async function checkIncludeRemovalAndRemoveFile() {
     await service.rebuild()
     assert.deepEqual(service.snapshot.includedFiles('a.c'), ['inc/x.h'], 'build has include edges')
 
-    // 保存为「没有任何 include」：overlay 边必须立刻清空，delta v2 记录必须是显式 []
+    // 保存为「没有任何 include」：overlay 边必须立刻清空，delta v3 记录必须是显式 []
     const noIncludeText = 'int beta(void) { return 2; }\n'
     fs.writeFileSync(sourceFile, noIncludeText, 'utf8')
     const future = new Date(Date.now() + 1000)
@@ -2026,7 +2026,7 @@ async function main() {
   console.log('  budget UI: warn/warning color, exceeded/error color, one-shot reconfigure prompt OK')
   console.log('  rootsChanged: normalized-equivalent roots stay silent, order-only change prompts OK')
   console.log('  autoCompact=false: flush/dispose skip compaction, delta append awaited OK')
-  console.log('  service round trip: updateFile -> delta v2 (hash/includes/condition) -> replay -> compaction -> reload OK')
+  console.log('  service round trip: updateFile -> delta v3 (hash/includes/condition) -> replay -> compaction -> reload OK')
   console.log('  legacy v4 snapshot: discarded on load, rebuilt with hash/include/condition metadata OK')
   console.log('  include removal: explicit [] in delta, base edges cleared on replay/reload, removeFile drops cached path/edges OK')
   console.log('  shared-storage conflict: compaction/rebuild keep the other window delta OK')

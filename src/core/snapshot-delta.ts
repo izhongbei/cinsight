@@ -6,7 +6,7 @@ import { saveSnapshot } from './store'
 import { KIND_CODES, KIND_NAMES } from './symbol-table'
 
 export const SNAPSHOT_DELTA_MAGIC = 'SIDD'
-export const SNAPSHOT_DELTA_VERSION = 2
+export const SNAPSHOT_DELTA_VERSION = 3
 const HEADER_BYTES = 8
 
 export interface SnapshotDeltaSetRecord {
@@ -60,8 +60,9 @@ export function encodeSnapshotDeltaRecord(record: SnapshotDeltaRecord): Buffer {
 }
 
 /**
- * set 记录体（v2）：path | mtime f64 | size u32 | hashLo u32 | hashHi u32 | entryCount u32
- *   | entry*（name、line、endLine、column、kind、conditionLen u32 | condition utf8）
+ * set 记录体（v3）：path | mtime f64 | size u32 | hashLo u32 | hashHi u32 | entryCount u32
+ *   | entry*（name、line、endLine、column、kind、parentLen u32 | parent utf8、
+ *     conditionLen u32 | condition utf8）
  *   | includeCount u32 | include*（pathLen u32 | path utf8）
  */
 function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
@@ -77,10 +78,22 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   let entryBytes = 0
   const encoded = record.entries.map((entry) => {
     const nameBytes = Buffer.from(entry.name, 'utf8')
+    const parent = entry.parent === undefined || entry.parent === '' ? undefined : entry.parent
+    const parentBytes = parent === undefined ? undefined : Buffer.from(parent, 'utf8')
     const condition = entry.condition === undefined || entry.condition === '' ? undefined : entry.condition
     const conditionBytes = condition === undefined ? undefined : Buffer.from(condition, 'utf8')
-    entryBytes += 4 + nameBytes.length + 4 + 4 + 2 + 1 + 4 + (conditionBytes?.length ?? 0)
-    return { entry, nameBytes, conditionBytes }
+    entryBytes +=
+      4 +
+      nameBytes.length +
+      4 +
+      4 +
+      2 +
+      1 +
+      4 +
+      (parentBytes?.length ?? 0) +
+      4 +
+      (conditionBytes?.length ?? 0)
+    return { entry, nameBytes, parentBytes, conditionBytes }
   })
   const includePaths = record.includes ?? []
   let includeBytes = 0
@@ -108,7 +121,7 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   offset += 4
   buffer.writeUInt32LE(encoded.length, offset)
   offset += 4
-  for (const { entry, nameBytes, conditionBytes } of encoded) {
+  for (const { entry, nameBytes, parentBytes, conditionBytes } of encoded) {
     buffer.writeUInt32LE(nameBytes.length, offset)
     offset += 4
     nameBytes.copy(buffer, offset)
@@ -121,6 +134,13 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
     offset += 2
     buffer.writeUInt8(KIND_CODES[entry.kind] ?? 0, offset)
     offset += 1
+    const parentLength = parentBytes?.length ?? 0
+    buffer.writeUInt32LE(parentLength, offset)
+    offset += 4
+    if (parentBytes) {
+      parentBytes.copy(buffer, offset)
+      offset += parentLength
+    }
     const conditionLength = conditionBytes?.length ?? 0
     buffer.writeUInt32LE(conditionLength, offset)
     offset += 4
@@ -140,21 +160,23 @@ function encodeSnapshotDeltaBody(record: SnapshotDeltaRecord): Buffer {
   return buffer
 }
 
-/** 读取 SIDD 文件头版本；magic/版本不认识时返回 undefined（v1 仍可读，用于兼容旧 delta）。 */
+/** 读取 SIDD 文件头版本；magic/版本不认识时返回 undefined（v1/v2 仍可读，用于兼容旧 delta）。 */
 function deltaHeaderVersion(buffer: Buffer): number | undefined {
   if (buffer.length < HEADER_BYTES) return undefined
   if (buffer.toString('latin1', 0, 4) !== SNAPSHOT_DELTA_MAGIC) return undefined
   const version = buffer.readUInt32LE(4)
-  return version === 1 || version === 2 ? version : undefined
+  return version === 1 || version === 2 || version === 3 ? version : undefined
 }
 
 /** 每种 delta 版本的记录布局差异。 */
 interface DeltaLayout {
   /** set 记录 path 之后的定长字节：mtime(8) + size(4) [+ hashLo(4) + hashHi(4)] + entryCount(4) */
   readonly setFixedBytes: number
-  /** 每条 entry 在 name 之后的定长字节：line(4) + endLine(4) + column(2) + kind(1) [+ conditionLen(4)] */
+  /** 每条 entry 在 name 之后的定长字节：line(4) + endLine(4) + column(2) + kind(1) */
   readonly entryFixedBytes: number
-  /** entry 是否带 conditionLen + condition utf8 */
+  /** entry 是否带 parentLen(4) + parent utf8（v3 起） */
+  readonly entryParent: boolean
+  /** entry 是否带 conditionLen(4) + condition utf8 */
   readonly entryCondition: boolean
   /** set 记录是否带 includeCount + include* */
   readonly entryIncludes: boolean
@@ -163,12 +185,21 @@ interface DeltaLayout {
 const V1_LAYOUT: DeltaLayout = {
   setFixedBytes: 16,
   entryFixedBytes: 4 + 4 + 2 + 1,
+  entryParent: false,
   entryCondition: false,
   entryIncludes: false,
 }
 const V2_LAYOUT: DeltaLayout = {
   setFixedBytes: 24,
   entryFixedBytes: 4 + 4 + 2 + 1,
+  entryParent: false,
+  entryCondition: true,
+  entryIncludes: true,
+}
+const V3_LAYOUT: DeltaLayout = {
+  setFixedBytes: 24,
+  entryFixedBytes: 4 + 4 + 2 + 1,
+  entryParent: true,
   entryCondition: true,
   entryIncludes: true,
 }
@@ -176,6 +207,7 @@ const V2_LAYOUT: DeltaLayout = {
 function layoutForVersion(version: number): DeltaLayout | undefined {
   if (version === 1) return V1_LAYOUT
   if (version === 2) return V2_LAYOUT
+  if (version === 3) return V3_LAYOUT
   return undefined
 }
 
@@ -234,6 +266,12 @@ function scanSetRecordEnd(buffer: Buffer, offset: number, layout: DeltaLayout): 
     const nameLength = buffer.readUInt32LE(cursor)
     cursor += 4 + nameLength + layout.entryFixedBytes
     if (cursor > buffer.length) return undefined
+    if (layout.entryParent) {
+      if (cursor + 4 > buffer.length) return undefined
+      const parentLength = buffer.readUInt32LE(cursor)
+      cursor += 4 + parentLength
+      if (cursor > buffer.length) return undefined
+    }
     if (layout.entryCondition) {
       if (cursor + 4 > buffer.length) return undefined
       const conditionLength = buffer.readUInt32LE(cursor)
@@ -294,8 +332,8 @@ function parseSnapshotDeltaBuffer(buffer: Buffer): { records: SnapshotDeltaRecor
  * 读取「u32 长度前缀 + utf8 正文」的内联字符串，并校验正文区间落在缓冲区范围内。
  * 越界返回 undefined：调用方丢弃该记录及其后的尾部（与撕裂记录同一策略）。
  *
- * v2 delta 的 condition 与 include 路径都是内联字符串（没有字符串表 / id 引用），
- * 因此这里的「引用」校验就是长度前缀指向的字节区间必须在 buffer 内。
+ * delta 的 parent（v3）、condition（v2）、include 路径（v2）都是内联字符串（没有字符串表 /
+ * id 引用），因此这里的「引用」校验就是长度前缀指向的字节区间必须在 buffer 内。
  */
 function readBoundedString(
   buffer: Buffer,
@@ -346,6 +384,13 @@ function parseSetRecordBody(
     offset += 2
     const kindCode = buffer.readUInt8(offset)
     offset += 1
+    let parent: string | undefined
+    if (layout.entryParent) {
+      const parsedParent = readBoundedString(buffer, offset)
+      if (!parsedParent) return undefined
+      if (parsedParent.value.length > 0) parent = parsedParent.value
+      offset = parsedParent.end
+    }
     let condition: string | undefined
     if (layout.entryCondition) {
       const parsedCondition = readBoundedString(buffer, offset)
@@ -361,6 +406,8 @@ function parseSetRecordBody(
       endLine,
       column,
       ...(condition !== undefined ? { condition } : {}),
+      // v1/v2 记录没有 parent 字段；不 materialize 可选属性以保持旧形状
+      ...(parent !== undefined ? { parent } : {}),
     })
   }
   let includes: string[] | undefined
@@ -547,7 +594,7 @@ async function appendSnapshotDeltaLocked(
 
   const scan = scanSnapshotDeltaEnd(existing)
   if (!scan.valid || deltaHeaderVersion(existing) !== SNAPSHOT_DELTA_VERSION) {
-    // 撕裂的头部 / 坏 magic / 旧版本头（v1 记录体与 v2 不同，不能在后面直接接 v2 记录）：
+    // 撕裂的头部 / 坏 magic / 旧版本头（v1/v2 记录体与 v3 不同，不能在后面直接接 v3 记录）：
     // 整个文件都不可解码，直接整体覆盖（截断到 0 再写）。
     await writeFile(deltaPath, encoded)
     await rememberDeltaState(key, deltaPath, encoded.length, 1)

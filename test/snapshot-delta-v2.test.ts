@@ -97,8 +97,8 @@ function makeBaseWithInclude(): ReturnType<typeof createSymbolTable> {
   return createSymbolTable(['.'], files, entries, 1, SNAPSHOT_VERSION, { includes })
 }
 
-test('snapshot delta v2: set/remove records roundtrip hash, condition and includes', () => {
-  assert.equal(SNAPSHOT_DELTA_VERSION, 2)
+test('snapshot delta: set/remove records roundtrip hash, condition and includes', () => {
+  assert.equal(SNAPSHOT_DELTA_VERSION, 3)
   const record = {
     kind: 'set' as const,
     path: 'src/a.c',
@@ -302,12 +302,12 @@ test('snapshot delta v2: out-of-range condition length drops records from there 
     includes: [],
   })
   // set 记录布局（header 之后）：kind(1)+pathLen(4)+path + mtime(8)+size(4)+hashLo/Hi(8)
-  //   + entryCount(4) + [nameLen(4)+name+line(4)+endLine(4)+column(2)+kind(1)]
-  //   -> 紧接着是 conditionLen(4)
+  //   + entryCount(4) + [nameLen(4)+name+line(4)+endLine(4)+column(2)+kind(1)
+  //   + parentLen(4)+parent] -> 紧接着是 conditionLen(4)
   const pathBytes = Buffer.byteLength('b.c', 'utf8')
   const nameBytes = Buffer.byteLength('guarded', 'utf8')
   const conditionLengthOffset =
-    8 + 1 + 4 + pathBytes + 8 + 4 + 4 + 4 + 4 + 4 + nameBytes + 4 + 4 + 2 + 1
+    8 + 1 + 4 + pathBytes + 8 + 4 + 4 + 4 + 4 + 4 + nameBytes + 4 + 4 + 2 + 1 + 4
   assert.equal(encoded.readUInt32LE(conditionLengthOffset), Buffer.byteLength(condition, 'utf8'))
 
   const corrupted = Buffer.from(encoded)

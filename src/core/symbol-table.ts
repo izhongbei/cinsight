@@ -1,9 +1,10 @@
 import type { FileRecord, SymbolEntry, SymbolKind, SymbolTable } from '../shared/types'
 
 /**
- * 列式符号表实现（v4）：
- *   - 字符串表：文件路径、符号名（去重）、条件栈文本（去重，0 号为 ''）
- *   - 列数组：nameId / fileIdx / line / endLine / column / kind / conditionId（TypedArray）
+ * 列式符号表实现（v5）：
+ *   - 字符串表：文件路径、符号名（去重）、条件栈文本（去重，0 号为 ''）、
+ *     parent 类型名（去重，0 号为 ''）
+ *   - 列数组：nameId / fileIdx / line / endLine / column / kind / conditionId / parentId（TypedArray）
  *   - nameOffsets：按名字排序后每个名字的条目区间（findByName 二分）
  *   - fileEntryOffsets/fileEntryIndexes：按文件分组的条目索引（entriesInFile 直接切片）
  *   - contentHashLo/Hi：按 fileIndex 的内容哈希（0/0 = 未记录）
@@ -59,6 +60,10 @@ export interface SymbolTableColumns {
   readonly conditions: readonly string[]
   /** 每个条目的条件 id（0 = 无条件） */
   readonly conditionIds: Uint32Array
+  /** parent 字符串表：0 号固定为 ''（表示无 parent） */
+  readonly parents: readonly string[]
+  /** 每个条目的 parent id（0 = 无 parent）；成员/枚举常量指向父类型名 */
+  readonly parentIds: Uint32Array
   readonly fileEntryOffsets: Uint32Array
   readonly fileEntryIndexes: Uint32Array
   /** 按 fileIndex 的内容哈希（lo/hi；0/0 = 未记录） */
@@ -129,6 +134,8 @@ class SymbolTableImpl implements SymbolTable {
     const fileIndex = columns.fileIndexes[index]!
     const conditionId = columns.conditionIds[index]!
     const condition = conditionId === 0 ? undefined : columns.conditions[conditionId]
+    const parentId = columns.parentIds[index]!
+    const parent = parentId === 0 ? undefined : columns.parents[parentId]
     return {
       name: this.nameAt(index),
       kind: KIND_NAMES[columns.kinds[index]!] ?? 'function',
@@ -136,8 +143,9 @@ class SymbolTableImpl implements SymbolTable {
       line: columns.lines[index]!,
       endLine: columns.endLines[index]!,
       column: columns.columns[index]!,
-      // 无条件条目不 materialize condition 属性（deepEqual / 序列化保持旧形状）
+      // 无条件/无 parent 的条目不 materialize 可选属性（deepEqual / 序列化保持旧形状）
       ...(condition !== undefined && condition !== '' ? { condition } : {}),
+      ...(parent !== undefined && parent !== '' ? { parent } : {}),
     }
   }
 
@@ -290,6 +298,14 @@ export function createSymbolTable(
   ]
   const conditionIdByValue = new Map(conditions.map((condition, index) => [condition, index]))
 
+  // parent 字符串表：0 号固定为 ''（无 parent），其余去重升序（快照编码结果稳定）。
+  const parentValues = new Set<string>()
+  for (const entry of entries) {
+    if (entry.parent !== undefined && entry.parent !== '') parentValues.add(entry.parent)
+  }
+  const parents: readonly string[] = ['', ...Array.from(parentValues).sort(compareStrings)]
+  const parentIdByValue = new Map(parents.map((parent, index) => [parent, index]))
+
   const ordered = entries
     .map((entry) => ({
       entry,
@@ -313,6 +329,7 @@ export function createSymbolTable(
   const columns = new Uint16Array(entryCount)
   const kinds = new Uint8Array(entryCount)
   const conditionIds = new Uint32Array(entryCount)
+  const parentIds = new Uint32Array(entryCount)
 
   const nameOffsets = new Uint32Array(names.length + 1)
   const fileCounts = new Uint32Array(Math.max(sortedFiles.length, 1))
@@ -328,6 +345,8 @@ export function createSymbolTable(
     const condition = item.entry.condition
     conditionIds[index] =
       condition === undefined || condition === '' ? 0 : conditionIdByValue.get(condition) ?? 0
+    const parent = item.entry.parent
+    parentIds[index] = parent === undefined || parent === '' ? 0 : parentIdByValue.get(parent) ?? 0
     nameOffsets[item.nameId] = nameOffsets[item.nameId]! + 1
     fileCounts[item.fileIndex] = fileCounts[item.fileIndex]! + 1
   }
@@ -415,6 +434,8 @@ export function createSymbolTable(
       kinds,
       conditions,
       conditionIds,
+      parents,
+      parentIds,
       fileEntryOffsets,
       fileEntryIndexes,
       contentHashLo,
