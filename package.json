@@ -147,6 +147,11 @@
           "default": 200,
           "markdownDescription": "%config.searchLimit%"
         },
+        "sourceInsight.treeSymbolLimit": {
+          "type": "number",
+          "default": 2000,
+          "markdownDescription": "%config.treeSymbolLimit%"
+        },
         "sourceInsight.autoReindexOnSave": {
           "type": "boolean",
           "default": true,

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { clampSymbolRanges } from '../src/vscode/symbol-ranges'
+import { clampSymbolRanges, extendRangesOverChildren } from '../src/vscode/symbol-ranges'
 
 function lineLengths(lengths: number[], line: number): number {
   return lengths[line] ?? 0
@@ -54,4 +54,19 @@ test('ranges: column beyond the line is clamped to the line length', () => {
 test('ranges: empty document or non-finite input is skipped', () => {
   assert.equal(clampSymbolRanges(entry(0, 0, 0), 0, () => 0), undefined)
   assert.equal(clampSymbolRanges(entry(Number.NaN, 0, 0), 5, () => 0), undefined)
+})
+
+test('ranges: parent range extends to cover children, selection stays on the alias line', () => {
+  // typedef 别名行（3）在成员（1、2）下方：完整范围覆盖成员，selection 仍在别名行。
+  const alias = clampSymbolRanges(entry(3, 3, 2, 'point_t'), 5, (l) => lineLengths([14, 8, 8, 10, 0], l))!
+  const x = clampSymbolRanges(entry(1, 1, 6, 'x'), 5, (l) => lineLengths([14, 8, 8, 10, 0], l))!
+  const y = clampSymbolRanges(entry(2, 2, 6, 'y'), 5, (l) => lineLengths([14, 8, 8, 10, 0], l))!
+  const extended = extendRangesOverChildren(alias, [x, y])
+  assert.equal(extended.startLine, 1)
+  assert.equal(extended.endLine, 3)
+  assert.equal(extended.selectionStart, alias.selectionStart)
+  assert.equal(alias.startLine, 3, 'original alias ranges are not mutated')
+  // 没有子节点或子节点完全在父范围内时原样返回（同一对象）
+  assert.equal(extendRangesOverChildren(alias, []), alias)
+  assert.equal(extendRangesOverChildren(alias, [alias]), alias)
 })

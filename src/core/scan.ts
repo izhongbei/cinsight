@@ -92,11 +92,40 @@ const CONTROL_KEYWORDS = new Set<string>([
   '_Alignof', '_Pragma', '__pragma', '__extension__', '__builtin_offsetof',
 ])
 
-/** 参数表之后允许出现、需要整体跳过的属性宏。 */
+/** 参数表之后允许出现、需要整体跳过的属性宏（带参数，如 `__aligned(8)`）。 */
 const POST_ATTRIBUTES = new Set<string>([
   '__attribute', '__attribute__', '__declspec', 'asm', '__asm', '__asm__', 'typeof',
   '__typeof', '__typeof__', '__extension__', '_Pragma', '__pragma', '_Alignas', 'alignas',
+  // 内核常见、带参数的后置属性：不列出来时 `unsigned long mask __aligned(8);` 会因为
+  // 括号被当成函数声明符而整条丢弃，或把 `__aligned` 记成名字。
+  '__aligned', '__section', '__cacheline_aligned', '__page_aligned_data', '__page_aligned_bss',
+  '__alloc_size', '__printf', '__scanf', '__format', '__nonnull', '__counted_by',
+  '__designated_init',
 ])
+
+/**
+ * 无参数的声明符后缀属性宏（不穷举）：`static int foo __read_mostly;`、
+ * `char *buf __packed;` 里它们是属性而不是名字。
+ *
+ * 只在**已经有声明符名之后**才跳过，所以 `int __pad;`（字段名本身以 `__` 开头）
+ * 仍会把 `__pad` 当名字；另外 `TRAILING_ATTRIBUTES` 之外的 `__xxx` 若位于声明符段
+ * 末尾（后面只剩空白）也按属性处理（内核属性宏几乎都以 `__` 开头）。
+ */
+const TRAILING_ATTRIBUTES = new Set<string>([
+  '__read_mostly', '__write_mostly', '__packed', '__maybe_unused', '__used', '__unused',
+  '__always_unused', '__must_check', '__deprecated', '__always_inline', '__noinline',
+  '__weak', '__visible', '__cold', '__hot', '__user', '__iomem', '__force', '__rcu',
+  '__percpu', '__initdata', '__ro_after_init', '__cacheline_aligned_in_smp',
+  '__init', '__exit', '__ref', '__refdata', '__devinit', '__devexit',
+])
+
+/** 声明符段里从 from 到 end 是否只有空白（判断属性宏是否位于段尾）。 */
+function isWhitespaceOnly(text: string, from: number, end: number): boolean {
+  for (let i = from; i < end && i < text.length; i++) {
+    if (!isWsCode(text.charCodeAt(i))) return false
+  }
+  return true
+}
 
 function makeSpaces(text: string): string {
   return text.replace(/[^\r\n]/g, ' ')
@@ -550,7 +579,7 @@ function matchPair(text: string, open: number, openCode: number, closeCode: numb
   return -1
 }
 
-/** 跳过参数表后面的 `__attribute__((...))`、`__declspec(...)`、`asm(...)` 等。 */
+/** 跳过参数表后面的 `__attribute__((...))`、`__declspec(...)`、`asm(...)`、`__read_mostly` 等。 */
 function skipPostAttributes(text: string, from: number): number {
   const n = text.length
   let j = from
@@ -561,10 +590,18 @@ function skipPostAttributes(text: string, from: number): number {
     if (j >= n || !isIdentStartCode(text.charCodeAt(j))) return j
     let end = j + 1
     while (end < n && isIdentCode(text.charCodeAt(end))) end++
-    if (!POST_ATTRIBUTES.has(text.slice(j, end))) return j
+    const word = text.slice(j, end)
+    if (!POST_ATTRIBUTES.has(word) && !TRAILING_ATTRIBUTES.has(word)) return j
     let p = end
     while (p < n && isWsCode(text.charCodeAt(p))) p++
-    if (p >= n || text.charCodeAt(p) !== CH_LPAREN) return j
+    if (p >= n || text.charCodeAt(p) !== CH_LPAREN) {
+      // 无参数属性（`__read_mostly` / `__maybe_unused`）只有单独一个记号
+      if (TRAILING_ATTRIBUTES.has(word)) {
+        j = end
+        continue
+      }
+      return j
+    }
     const close = matchPair(text, p, CH_LPAREN, CH_RPAREN)
     if (close < 0) return j
     j = close + 1
@@ -751,16 +788,27 @@ function skipParenGroup(text: string, from: number): number {
   return close < 0 ? text.length : close + 1
 }
 
-/** 跳过 tag 与 `{` 之间的属性修饰（`__attribute__((...))`、`__declspec(...)` 等）。 */
+/** 跳过 tag 与 `{` 之间的属性修饰（`__attribute__((...))`、`__declspec(...)`、`__packed` 等）。 */
 function skipTypeAttributes(text: string, from: number): number {
   let j = from
   for (;;) {
     const k = skipSpaceText(text, j)
     const word = readWordAt(text, k)
-    if (!word || !POST_ATTRIBUTES.has(word.value)) return k
+    if (!word) return k
+    const isPost = POST_ATTRIBUTES.has(word.value)
+    const isTrailing = TRAILING_ATTRIBUTES.has(word.value)
+    if (!isPost && !isTrailing) return k
     const p = skipSpaceText(text, word.end)
-    if (text.charCodeAt(p) !== CH_LPAREN) return k
-    j = skipParenGroup(text, p)
+    if (text.charCodeAt(p) === CH_LPAREN) {
+      j = skipParenGroup(text, p)
+      continue
+    }
+    // 无参数属性（`struct foo __packed {`）可以直接跳过
+    if (isTrailing) {
+      j = word.end
+      continue
+    }
+    return k
   }
 }
 
@@ -813,7 +861,12 @@ function declaratorNameIn(text: string, start: number, end: number): { start: nu
     if (isIdentStartCode(code)) {
       const word = readWordAt(text, i)!
       const afterStruct = prevWord === 'struct' || prevWord === 'union' || prevWord === 'enum'
-      if (!NAMED_KEYWORDS.has(word.value) && !afterStruct) {
+      // 声明符之后的属性宏（`typedef ... foo_t __packed;`）不是别名
+      const trailingAttribute =
+        candidate !== undefined &&
+        (TRAILING_ATTRIBUTES.has(word.value) ||
+          (word.value.startsWith('__') && isWhitespaceOnly(text, word.end, end)))
+      if (!NAMED_KEYWORDS.has(word.value) && !afterStruct && !trailingAttribute) {
         candidate = { start: word.start, end: word.end }
       }
       prevWord = word.value
@@ -1142,6 +1195,9 @@ function findDeclaratorParen(text: string, start: number, end: number): number {
  * - 普通声明符（含多声明符的后续段）→ 最后一个标识符，跳过 `struct/union/enum tag`
  * 属性组与数组下标整体跳过；位域 `:`、初始化器 `=` 之前的部分由调用方先截断。
  * 带括号但不是函数指针形态的段（原型宏等）不产生名字。
+ * 声明符之后的属性宏（`__packed` / `__read_mostly` / `__aligned(8)`）不算名字：
+ * 已知的无参数属性直接跳过；其他 `__` 前缀记号在已有名字且位于段尾时也按属性处理
+ * （`int __pad;` 这种没有前置名字的字段名仍保留）。
  */
 function declaratorNameInRange(text: string, start: number, end: number): NameRange | undefined {
   let parenAt = -1
@@ -1152,10 +1208,29 @@ function declaratorNameInRange(text: string, start: number, end: number): NameRa
     const code = text.charCodeAt(i)
     if (isIdentStartCode(code)) {
       const word = readWordAt(text, i)!
-      if (POST_ATTRIBUTES.has(word.value)) {
-        const p = skipSpaceText(text, word.end)
+      const p = skipSpaceText(text, word.end)
+      if (POST_ATTRIBUTES.has(word.value) && text.charCodeAt(p) === CH_LPAREN) {
+        i = Math.min(skipParenGroup(text, p), end)
+        prevWord = ''
+        continue
+      }
+      const hasCandidate = candidate !== undefined
+      if (hasCandidate && (TRAILING_ATTRIBUTES.has(word.value) || POST_ATTRIBUTES.has(word.value))) {
+        // 无参数的后置属性宏：`... foo __read_mostly;` / `... buf __packed;`
+        i = word.end
+        prevWord = ''
+        continue
+      }
+      if (hasCandidate && word.value.startsWith('__')) {
+        // 兜底：未列出的内核属性宏。带参数的 `__xxx(...)` 整体跳过；仅在段尾出现的
+        // `__xxx`（后面只剩空白）按属性丢弃。
         if (text.charCodeAt(p) === CH_LPAREN) {
           i = Math.min(skipParenGroup(text, p), end)
+          prevWord = ''
+          continue
+        }
+        if (isWhitespaceOnly(text, word.end, end)) {
+          i = word.end
           prevWord = ''
           continue
         }

@@ -296,6 +296,7 @@ const configurationValues = {
   maxFiles: 120000,
   autoCompact: true,
   searchLimit: 200,
+  treeSymbolLimit: 2000,
   autoReindexOnSave: true,
   enableCallHierarchy: true,
   followSymlinks: false,
@@ -2248,6 +2249,49 @@ async function checkMemberSymbolUi() {
     documentSymbolDisposable.dispose()
   }
 
+  // ---- 匿名 typedef 类型体：父节点完整范围覆盖成员，selectionRange 留在别名行 ----
+  const aliasFile = 'inc/point.h'
+  const aliasEntries = [
+    { name: 'point_t', kind: 'typedef', file: aliasFile, line: 3, endLine: 3, column: 2 },
+    { name: 'x', kind: 'member', file: aliasFile, line: 1, endLine: 1, column: 6, parent: 'point_t' },
+    { name: 'y', kind: 'member', file: aliasFile, line: 2, endLine: 2, column: 6, parent: 'point_t' },
+  ]
+  const aliasTable = createSymbolTable(
+    ['.'],
+    [{ path: aliasFile, mtimeMs: 0, size: 0 }],
+    aliasEntries,
+    1,
+    SNAPSHOT_VERSION,
+  )
+  const aliasService = {
+    ...service,
+    snapshot: aliasTable,
+    fileSymbols: (relPath) => aliasTable.entriesInFile(relPath),
+  }
+  const aliasDocument = new TextDocument(
+    Uri.file(path.join(workspaceRoot, aliasFile)),
+    ['typedef struct {', '  int x;', '  int y;', '} point_t;'].join('\n'),
+  )
+  const aliasDisposable = registerDocumentSymbolProvider(aliasService)
+  try {
+    const provider = registrations.providers
+      .filter(([kind]) => kind === 'documentSymbol')
+      .pop()[2]
+    const symbols = provider.provideDocumentSymbols(aliasDocument, cancelToken)
+    assert.equal(symbols.length, 1, 'anonymous typedef body yields one top-level node')
+    const point = symbols[0]
+    assert.deepEqual(point.children.map((child) => child.name), ['x', 'y'])
+    assert.equal(point.range.start.line, 1, 'parent full range starts at the first member')
+    assert.equal(point.range.end.line, 3, 'parent full range ends on the alias line')
+    assert.equal(
+      point.selectionRange.start.line,
+      3,
+      'selectionRange stays on the alias line so go-to-symbol lands on point_t',
+    )
+  } finally {
+    aliasDisposable.dispose()
+  }
+
   // ---- 悬停：成员/枚举常量/全局变量补归属行，且不破坏原有分组/位置行 ----
   const hoverDisposable = registerHoverProvider(service)
   try {
@@ -2310,6 +2354,25 @@ async function checkMemberSymbolUi() {
       'dynamic search items carry alwaysShow to bypass the host filter',
     )
 
+    // 只输入 @kind（没有名字）时不能只留一个空列表：placeHolder 要提示继续输入，
+    // 且过滤种类仍保留（继续输入后按该种类搜索，见下面的 @member len）。
+    pick._onChange('@member')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(pick.items.map((item) => item.label), [], '@kind-only keeps the list empty')
+    assert.match(
+      String(pick.placeholder),
+      /Type a name after @member/,
+      '@kind-only shows a placeholder hint',
+    )
+
+    pick._onChange('@member le')
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      ['len'],
+      '@member + name still applies the selected kind after the hint',
+    )
+
     pick._onChange('@var le')
     // 输入变化同步清空旧结果：防抖窗口内快速回车不会接受上一轮查询的首选
     assert.deepEqual(
@@ -2365,6 +2428,67 @@ async function checkMemberSymbolUi() {
   }
 }
 
+async function checkSymbolTreeLimits() {
+  const { SymbolsTreeProvider } = require(
+    path.join(EXT_ROOT, 'dist/src/vscode/views/symbols-tree.js'),
+  )
+  const makeService = (entries, treeSymbolLimit) => ({
+    ready: true,
+    config: { treeSymbolLimit, searchLimit: 200 },
+    fileSymbols: (rel) => (rel === 'inc/big.h' ? entries : []),
+    onDidChange: () => ({ dispose() {} }),
+    onProgress: () => ({ dispose() {} }),
+  })
+  const makeSymbols = (count) =>
+    Array.from({ length: count }, (_, index) => ({
+      name: `sym_${index}`,
+      kind: 'function',
+      file: 'inc/big.h',
+      line: index,
+      endLine: index,
+      column: 0,
+    }))
+
+  // 0.8.0 的 200 搜索上限曾截断 B3 之后变大的头文件（最大的头 199 -> 479 个符号）；
+  // 树的上限默认 2000，必须与 searchLimit 独立。
+  const bigTree = new SymbolsTreeProvider(makeService(makeSymbols(479), 2000))
+  try {
+    const children = bigTree.getChildren({ kind: 'file', rel: 'inc/big.h' })
+    assert.equal(children.length, 479, 'symbol tree shows all 479 symbols of a real-size header')
+    assert.ok(
+      children.every((child) => child.kind === 'symbol'),
+      'no overflow node below the tree cap',
+    )
+    const firstItem = bigTree.getTreeItem(children[0])
+    assert.equal(firstItem.description, ':1 · Function', 'tree row is `:line · kind` (no signature)')
+  } finally {
+    bigTree.dispose()
+  }
+
+  // 超过上限才出现提示节点，且提示文本明确告诉用户调大 treeSymbolLimit。
+  const cappedTree = new SymbolsTreeProvider(makeService(makeSymbols(2100), 2000))
+  try {
+    const children = cappedTree.getChildren({ kind: 'file', rel: 'inc/big.h' })
+    assert.equal(children.length, 2001, 'cap renders treeSymbolLimit symbols + one overflow node')
+    assert.equal(
+      children.filter((child) => child.kind === 'symbol').length,
+      2000,
+      'symbol nodes stop at treeSymbolLimit',
+    )
+    const more = children[children.length - 1]
+    assert.equal(more.kind, 'more', 'overflow node is a MoreNode')
+    assert.equal(more.remaining, 100, 'overflow node counts the hidden symbols')
+    const moreItem = cappedTree.getTreeItem(more)
+    assert.match(
+      String(moreItem.label),
+      /… and 100 more \(raise sourceInsight\.treeSymbolLimit\)/,
+      'overflow node tells the user to raise treeSymbolLimit',
+    )
+  } finally {
+    cappedTree.dispose()
+  }
+}
+
 async function main() {
   const extension = require(path.join(EXT_ROOT, 'dist/src/vscode/extension.js'))
   assert.equal(typeof extension.activate, 'function', 'extension.activate must be a function')
@@ -2401,6 +2525,7 @@ async function main() {
   await checkListAnnotations()
   await checkCallHierarchyIncludeAware()
   await checkMemberSymbolUi()
+  await checkSymbolTreeLimits()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -2431,6 +2556,7 @@ async function main() {
   console.log('  call hierarchy include-aware: included definition ranks before a closer non-included one OK')
   console.log('  gotoDefinition single multi-copy group: copy picker (not direct representative) OK')
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
+  console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
 }
 
 main()

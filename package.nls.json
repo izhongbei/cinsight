@@ -22,6 +22,7 @@
   "config.maxFiles.description": "Warn and suggest narrowing the index roots when the number of indexed files exceeds this value.",
   "config.autoCompact.description": "Automatically compact index deltas (on idle, after many changes, or on close) to keep disk and memory usage low. When disabled, deltas are still appended durably but are not merged automatically; a safety compaction still runs at 5,000 changed files or a 32 MB delta, and queries may slow down with a large overlay. While a shared-storage symbols-delta conflict is active, automatic compaction (including this cap) is disabled until the window is reloaded.",
   "config.searchLimit": "Maximum number of symbols returned by one search.",
+  "config.treeSymbolLimit": "Maximum number of symbols shown per file in the symbol tree. This is independent of `sourceInsight.searchLimit`; a file with more symbols gets a hint node suggesting a higher value.",
   "config.autoReindexOnSave": "Re-parse a file automatically when it is saved, created or deleted.",
   "config.enableCallHierarchy": "Also register the native VS Code call hierarchy provider (right-click a function to show callers/callees interactively).",
   "config.followSymlinks": "Follow symbolic links while walking the indexed directories.",

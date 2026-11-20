@@ -118,6 +118,16 @@ function toSymbolItem(
   return dynamic ? { ...item, alwaysShow: true } : item
 }
 
+/**
+ * 搜索框默认占位文案。`@kind` 单独输入（如 `@member`）时改成「在 @member 后输入名字」，
+ * 否则宿主只会显示一个空列表、没有任何提示。
+ */
+function defaultSearchPlaceholder(): string {
+  return vscode.l10n.t(
+    'Search symbols across the index (filter with @func, @type, @macro, @member, @enum, @var)',
+  )
+}
+
 /** si.searchSymbol：输入即搜（120 ms 防抖），选中后跳转。 */
 export async function showSymbolQuickPick(
   service: SymbolService,
@@ -128,9 +138,7 @@ export async function showSymbolQuickPick(
       return
     }
     const quickPick = vscode.window.createQuickPick<SymbolQuickPickItem>()
-    quickPick.placeholder = vscode.l10n.t(
-      'Search symbols across the index (filter with @func, @type, @macro, @member, @enum, @var)',
-    )
+    quickPick.placeholder = defaultSearchPlaceholder()
     quickPick.matchOnDescription = true
     quickPick.matchOnDetail = true
     quickPick.ignoreFocusOut = true
@@ -157,6 +165,15 @@ export async function showSymbolQuickPick(
               const table = service.snapshot
               // @kind 过滤词（B3 §3.5）：`@member len` -> 只在成员里搜 len。
               const parsed = parseSearchQuery(value)
+              const kindTokens = value.trim()
+              if (parsed.query.length === 0 && parsed.kinds !== undefined) {
+                // 只输入了 @kind（或 `@member @enum`）时给出可读提示，而不是一个空列表；
+                // 过滤种类仍原样保留在 parsed.kinds，用户继续输入后立即按这些种类搜索。
+                quickPick.placeholder = vscode.l10n.t('Type a name after {0}', kindTokens)
+                quickPick.items = []
+                return
+              }
+              quickPick.placeholder = defaultSearchPlaceholder()
               quickPick.items = parsed.query
                 ? service
                     .search(parsed.query, undefined, parsed.kinds)

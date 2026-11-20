@@ -72,6 +72,7 @@ export function scanGlobals(text: string): ScannedSymbol[]      // kind='variabl
 - 具名内联成员 `struct outer { struct foo { int y; } bar; };` 只索引成员 `bar`，其内层成员不索引
 - 枚举常量：忽略 `= 表达式`；`typedef enum {A,B} Foo;` 的 parent 用 `Foo`（无 typedef 时用 tag；匿名且无 typedef 时 parent = 文件名无关的 `<anonymous>`）
 - 全局变量：`static`/`extern`/`const` 修饰、指针/数组/多声明符支持；跳过 `typedef`、函数声明（已有 declaration/function）、宏
+- 声明符之后的属性宏（`__read_mostly` / `__packed` / `__aligned(...)` / `__section("...")` / `__attribute__((...))` 等）不当作名字：已知无参数属性直接跳过，其余以 `__` 开头且位于声明符段末尾的记号也按属性处理；没有前置声明符名的 `int __pad;` 仍以 `__pad` 为名字
 - 行号/结束行语义与现有符号一致（`line` = 声明符所在行）
 
 ### 3.3 符号表 / 存储（v5）
@@ -99,7 +100,7 @@ includeOffsets / includeTargets  （同 v4）
 
 ### 3.4 delta v3（`src/core/snapshot-delta.ts`）
 
-`SNAPSHOT_DELTA_VERSION = 3`；set 记录每个 entry 追加 `parentLen u32 | parent utf8`（无 parent 写 0）。读取：
+`SNAPSHOT_DELTA_VERSION = 3`；set 记录的每个 entry 在 `kind` 之后、`condition` 之前写入 `parentLen u32 | parent utf8`（无 parent 写 0）。读取：
 - v3：读 parent
 - v2/v1：parent 缺失 = undefined；其余字段按现有兼容逻辑
 - 追加到 v1/v2 文件时整体重写为 v3（现有 reset 语义）
@@ -132,6 +133,7 @@ DefinitionProvider：
 ### 3.7 大纲嵌套 / 悬停
 
 - DocumentSymbolProvider：`entriesInFile` 中 `struct/union/enum` 为顶层节点；`member`/`enumConstant` 挂到满足 `type.line <= child.line && child.endLine <= type.endLine` 的**最内层**类型下；匹配不到时按 `entry.parent` 名字兜底；无法归属则留在顶层
+- 父节点完整范围扩展到覆盖所有子节点（匿名 typedef 的别名行在成员下方时 breadcrumbs/sticky scroll 仍可见父节点），`selectionRange` 保持在别名行
 - Hover：`member of struct Foo` / `enumerator of enum Bar` / `variable`；沿用现有签名/位置行
 - `toVscodeSymbolKind`/`kindLabel` 增加三类：Field(7)/EnumMember(21)/Variable(12)（VS Code `SymbolKind` 真实数值；实现使用符号常量 `vscode.SymbolKind.*`，不硬编码数字）
 
@@ -140,7 +142,7 @@ DefinitionProvider：
 符号数增加，`DEFAULT_INDEX_BUDGET` 调整为：
 - `maxSymbols: 3_000_000`
 - `maxFiles: 120_000`（不变）
-- `hardMaxSymbols: 6_000_000`
+- `hardMaxSymbols: 6_000_000`（刻意保留的**告警阈值**，不是硬性拒绝：v5 每符号约 27 B，6M 只用于提示内存压力）
 
 同步 `package.json` 默认值、nls 文案、README 设置表、预算测试边界。
 

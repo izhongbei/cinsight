@@ -114,3 +114,15 @@ test('scanMembers: line and column point at the declarator', () => {
     ],
   )
 })
+
+test('scanMembers: trailing kernel attribute macros are not member names', () => {
+  const text = [
+    'struct s {',
+    '  int len __read_mostly;',
+    '  char *buf __packed;',
+    '  unsigned long mask __aligned(8);',
+    '  int __pad;',
+    '};',
+  ].join('\n')
+  assert.deepEqual(scanMembers(text).map((m) => m.name), ['len', 'buf', 'mask', '__pad'])
+})

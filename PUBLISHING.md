@@ -45,10 +45,10 @@ cd tools/vscode-source-insight
 
 3. **发布前验证**（`scripts/release.sh` 会自动跑前面三步）：
    ```bash
-   npm run compile && node --test dist/test/*.test.js   # 104/104
+   npm run compile && node --test dist/test/*.test.js   # 358/358
    node test/smoke-activate.js                          # SMOKE OK
    npm run perf -- plat                                  # 记录性能（可选，须传目录）
-   npx vsce ls                                          # 确认打包文件清单（应为 39 个文件、~90KB）
+   npx vsce ls                                          # 确认打包文件清单（应为 60 个文件、~210KB）
    ```
 
 4. **商标**：displayName 已定为中性的 **Code Insight**，不冒用 Source Dynamics 的产品名；README/描述里的 "Source Insight-style / 参考 Source Insight" 属于描述性引用（nominative use），公开发布时可以保留，也可以改成 "Source-Insight-like"。
@@ -190,7 +190,7 @@ VSCE_PAT=xxx npm run publish:vsce
 npm run release -- --channel=vsix --skip-tests
 ```
 
-脚本行为：校验 `node_modules` 与 `publisher` 是否为 `local` → 可选 `npm version` → `tsc` → 104 个单测 → 激活冒烟 → `vsce package` → 按 `--channel` 调用 `ovsx` / `vsce` 发布 → 打印下一步链接。
+脚本行为：校验 `node_modules` 与 `publisher` 是否为 `local` → 可选 `npm version` → `tsc` → 358 个单测 → 激活冒烟 → `vsce package` → 按 `--channel` 调用 `ovsx` / `vsce` 发布 → 打印下一步链接。
 
 ---
 
@@ -198,7 +198,7 @@ npm run release -- --channel=vsix --skip-tests
 
 仓库内已有 **`.github/workflows/publish.yml`**：`push` tag `v*` 或手动 `workflow_dispatch` 时执行
 
-1. `npm ci` → `npm test`（137 个单测）→ 激活冒烟 → `vsce package` → 上传 vsix artifact
+1. `npm ci` → `npm test`（358 个单测）→ 激活冒烟 → `vsce package` → 上传 vsix artifact
 2. **Open VSX**：`npx ovsx publish code-insight-*.vsix -p "$OVSX_PAT" --skip-duplicate`
    （Cursor / VS Code forks 用户）
 3. **VS Code Marketplace**：`npx @vscode/vsce@4.1.0 publish --oidc`
@@ -273,7 +273,7 @@ release:
 2. 按下面「发布后自测清单」过一遍 10 项。
 3. 检查 i18n：中文系统显示中文命令名，英文系统显示英文。
 4. 检查 `marketplace` 页面 README 渲染、图标、许可证、仓库链接。
-5. 记录体积/启动开销：vsix 约 90KB，激活后才建索引（未配置 roots 时零索引、零后台任务）。
+5. 记录体积/启动开销：0.9.0 的 vsix 约 210KB（215,975 字节 / 60 个文件），激活后才建索引（未配置 roots 时零索引、零后台任务）。
 
 ---
 
@@ -282,7 +282,7 @@ release:
 ```bash
 npm install              # 安装构建/测试依赖
 npm run compile          # tsc -> dist/
-npm test                 # 编译 + 104 个 node:test 单元测试
+npm test                 # 编译 + 358 个 node:test 单元测试
 npm run smoke            # mock vscode 激活冒烟（无需真实编辑器）
 npm run perf -- plat     # 对指定目录建索引并测查询耗时（必填相对 workspace 的目录）
 npm run package          # 生成 code-insight-<version>.vsix
@@ -297,7 +297,7 @@ npm run package          # 生成 code-insight-<version>.vsix
 在干净环境（未装过本扩展）安装后逐项验证：
 
 1. 首次打开 C 工程 → 左侧出现「Code Insight」图标，视图显示引导页。
-2. 执行"配置索引目录"，只勾一个中等目录 → 状态栏出现进度，结束后显示函数数量。
+2. 执行"配置索引目录"，只勾一个中等目录 → 状态栏出现进度，结束后显示符号数量。
 3. 打开该目录下任意 `.c`，光标放在跨文件调用的函数名上按 `F12` → 跳到定义文件对应行。
 4. `Ctrl+T` 输入函数名片段 → 结果列表含文件与行，回车跳转。
 5. 在函数调用处 `Shift+F12` → 找到调用点列表。

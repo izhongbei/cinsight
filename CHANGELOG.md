@@ -13,7 +13,8 @@
 - **Budget defaults raised.** `sourceInsight.maxSymbols` 2,000,000 → **3,000,000**, hard maximum 5,000,000 → **6,000,000**; `maxFiles` stays 120,000.
 - **Measured performance (6,838 C/H files).** 206,430 symbols (**+87,700 vs 0.8.0**: 87,611 from the new kinds plus 89 residual existing-kind changes from B3 scan/typedef fixes) and a **10.16 MB** snapshot (0.8.0: 118,730 symbols / 5.78 MB, **+75.8%**, above the <35% target); warm build **2.14 s** canonical and **2.14–2.45 s** in interleaved A/B runs vs **1.64–1.85 s** for 0.8.0 (**+34%**, above the <20% target; parse phase median 1.86 s vs 1.38 s); field jump **0.94 ms avg / 1.22 ms max** on the hottest member name (1,001 definitions, capped at 50) — within the **<5 ms** target; snapshot load 40 ms; symbol search **8 ms**; indexed find-references 1–2 ms (full scan 144 ms); callers/callees 7 ms / 0 ms; snapshot-resident memory ~84 MB vs ~75 MB (+9 MB); build RSS 544 MB. Conditional symbols are 40,890 / 206,430 (**19.8%**, 2,309 distinct texts) — the ratio is lower than 0.8.0's 23.6% because most new symbols are unconditional.
 - **Scan edge cases.** Macro-generated enum entries such as `CINIT(FILE, LONG) = 1` are skipped instead of being indexed as enum constants; the conventional file-level include-guard suppression applies to the new kinds too (enum constants inside a standard guard carry no condition). The known `typedef struct { ... } __attribute__((packed)) alias;` limitation is unchanged: the alias typedef symbol is still lost, while its members are indexed with the alias as parent.
-- 354 tests pass.
+- **Final-review fixes.** The symbol tree now has its own per-file cap, `sourceInsight.treeSymbolLimit` (default 2000, independent of `sourceInsight.searchLimit`), so B3-grown headers (for example 199 → 479 symbols) are no longer truncated and the overflow node suggests raising the setting. Anonymous typedef bodies extend the parent outline range over their members (breadcrumbs / sticky scroll), trailing kernel attribute macros (`__read_mostly`, `__packed`, `__aligned(...)`, `__section(...)`) no longer become the declared name, and typing only `@member` with no name now shows a "Type a name after @member" hint.
+- 358 tests pass.
 
 ### 中文
 
@@ -26,7 +27,8 @@
 - **预算默认值上调**：`sourceInsight.maxSymbols` 2,000,000 → **3,000,000**，硬上限 5,000,000 → **6,000,000**；`maxFiles` 保持 120,000。
 - **实测性能（6,838 个 C/H 文件）**：206,430 个符号（相对 0.8.0 **+87,700**：新增种类 87,611 个，另加 B3 扫描/typedef 修复带来的既有种类 89 个残差），快照 **10.16 MB**（0.8.0：118,730 符号 / 5.78 MB，**+75.8%**，超过 <35% 目标）；热缓存构建保存运行 **2.14 s**、交替 A/B **2.14–2.45 s**，0.8.0 为 **1.64–1.85 s**（**+34%**，超过 <20% 目标；parse 阶段中位数 1.86 s vs 1.38 s）；字段跳转在最热成员名（1,001 个定义，截断 50）上 **均值 0.94 ms / 最大 1.22 ms**，满足 **<5 ms** 目标；快照加载 40 ms；符号搜索 **8 ms**；倒排索引查找引用 1–2 ms（全量扫描 144 ms）；调用者/被调用者 7 ms / 0 ms；加载后快照常驻内存约 84 MB vs 约 75 MB（+9 MB）；构建期 RSS 544 MB。条件符号 40,890 / 206,430（**19.8%**，2,309 种文本）——比例低于 0.8.0 的 23.6%，因为新增符号大多无条件。
 - **扫描边界**：`CINIT(FILE, LONG) = 1` 这类宏生成的枚举项会被跳过，不再伪造成枚举常量；传统文件级 include guard 抑制同样作用于新种类（标准 guard 内的枚举常量不带条件）。已知的 `typedef struct { ... } __attribute__((packed)) alias;` 限制不变：别名 typedef 符号仍会丢失，但其成员仍以该别名作为 parent 索引。
-- 354 个单测通过。
+- **最终评审修复**：符号树改用独立于 `sourceInsight.searchLimit` 的每文件上限 `sourceInsight.treeSymbolLimit`（默认 2000），B3 之后变大的头文件（例如 199 → 479 个符号）不再被截断，溢出节点会提示调大该设置。匿名 typedef 类型体的父节点完整范围扩展到成员（breadcrumbs / sticky scroll 因此可见），声明符末尾的内核属性宏（`__read_mostly`、`__packed`、`__aligned(...)`、`__section(...)`）不再被当成名字；只输入 `@member`（后面没有名字）时会显示「请在 @member 后输入名字」提示。
+- 358 个单测通过。
 
 ## 0.8.0 — 2026-11-17
 

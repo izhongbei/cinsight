@@ -22,7 +22,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
 | **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style relation panel: the current function in the middle, **callers on the left, callees on the right**, expandable node by node, click a name to jump |
-| **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → symbols (functions with signature; members/enums/globals with kind), loaded on demand |
+| **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → symbols (`:line · kind`; hover shows the signature), loaded on demand. Each file shows up to `sourceInsight.treeSymbolLimit` symbols (default 2000, independent of the search limit); beyond that an overflow hint suggests raising it |
 | **Hover signature** | Hover a function name to see `return type name(params)` and its definition/declaration location; members/enum constants/globals get their parent/kind line |
 | **Document outline** | `Ctrl+Shift+O` lists functions, types and — nested under their type — members and enum constants |
 | **Index diagnostics** | `Code Insight: Show Index Diagnostics` opens a Markdown report with base/delta sizes, pending changes, per-kind symbol counts, the last build summary, budget status and memory |
@@ -98,11 +98,14 @@ The Search Symbols input box accepts optional kind filters: `@func`, `@type` (st
 | `sourceInsight.maxFiles` | `120000` | Warn (status bar) when the index has more files than this |
 | `sourceInsight.autoCompact` | `true` | Merge index deltas back into the base snapshot on idle / after many changes / on close. When `false` automatic merges are deferred (deltas are still appended durably), but a safety compaction still runs at 5,000 changed files or a 32 MB delta; queries may slow down with a large overlay. While a shared-storage symbols-delta conflict is active, automatic compaction (including this safety cap) stays off until the window is reloaded |
 | `sourceInsight.searchLimit` | `200` | Maximum results per search |
+| `sourceInsight.treeSymbolLimit` | `2000` | Maximum symbols shown per file in the symbol tree (independent of `searchLimit`) |
 | `sourceInsight.autoReindexOnSave` | `true` | Re-parse a file when it is saved, created or deleted |
 | `sourceInsight.enableCallHierarchy` | `true` | Also register the native call hierarchy provider |
 | `sourceInsight.followSymlinks` | `false` | Follow symbolic links while walking roots |
 
 After changing `indexRoots` / `exclude` / `maxFileSizeKB`, run **Rebuild Index** (the extension prompts you).
+
+The `6,000,000` hard symbol budget is **advisory only** (status-bar error plus a one-shot prompt; indexing is not refused). It is deliberately kept: v5 stores ~27 B per symbol plus shared string tables, so the cap is a memory-pressure signal rather than a hard limit.
 
 ## How it works
 
@@ -221,7 +224,7 @@ MIT
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
 | **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：中间当前函数，**左调用者、右被调用者**，可逐层展开、点击名字跳转 |
-| **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 符号（函数带签名，成员/枚举/全局带种类），按需加载 |
+| **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 符号（显示 `:line · 种类`；签名见悬停），按需加载；每个文件最多显示 `sourceInsight.treeSymbolLimit` 个符号（默认 2000，与搜索上限独立），超出时显示提示并建议调大该值 |
 | **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` 与定义/声明位置；成员/枚举常量/全局变量额外显示 parent/种类 |
 | **文档大纲** | `Ctrl+Shift+O` 列出当前文件的函数、类型，以及嵌套在类型下的成员与枚举常量 |
 | **索引诊断** | 命令 `Code Insight: 索引诊断` 打开 Markdown 报告：base/delta 体积、待合并变更、各类符号数、上次构建摘要、预算状态与内存占用 |
@@ -296,11 +299,14 @@ cursor --install-extension code-insight-0.9.0.vsix
 | `sourceInsight.maxFiles` | `120000` | 文件数超过该值时状态栏警告 |
 | `sourceInsight.autoCompact` | `true` | 空闲 / 累计变更较多 / 关闭时把索引增量合并回 base。`false` 时自动合并被推迟（delta 仍逐次追加，不丢数据），但到达安全上限（累计 5000 个文件变更或 32 MB delta）时仍会强制合并一次；overlay 很大时查询可能变慢。共享存储的符号 delta 冲突期间，自动 compaction（含该安全上限）会停用，直到重新加载窗口 |
 | `sourceInsight.searchLimit` | `200` | 单次搜索返回上限 |
+| `sourceInsight.treeSymbolLimit` | `2000` | 符号树中每个文件最多显示的符号数（与 `searchLimit` 独立） |
 | `sourceInsight.autoReindexOnSave` | `true` | 保存/新建/删除文件时增量重解析 |
 | `sourceInsight.enableCallHierarchy` | `true` | 注册原生调用层次 Provider |
 | `sourceInsight.followSymlinks` | `false` | 是否跟随符号链接 |
 
 修改 `indexRoots` / `exclude` / `maxFileSizeKB` 后建议执行一次 **重建索引**。
+
+`6000000` 符号硬上限只是**告警阈值**（状态栏报错 + 一次性提示，不会拒绝建索引），刻意保留：v5 每符号约 27 B（另加共享字符串表），它用于提示内存压力而不是硬性限制。
 
 ## 工作原理
 

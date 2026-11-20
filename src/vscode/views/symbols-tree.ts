@@ -1,7 +1,10 @@
 /**
  * 侧边栏符号树：Activity Bar「Code Insight」容器里的 `si.symbols` 视图。
  *
- * 结构：已配置的索引根目录 -> 目录（懒加载）-> 文件 -> 文件内函数（签名摘要/悬停）。
+ * 结构：已配置的索引根目录 -> 目录（懒加载）-> 文件 -> 文件内符号（`:line · kind`，签名见悬停）。
+ * 每个文件的子节点上限由 `sourceInsight.treeSymbolLimit`（默认 2000）控制，与搜索上限
+ * `sourceInsight.searchLimit` 无关——B3 之后单文件符号数可达数百，用搜索上限会截断真实文件；
+ * 超出上限时渲染一条带调大建议的提示节点。
  * 未配置索引时 getChildren() 返回空数组，VS Code 自动显示 package.json 里的 viewsWelcome 引导。
  */
 import * as fs from 'node:fs'
@@ -43,6 +46,9 @@ export interface MoreNode {
 }
 
 export type SiTreeNode = RootNode | DirectoryNode | FileNode | SymbolNode | MoreNode
+
+/** 符号树每个文件的默认上限（与 `sourceInsight.searchLimit` 独立；覆盖真实头文件）。 */
+export const DEFAULT_TREE_SYMBOL_LIMIT = 2000
 
 // VS Code 枚举值：None=0, Collapsed=1, Expanded=2。
 // 不在模块顶层直接读 `vscode.TreeItemCollapsibleState`，避免极简 mock 环境下 import 即崩。
@@ -218,9 +224,18 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
   }
 
   private moreItem(node: MoreNode): vscode.TreeItem {
-    const item = new vscode.TreeItem(vscode.l10n.t('… and {0} more', String(node.remaining)), NONE)
+    const item = new vscode.TreeItem(
+      vscode.l10n.t(
+        '… and {0} more (raise sourceInsight.treeSymbolLimit)',
+        String(node.remaining),
+      ),
+      NONE,
+    )
     item.contextValue = 'siMore'
     item.iconPath = new vscode.ThemeIcon('ellipsis')
+    item.tooltip = vscode.l10n.t(
+      'This file has more symbols than sourceInsight.treeSymbolLimit; raise it to see the rest.',
+    )
     return item
   }
 
@@ -282,7 +297,12 @@ export class SymbolsTreeProvider implements vscode.TreeDataProvider<SiTreeNode>,
     if (entries.length === 0) {
       return []
     }
-    const limit = Math.max(1, this.service.config.searchLimit)
+    // 树的上限独立于搜索上限：searchLimit 是单次搜索返回数，用它截断文件子节点会让
+    // B3 之后符号变多的头文件（实测有 479 个符号）看起来像丢符号。
+    const limit = Math.max(
+      1,
+      this.service.config.treeSymbolLimit ?? DEFAULT_TREE_SYMBOL_LIMIT,
+    )
     const nodes: SiTreeNode[] = entries.slice(0, limit).map((entry) => ({
       kind: 'symbol',
       rel,

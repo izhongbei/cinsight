@@ -8,6 +8,8 @@ import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 
 import { buildOutlineTree, type OutlineNode } from '../src/core/outline'
+import { scanSource } from '../src/core/scan'
+import { clampSymbolRanges, extendRangesOverChildren } from '../src/vscode/symbol-ranges'
 import type { SymbolEntry, SymbolKind } from '../src/shared/types'
 
 function entry(
@@ -126,4 +128,30 @@ test('buildOutlineTree: same-line type definitions nest by parent name, not file
 
 test('buildOutlineTree: empty input yields an empty outline', () => {
   assert.deepEqual(buildOutlineTree([]), [])
+})
+
+test('buildOutlineTree: anonymous typedef body parent range covers its members (real scan)', () => {
+  const text = ['typedef struct {', '  int x;', '  int y;', '} point_t;'].join('\n')
+  const tree = buildOutlineTree(
+    scanSource(text).map((symbol) => ({ ...symbol, file: 'inc/point.h' })),
+  )
+  assert.deepEqual(names(tree), ['point_t'])
+  const parent = tree[0]!
+  assert.deepEqual(names(parent.children), ['x', 'y'])
+  // 扫描出的别名在 `}` 行（3），成员在 1、2 行：父范围必须扩展到成员
+  assert.equal(parent.entry.line, 3)
+  const lineLength = (line: number): number => (text.split('\n')[line] ?? '').length
+  const parentRanges = clampSymbolRanges(parent.entry, 4, lineLength)
+  assert.ok(parentRanges)
+  const childRanges = parent.children.map((child) => {
+    const ranges = clampSymbolRanges(child.entry, 4, lineLength)
+    assert.ok(ranges)
+    return ranges
+  })
+  const extended = extendRangesOverChildren(parentRanges!, childRanges)
+  assert.equal(extended.startLine, 1)
+  assert.equal(extended.endLine, 3)
+  // selectionRange（别名行）不变：DocumentSymbol 用它定位 `point_t`
+  assert.equal(parentRanges!.startLine, 3)
+  assert.equal(parentRanges!.selectionStart, 2)
 })

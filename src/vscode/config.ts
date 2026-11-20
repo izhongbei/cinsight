@@ -1,7 +1,7 @@
 /**
  * 读取 / 监听 `sourceInsight.*` 配置。
  *
- * package.json 里已冻结的 11 个配置键（全部在这里读取，配置默认值以 package.json 为准，
+ * package.json 里已冻结的 12 个配置键（全部在这里读取，配置默认值以 package.json 为准，
  * 这里再兜一层默认值，保证 mock 环境（getConfiguration 只返回空对象）也能工作）。
  */
 import * as vscode from 'vscode'
@@ -25,6 +25,7 @@ export const CONFIG_KEYS = {
   maxFiles: 'sourceInsight.maxFiles',
   autoCompact: 'sourceInsight.autoCompact',
   searchLimit: 'sourceInsight.searchLimit',
+  treeSymbolLimit: 'sourceInsight.treeSymbolLimit',
   autoReindexOnSave: 'sourceInsight.autoReindexOnSave',
   enableCallHierarchy: 'sourceInsight.enableCallHierarchy',
   followSymlinks: 'sourceInsight.followSymlinks',
@@ -49,6 +50,8 @@ export interface SiConfig {
    */
   readonly autoCompact: boolean
   readonly searchLimit: number
+  /** 符号树里每个文件最多显示的符号数（与 searchLimit 独立） */
+  readonly treeSymbolLimit: number
   readonly autoReindexOnSave: boolean
   readonly enableCallHierarchy: boolean
   readonly followSymlinks: boolean
@@ -66,6 +69,7 @@ export interface ConfigChangeSummary {
 const DEFAULT_MAX_FILE_SIZE_KB = 4096
 const DEFAULT_CONCURRENCY = 4
 const DEFAULT_SEARCH_LIMIT = 200
+const DEFAULT_TREE_SYMBOL_LIMIT = 2000
 
 /** 依次尝试多种读取方式，任何异常都退化为默认值。 */
 function rawGet<T>(fullKey: string, fallback: T): T {
@@ -146,6 +150,12 @@ export function readConfig(): SiConfig {
     ),
     autoCompact: toBoolean(rawGet(CONFIG_KEYS.autoCompact, true), true),
     searchLimit: toNumber(rawGet(CONFIG_KEYS.searchLimit, DEFAULT_SEARCH_LIMIT), DEFAULT_SEARCH_LIMIT, 1, 10_000),
+    treeSymbolLimit: toNumber(
+      rawGet(CONFIG_KEYS.treeSymbolLimit, DEFAULT_TREE_SYMBOL_LIMIT),
+      DEFAULT_TREE_SYMBOL_LIMIT,
+      1,
+      100_000,
+    ),
     autoReindexOnSave: toBoolean(rawGet(CONFIG_KEYS.autoReindexOnSave, true), true),
     enableCallHierarchy: toBoolean(rawGet(CONFIG_KEYS.enableCallHierarchy, true), true),
     followSymlinks: toBoolean(rawGet(CONFIG_KEYS.followSymlinks, false), false),
@@ -179,6 +189,7 @@ export function onDidChangeConfig(
         const allKeys: readonly string[] = [
           ...rootKeys,
           'searchLimit',
+          'treeSymbolLimit',
           'autoReindexOnSave',
           'enableCallHierarchy',
           'maxSymbols',

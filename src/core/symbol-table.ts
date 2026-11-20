@@ -10,7 +10,8 @@ import type { FileRecord, SymbolEntry, SymbolKind, SymbolTable } from '../shared
  *   - contentHashLo/Hi：按 fileIndex 的内容哈希（0/0 = 未记录）
  *   - includeOffsets/includeTargets：include 图 CSR（已解析到索引内文件的边）
  *
- * 相比对象数组（149 万 × 约 150B），这里每符号约 23B + 字符串表，实测启发式降到 1/4 以下。
+ * 相比对象数组（149 万 × 约 150B），v5 每符号约 27B（v4 为 23B）+ 字符串表；6,838 文件 /
+ * 206,430 符号实测快照 10.16 MB、加载后常驻内存约 84 MB（.superpowers/sdd/task-5-090-perf.txt）。
  */
 
 export const KIND_CODES: Record<SymbolKind, number> = {

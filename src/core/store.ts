@@ -28,7 +28,8 @@ import {
  * fileEntryIndexes u32[entryCount]
  * includeOffsets u32[fileCount+1] | includeTargets u32[edgeCount]
  * ```
- * 读取时直接映射成 TypedArray（不做对象化），149 万符号约 50MB 堆、加载 100ms 级；
+ * 读取时直接映射成 TypedArray（不做对象化）：v5 在 6,838 文件 / 206,430 符号的语料上
+ * 快照 10.16 MB、加载约 40 ms、加载后常驻内存约 84 MB；每符号定长部分 27 B（ENTRY_BYTES）。
  * 旧版本快照由版本号不匹配自然失效并触发重建。
  */
 

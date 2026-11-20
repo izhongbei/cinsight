@@ -110,9 +110,10 @@ test('types e2e: struct/union/enum/typedef are indexed, searchable and navigable
     assert.equal(headerKinds.get('x'), 'member')
     assert.equal(headerKinds.get('COLOR_RED'), 'enumConstant')
     // 匿名 typedef struct（`typedef struct { ... } size_t2;`）的成员也会进入索引；
-    // parent 目前只在扫描层（Task 2 才进快照列），这里只断言 kind。
+    // v5 快照保存 parent 列，成员可以归属到 typedef 别名。
     assert.equal(headerEntries.find((entry) => entry.name === 'width')?.kind, 'member')
-    assert.equal(headerEntries.find((entry) => entry.name === 'height')?.kind, 'member')
+    assert.equal(headerEntries.find((entry) => entry.name === 'width')?.parent, 'size_t2')
+    assert.equal(headerEntries.find((entry) => entry.name === 'height')?.parent, 'size_t2')
 
     // 4) 快照 roundtrip 保留 kind
     const snapshotPath = join(fixture.root, 'types.sidx')
@@ -128,6 +129,10 @@ test('types e2e: struct/union/enum/typedef are indexed, searchable and navigable
     assert.equal(loadedKinds.get('inc/types.h:x'), 'member')
     assert.equal(loadedKinds.get('inc/types.h:COLOR_RED'), 'enumConstant')
     assert.equal(loadedKinds.get('src/use.c:origin'), 'variable')
+    const loadedWidth = loaded!
+      .toArray()
+      .find((entry) => entry.file === 'inc/types.h' && entry.name === 'width')
+    assert.equal(loadedWidth?.parent, 'size_t2', 'v5 snapshot roundtrip keeps the parent column')
 
     // 5) 使用处（struct point origin;）不会被误索引成定义，但存活的变量自身会被索引
     const useEntries = entriesInFile(snapshot, 'src/use.c')

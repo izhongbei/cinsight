@@ -150,3 +150,23 @@ test('scanGlobals: mixed function declarator and variables in one statement', ()
   assert.deepEqual(scanGlobals('int a, f(void);').map((g) => g.name), ['a'])
   assert.deepEqual(scanGlobals('int (*fp)(void), x;').map((g) => g.name), ['fp', 'x'])
 })
+
+test('scanGlobals: trailing kernel attribute macros are not the declared name', () => {
+  const text = [
+    'static int foo __read_mostly;',
+    'char *buf __packed;',
+    'unsigned long mask __aligned(8);',
+    'static int tagged __section(".data");',
+    'static int plain;',
+  ].join('\n')
+  const globals = scanGlobals(text)
+  assert.deepEqual(globals.map((g) => [g.name, g.kind, g.line]), [
+    ['foo', 'variable', 0],
+    ['buf', 'variable', 1],
+    ['mask', 'variable', 2],
+    ['tagged', 'variable', 3],
+    ['plain', 'variable', 4],
+  ])
+  // 以 __ 开头的真实变量名（没有前置声明符名）仍然保留
+  assert.deepEqual(scanGlobals('int __pad;').map((g) => g.name), ['__pad'])
+})
