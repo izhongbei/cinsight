@@ -3,7 +3,7 @@
  *
  *   si.configureRoots  多选目录 -> 写入 sourceInsight.indexRoots
  *   si.rebuildIndex    重建索引（withProgress + 可取消）
- *   si.searchSymbol    QuickPick 搜索函数
+ *   si.searchSymbol    QuickPick 搜索符号（支持 @kind 过滤）
  *   si.gotoDefinition  当前光标处跳转定义（多候选走 QuickPick）
  *   si.showDefinitionCandidates 当前光标处全部定义候选（内容副本折叠成组，可二级展开）
  *   si.findReferences  当前光标处查找引用（优先原生 peek，兜底 QuickPick）

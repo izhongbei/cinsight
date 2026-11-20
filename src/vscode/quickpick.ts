@@ -149,6 +149,9 @@ export async function showSymbolQuickPick(
       disposables.push(
         quickPick.onDidChangeValue((value: string) => {
           disposeTimer()
+          // 输入变化时同步清空上一轮结果：120 ms 防抖窗口内列表里若还留着旧查询的
+          // 条目，快速回车会接受与当前输入无关的旧首选。清空后防抖窗口内没有可接受项。
+          quickPick.items = []
           timer = setTimeout(() => {
             try {
               const table = service.snapshot

@@ -1,6 +1,6 @@
 # Code Insight
 
-> Code navigation for large C/C++ codebases: an independent, persistent and incrementally updated function symbol index — no `compile_commands.json`, no clangd, no external tools.
+> Code navigation for large C/C++ codebases: an independent, persistent and incrementally updated symbol index (functions, types, members, enum constants and globals) — no `compile_commands.json`, no clangd, no external tools.
 
 On codebases with more than a hundred thousand C/H files (measured on **121,606 files / 2.6 GB / 1.08 M function definitions**), IntelliSense-style indexing is slow and often incomplete because of complex build configurations. Code Insight parses the sources itself and keeps its own symbol database, so go-to-definition, symbol search and find-references answer from the local index in milliseconds.
 
@@ -12,19 +12,21 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 |---|---|
 | **Go to definition** | `F12` / `Ctrl+Click` on a call or a type name; falls back to the header prototype / forward declaration when no definition exists |
 | **Type navigation** | `struct` / `union` / `enum` tags and `typedef` names (anonymous structs and function-pointer typedefs included) are indexed like functions |
+| **Member, enum and global symbols** | Struct/union members, enum constants and file-scope globals are indexed with their parent type; hover and list details show `member of struct sk_buff`, `enumerator of enum E` or `variable` |
+| **Field jump** | `F12` on `p->field`, `v.field` or `.field =` jumps to the member definition with that name — a lexical lookup, **no type inference**: every same-name member is a candidate (ranked by include/distance, capped at 50, duplicate-folded), and no member match falls back to the normal definition |
 | **Smart candidate order** | When a name has many definitions (multiple kernel/driver copies), `F12` / hover / call hierarchy list the one closest to your cursor first (same index root, then shared path prefix) |
 | **Include-aware jump** | Definitions reachable from the current file through the resolved `#include` graph are listed first — a **soft** ordering: candidates are reordered, never dropped |
 | **Duplicate folding** | Files with identical content (same 64-bit content hash) plus the same name and kind are folded into one `F12` location; `Show Definition Candidates` expands every copy |
 | **Conditional annotations** | Symbols inside `#if` / `#ifdef` / `#ifndef` blocks show the raw condition text in candidates, hover and list details (the text is not evaluated; conventional file-level include guards are transparent) |
-| **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Function` (lists signature and location) |
+| **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Symbols` (lists signature, location and kind; accepts `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` filters) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
 | **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style relation panel: the current function in the middle, **callers on the left, callees on the right**, expandable node by node, click a name to jump |
-| **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → functions (with signature), loaded on demand |
-| **Hover signature** | Hover a function name to see `return type name(params)` and its definition/declaration location |
-| **Document outline** | `Ctrl+Shift+O` lists the functions of the current file |
+| **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → symbols (functions with signature; members/enums/globals with kind), loaded on demand |
+| **Hover signature** | Hover a function name to see `return type name(params)` and its definition/declaration location; members/enum constants/globals get their parent/kind line |
+| **Document outline** | `Ctrl+Shift+O` lists functions, types and — nested under their type — members and enum constants |
 | **Index diagnostics** | `Code Insight: Show Index Diagnostics` opens a Markdown report with base/delta sizes, pending changes, per-kind symbol counts, the last build summary, budget status and memory |
-| **Index management** | Status bar shows index state and function count; commands to configure roots, rebuild, clear cache |
+| **Index management** | Status bar shows index state and symbol count; commands to configure roots, rebuild, clear cache |
 
 ## Installation
 
@@ -43,11 +45,11 @@ code --install-extension cinsight.insight-c
 
 Or search for **Code Insight** in the Extensions view.
 
-Offline install: download the `code-insight-<version>.vsix` for the release you want (for example `code-insight-0.8.0.vsix`) and run
+Offline install: download the `code-insight-<version>.vsix` for the release you want (for example `code-insight-0.9.0.vsix`) and run
 
 ```bash
-code   --install-extension code-insight-0.8.0.vsix
-cursor --install-extension code-insight-0.8.0.vsix
+code   --install-extension code-insight-0.9.0.vsix
+cursor --install-extension code-insight-0.9.0.vsix
 # or: Ctrl+Shift+P → Extensions: Install from VSIX...
 ```
 
@@ -57,7 +59,7 @@ Requires a host with **VS Code ≥ 1.90** (Cursor 3.x qualifies). No C/C++ exten
 
 1. Open your C project folder (`File → Open Folder`).
 2. Run **`Code Insight: Configure Index Roots`** and pick the directories to index (e.g. `component`, `plat`, `plugin`).
-3. Confirm the rebuild; the status bar shows progress, then `$(symbol-function) <count> functions`.
+3. Confirm the rebuild; the status bar shows progress, then `$(symbol-function) <count> symbols`.
 4. Open any `.c` file, put the cursor on a function call and press `F12`.
 
 > Nothing is indexed by default — you choose explicitly, so kernel copies, vendor libraries and build output stay out. `.git`, `build`, `tmp` and `node_modules` are excluded by default.
@@ -68,7 +70,7 @@ Requires a host with **VS Code ≥ 1.90** (Cursor 3.x qualifies). No C/C++ exten
 |---|---|
 | Configure Index Roots | `si.configureRoots` |
 | Rebuild Index | `si.rebuildIndex` |
-| Search Function | `si.searchSymbol` |
+| Search Symbols | `si.searchSymbol` |
 | Go to Definition | `si.gotoDefinition` |
 | Show Definition Candidates | `si.showDefinitionCandidates` |
 | Find References | `si.findReferences` |
@@ -80,6 +82,10 @@ Requires a host with **VS Code ≥ 1.90** (Cursor 3.x qualifies). No C/C++ exten
 
 The editor context menu offers go-to-definition, find-references and callers/callees in C/C++ files; the view title bar offers search, rebuild and configure.
 
+### `@kind` search filters
+
+The Search Symbols input box accepts optional kind filters: `@func`, `@type` (struct / union / enum / typedef), `@macro`, `@member`, `@enum` (enum constants) and `@var` (file-scope globals). Multiple filters are OR-ed, matching is case-insensitive, whitespace is normalised, and an unknown `@token` stays in the query text. Examples: `@member len`, `@var len`, `@type sk`, `@enum E_`. The command id stays `si.searchSymbol`; `@func` matches the `function` kind only (prototypes and forward declarations use the separate `declaration` kind and have no dedicated token).
+
 ## Settings
 
 | Setting | Default | Meaning |
@@ -88,7 +94,7 @@ The editor context menu offers go-to-definition, find-references and callers/cal
 | `sourceInsight.exclude` | `["**/.git/**","**/build/**","**/tmp/**","**/node_modules/**"]` | Excluded globs (`*`, `**`, `?`) |
 | `sourceInsight.maxFileSizeKB` | `4096` | Skip source files larger than this |
 | `sourceInsight.concurrency` | `4` | Worker threads used while building the index |
-| `sourceInsight.maxSymbols` | `3000000` | Warn (status bar) when the index has more symbols than this |
+| `sourceInsight.maxSymbols` | `3000000` | Warn (status bar) when the index has more symbols than this; above the hard maximum of `6000000` the status bar shows an error and a one-shot prompt offers to narrow the roots |
 | `sourceInsight.maxFiles` | `120000` | Warn (status bar) when the index has more files than this |
 | `sourceInsight.autoCompact` | `true` | Merge index deltas back into the base snapshot on idle / after many changes / on close. When `false` automatic merges are deferred (deltas are still appended durably), but a safety compaction still runs at 5,000 changed files or a 32 MB delta; queries may slow down with a large overlay. While a shared-storage symbols-delta conflict is active, automatic compaction (including this safety cap) stays off until the window is reloaded |
 | `sourceInsight.searchLimit` | `200` | Maximum results per search |
@@ -105,7 +111,7 @@ sources ──walk──> file list ──mtime+size delta──> changed files
                                                      │
                               worker_threads ×N ─────┤ lexing + definition detection
                                                      ▼
-                        compact symbol table (functions / prototypes / macros / struct / union / enum / typedef)
+                        compact symbol table (functions / prototypes / macros / types / typedefs / members / enum constants / globals)
                                                      │
                                        binary snapshot symbols.sidx (extension storage)
                                                      ▼
@@ -113,9 +119,9 @@ sources ──walk──> file list ──mtime+size delta──> changed files
 ```
 
 - The parser works on bytes so line and column numbers stay stable. A single-pass state machine blanks comments, string literals and `#define` continuations, then detects definitions and declarations at file scope ("type + name + balanced parentheses + `{`/`;`") and matches braces to get each function body range.
-- The snapshot is a **columnar** binary format (format v4: string tables + typed arrays + name/file/condition lookup tables, a 64-bit content hash per file, an include-edge CSR and a condition id per symbol). 118,730 symbols load in 31 ms. The 0.5.x v3 table measured ~41 B of heap per symbol; v4 adds a 4 B condition id per symbol and 8 B of content hash per file. Unchanged files reuse their previous symbols; a v3 snapshot is rebuilt once automatically after upgrading.
-- Saving a file is **incremental**: the extension appends a KB-sized delta record (`symbols.sidx.delta`) and applies it to an in-memory overlay in O(Δ), instead of rewriting the snapshot or rebuilding the column arrays (measured **~1 KB / 1 ms** appended with the v2 delta and **<1 ms** overlay update for a 22-symbol file; 0.7.0's v1 delta measured 904 B). The write is **O(Δ) in bytes**, not in time: each append validates the delta tail with an offset-only scan (no `SymbolEntry` decode), cached when only this process writes — measured **0.11 ms avg** steady-state, **0.74 ms** near a 4.09 MB delta (0.44 ms in the pre-fix saved run), and **5.48 ms** for a cold read + scan of a 4.17 MB tail (5.06 ms pre-fix; post-fix saved run). At startup saved deltas are replayed on top of the base snapshot; deltas over **4 MB** or **500** changed files, after **60 s** idle, and on close are compacted back into the base (measured **45 ms** for a 5.78 MB base with 118,730 symbols in the saved post-fix run; 56 ms pre-fix). `sourceInsight.autoCompact=false` only defers these merges: a safety compaction still runs at **5,000** changed files or a **32 MB** delta, except while a shared-storage delta conflict is active. The base format is now v4: a v3 snapshot is rebuilt once automatically after upgrading (no manual action), and unchanged files are reused after that.
-- A per-file **identifier hash index** (`symbols.names`, ~3.6 MB for 6,838 files) makes find-references read only the files that can contain the identifier instead of the whole tree: measured **1 candidate file vs 6,838**, **1–2 ms vs 162 ms** for a full scan on the saved post-fix warm-cache run (the pre-fix run measured 158 ms). 32-bit collisions can add candidate files but never hide a reference, because each candidate is verified by exact word-boundary matching.
+- The snapshot is a **columnar** binary format (format v5: string tables + typed arrays + name/file/condition/parent lookup tables, a 64-bit content hash per file, an include-edge CSR, and a condition id plus a parent id per symbol). **206,430 symbols load in 40 ms** in the saved 0.9.0 run (the 0.8.0 v4 snapshot: 118,730 symbols / 31 ms). v5 adds a 4 B parent id per symbol on top of v4's 4 B condition id and 8 B content hash per file; unchanged files reuse their previous symbols. A v4 snapshot is **rebuilt once automatically** after upgrading — no manual action.
+- Saving a file is **incremental**: the extension appends a KB-sized delta record (`symbols.sidx.delta`) and applies it to an in-memory overlay in O(Δ), instead of rewriting the snapshot or rebuilding the column arrays (0.9.0 measured **1.1 KB / 1 ms** appended with the v3 delta and **<1 ms** overlay update for a 23-symbol file). The write is **O(Δ) in bytes**, not in time: each append validates the delta tail with an offset-only scan (no `SymbolEntry` decode), cached when only this process writes — measured **0.10 ms avg** steady-state, **0.51 ms** near a 4.13 MB delta and **7.30 ms** for a cold read + scan of a 4.22 MB tail in the saved run (0.8.0: 0.11 / 0.74 / 5.48 ms). At startup saved deltas are replayed on top of the base snapshot; deltas over **4 MB** or **500** changed files, after **60 s** idle, and on close are compacted back into the base (0.9.0 measured **60 ms** for a 10.16 MB base with 206,430 symbols; 0.8.0: 45 ms for 5.78 MB). `sourceInsight.autoCompact=false` only defers these merges: a safety compaction still runs at **5,000** changed files or a **32 MB** delta, except while a shared-storage delta conflict is active. The base format is now v5: a v4 snapshot is rebuilt once automatically after upgrading (no manual action), and unchanged files are reused after that.
+- A per-file **identifier hash index** (`symbols.names`, ~3.6 MB for 6,838 files) makes find-references read only the files that can contain the identifier instead of the whole tree: measured **1 candidate file vs 6,838**, **1–2 ms vs 144 ms** for a full scan in the 0.9.0 saved run (0.8.0 saved run: 162 ms). 32-bit collisions can add candidate files but never hide a reference, because each candidate is verified by exact word-boundary matching.
 - The index is built in **one pass**: the parse worker strips comments/strings **once** per file and reuses that text for symbols, identifier hashes and the raw `#include` list; the 64-bit content hash runs on the raw text. Each source file is read exactly once, and include targets are then resolved against the indexed file set.
 - The reference index is loaded **lazily** on the first find-references / call-hierarchy request (saves ~194 ms and ~69 MB at activation on a 68k-file corpus) and updated **incrementally**: saving a file appends a <1 KB delta record instead of rewriting the index, and deltas are merged back automatically.
 - References and call relationships are scanned on demand: content prefilter first, then exact word-boundary matching; callers are derived from the line hit, callees only parse the target function body.
@@ -123,35 +129,35 @@ sources ──walk──> file list ──mtime+size delta──> changed files
 
 ## Performance
 
-Measured on a module set of **6,838 C/H files / 75 MB**:
+Measured on a module set of **6,838 C/H files / 75 MB** (0.9.0 saved warm run; 0.8.0 history in parentheses):
 
-| Metric | 0.8.0 result |
+| Metric | 0.9.0 result (0.8.0 history) |
 |---|---|
-| Symbols | 118,730 (incl. 19,800 type symbols) |
-| Include graph | 34,538 raw `#include` directives → 6,820 resolved edges in the indexed roots (**19.7%**, per-file de-duplicated; 3,027 files; system headers and out-of-root targets add no edge) |
-| Conditional symbols | 27,967 / 118,730 (**23.6%**) record a condition; 2,070 distinct texts (conventional file-level include guards suppressed; 78,199 / 65.9% before suppression) |
-| Content hashes | 6,838 / 6,838 files (64-bit) |
-| Index build, single strip (4 workers) | 1.71–1.89 s typical warm (median ~1.84 s; 1.97–2.13 s before the single-strip fix; saved canonical run 1.89 s). Cold was not re-measured after the fix; the pre-fix 0.8.0 cold run was 6.6 s. 0.7.0 had no cold run on this machine — its documented cold range is 5.7–6.5 s (warm 1.5–1.6 s) |
-| Snapshot size / load (columnar v4) | 5.78 MB / 31 ms in the saved post-fix run (28 ms pre-fix; 0.7.0: 5.13 MB, **+12.7%**, within the <15% target) |
-| Hashing / include scan cost | 101 ms for 74.9 MB hashed (742 MB/s); 0.67 s raw include scan + 0.13 s resolution (single-threaded, page-warm; 105 ms / 713 MB/s, 0.71 s + 0.14 s pre-fix) |
-| Definition ranking + grouping (`F12`) | rank avg ~0.52 ms / group avg ~0.84 ms on the hottest name (470 definitions); cold first call 2.62 ms; warm max observed 3.03 ms |
-| Per-file save (incremental symbol index) | ~1 KB / <1 ms appended (v2 delta; 0.7.0's v1 measured 904 B); overlay update <1 ms (22-symbol file) |
-| Delta append tail validation | 0.44–0.74 ms at a 4.09 MB delta (warm cache); 5.48 ms cold in the saved post-fix run (5.06 ms pre-fix; read + offset scan of a 4.17 MB tail, no entry decode) |
-| Delta compaction (118,730 symbols) | 45 ms to write a 5.78 MB base in the saved post-fix run (56 ms pre-fix) |
-| Symbol search (limit 50) | 4–5 ms |
+| Symbols | **206,430**: 51,165 members + 26,936 enum constants + 9,510 globals = 87,611 new symbols; 78,101 carry a `parent` (37.8% of all symbols — every member and enum constant), 9,002 distinct parent names (0.8.0: 118,730 symbols, no members/enums/globals) |
+| Include graph | 34,538 raw `#include` directives → 6,820 resolved edges in the indexed roots (**19.7%**, per-file de-duplicated; 3,027 files; system headers and out-of-root targets add no edge; unchanged vs 0.8.0) |
+| Conditional symbols | 40,890 / 206,430 (**19.8%**) record a condition; 2,309 distinct texts (0.8.0: 27,967 / 118,730 = 23.6%, 2,070 texts). The ratio is lower because the new members/enums/globals are mostly unconditional; the absolute count grew by 12,923 |
+| Content hashes | 6,838 / 6,838 files (64-bit; unchanged vs 0.8.0) |
+| Index build, single strip (4 workers) | **2.14 s** canonical warm run; interleaved A/B runs **2.14–2.45 s (median ~2.24 s)** vs **1.64–1.85 s (median ~1.68 s)** for 0.8.0 on the same corpus — **+34%** total, parse phase **median 1.86 s vs 1.38 s (+35%)**. The <20% build-overhead target is **not met**. 0.8.0 history: 1.71–1.89 s typical (median ~1.84 s; 1.97–2.13 s before the single-strip fix) |
+| Snapshot size / load (columnar v5) | **10.16 MB / 40 ms** in the saved run (0.8.0 v4: 5.78 MB / 31 ms) — **+75.8%**, above the <35% target. The growth is the 87,611 new symbols at 27 B each, the larger name table and the new parent table (186.6 KB) |
+| Hashing / include scan cost | 101 ms for 74.9 MB hashed (742 MB/s); 0.67 s raw include scan + 0.13 s resolution (single-threaded, page-warm; unchanged vs 0.8.0) |
+| Definition ranking + grouping (`F12`) | rank avg **0.91 ms** / group avg **1.38 ms** on the hottest name (`public`, 1,001 definitions); cold first call 4.61 ms; warm max observed 1.14 ms rank / 2.50 ms group (0.8.0: ~0.52 ms / ~0.84 ms on a 470-definition name) |
+| **Field jump (`->` / `.`)** | **0.94 ms avg / 1.22 ms max** on the hottest member name (`public`, 1,001 member definitions, top-50 cap; `findByName` + kind filter + rank + group) — within the **<5 ms** target |
+| Per-file save (incremental symbol index) | **1.1 KB / 1 ms** appended (v3 delta); overlay update **<1 ms** (23-symbol file; 0.8.0: ~1 KB v2 delta) |
+| Delta append tail validation | **0.10 ms avg** steady-state; **0.51 ms** at a 4.13 MB delta (warm cache); **7.30 ms** cold read + offset scan of a 4.22 MB tail (0.8.0: 0.11 / 0.74 / 5.48 ms) |
+| Delta compaction (206,430 symbols) | **60 ms** to write a 10.16 MB base in the saved run (0.8.0: 45 ms for 5.78 MB) |
+| Symbol search (limit 50) | **5–8 ms** (0.8.0: 4–5 ms) |
 | Exact name lookup | <1 ms |
-| Signature reconstruction (first read) | 1–10 ms (page-cache dependent; the 0.7.0 run measured 56 ms) |
-| Find references, full scan | 162 ms in the saved post-fix warm-cache run (158 ms pre-fix; cold not re-measured in 0.8.0) |
+| Signature reconstruction (first read) | 1 ms in the saved run (page-cache dependent; 0.8.0: 1–10 ms) |
+| Find references, full scan | 144 ms in the saved run (0.8.0 saved run: 162 ms) |
 | Find references, **indexed** | **1–2 ms** (1 candidate file out of 6,838) |
-| Reference index size / load (lazy, first use) | 3.57 MB / 15 ms in the saved post-fix run (17 ms pre-fix; 68k-file corpus: 69 MB / ~194 ms) |
-| Per-file save (incremental reference index) | ~1 ms, <1 KB appended |
-| Callers / callees | 6 ms / 1 ms in the saved post-fix run (5 ms / 0 ms pre-fix) |
-| Snapshot-resident memory (after load) | ~76 MB vs 72.5 MB for 0.7.0 (**+3 MB**) |
-| Peak RSS during build | 441–478 MB in the post-fix runs (canonical saved run 461.5 MB); interleaved A/B runs: 0.8.0 539–588 MB vs 0.7.0 452–509 MB |
+| Reference index size / load (lazy, first use) | 3.57 MB / 13–14 ms (0.8.0: 3.57 MB / 15 ms; 68k-file corpus: 69 MB / ~194 ms) |
+| Callers / callees | 7 ms / 0 ms (0.8.0: 6 ms / 1 ms) |
+| Snapshot-resident memory (after load) | **~84 MB** vs **~75 MB** for the 0.8.0 v4 snapshot measured the same way (**+9 MB, +12%**) |
+| Peak RSS during build | 544 MB in the saved run; 463–544 MB across runs (0.8.0 canonical saved run: 461.5 MB) |
 
-- **Budget check (0.8.0):** snapshot growth is **+12.7%**, within the <15% target; loaded-index memory meets <+20 MB (+3 MB); build-time RSS was 441–478 MB in the post-fix runs (canonical saved run 461.5 MB), but the interleaved A/B runs measured 539–588 MB vs 452–509 MB for 0.7.0, so this is not a consistent win. F12 ranking/grouping averages ~0.52 ms rank / ~0.84 ms group, but the cold first call took 2.62 ms and the warm max observed was 3.03 ms. The single-strip refactor cut the warm build by ~8–13% (~0.2 s) and worker scan-pipeline CPU by ~32%, but the warm build is still **~15–20%** slower than 0.7.0 (1.71–1.89 s typical vs 1.5–1.6 s), so the <10% target is not met. The residual is not redundant stripping: it is the 0.8.0 scan work (one strip, condition/include parsing, content hash, condition ids and the larger snapshot write), partly hidden at 4 workers by main-thread dispatch/message overhead.
-- 0.7.0 values were measured in an earlier run and differ by run and cache state; the warm-cache 0.7.0 numbers quoted above come from interleaved runs on the same machine against a temporary 0.7.0 worktree.
-- Indexing `plat` alone (5,573 files / 57.5 MB): 74,194 symbols, 0.8–1.2 s with a warm cache, 0.5 s for an unchanged incremental rebuild.
+- **Budget check (0.9.0):** the **field-jump <5 ms** target is met (0.94 ms avg / 1.22 ms max on a 1,001-definition member name). The **snapshot <+35%** target is **not met**: 10.16 MB vs 5.78 MB (+75.8%), driven by 87,611 new symbols. The **build overhead <20%** target is **not met**: interleaved A/B medians 2.24 s vs 1.68 s (+34%), with the extra cost in the parse phase (median 1.86 s vs 1.38 s) where the three new scans run over the same stripped text. Loaded-snapshot memory grew by ~9 MB (+12%). F12 ranking/grouping rose to ~0.91 ms rank / ~1.38 ms group because the hottest name now has 1,001 definitions (members named `public`) instead of 470; the warm group max was 2.50 ms.
+- 0.8.0 history: snapshot 5.78 MB (+12.7% vs 0.7.0, within the <15% target), load 31 ms, build 1.71–1.89 s typical, search 4–5 ms, indexed find-references 1–2 ms (full scan 162 ms), ranking ~0.52 ms rank / ~0.84 ms group on the 470-definition hottest name, loaded memory ~76 MB. 0.7.0 measured 5.13 MB / 72.5 MB and a 1.5–1.6 s warm build.
+- Indexing `plat` alone (5,573 files / 57.5 MB): 74,194 symbols in 0.8.0; 0.9.0 adds members/enums/globals on top and was not re-measured separately.
 - A single-threaded scan of all 121,606 files (2.6 GB) takes ~157 s; configure `indexRoots` per module so you only index what you actually browse.
 
 > Find-references and call relationships first narrow the candidate set through the per-file identifier index, then read and lex only those files. The index is built once with the symbol index (the parse worker returns hashes, content hashes and include directives in the same pass) and maintained incrementally: saving one file only refreshes that file's slice. Results are cached per snapshot.
@@ -159,8 +165,12 @@ Measured on a module set of **6,838 C/H files / 75 MB**:
 ## Known limitations
 
 - Heuristic parsing, not a full C front end: functions produced by macro expansion, old K&R parameter lists and unusual function-pointer forms may be missed (header prototypes still let you jump).
-- Indexed symbols: functions, function prototypes, function-like macros, `struct`/`union`/`enum` tags and `typedef` names. **Struct members, plain variables and enum constants are not indexed** — jumping to `obj->field` would need type inference.
-- **Conditional text is not evaluated**: definitions of the same name in different `#if` branches all appear as candidates, and the annotation shows the raw `#if`/`#ifdef` stack rather than the branch a given build takes. Conventional file-level include guards (`#ifndef NAME` + `#define NAME` … final `#endif`, or `#if !defined(NAME)` / `#if !defined NAME`) are transparent; an `#ifndef` without that `#define`, with a same-depth `#else`/conditional before it, or that does not cover the whole file still counts as a condition.
+- Indexed symbols: functions, function prototypes, function-like macros, `struct`/`union`/`enum` tags, `typedef` names, struct/union members, enum constants and file-scope globals. **Function-local variables and parameters are not indexed.**
+- **Field jump does not infer types**: `p->field` / `v.field` is a lexical check (`.`, `->` immediately before the cursor word) followed by a name lookup of *all* members named `field` in the index — same-name members of unrelated structs are candidates too, ordered by the normal include/distance ranking and capped at 50. A `.`/`->` inside a string or comment can trigger the lookup; when no member matches, the normal definition path runs.
+- **`@func` filters the `function` kind only**: prototypes and `struct foo;` forward declarations are stored as `declaration`, so they have no dedicated `@kind` token and are matched by the unfiltered query text.
+- **Attribute after a type body**: in `typedef struct { ... } __attribute__((packed)) foo_t;` the `foo_t` typedef *symbol* is still missed (alias extraction is not attribute-aware); its members are still indexed with `foo_t` as `parent`.
+- **Anonymous type bodies**: members of an anonymous `struct`/`union` body are indexed with the first typedef alias as `parent`; without an alias they are skipped. An anonymous enum without a typedef uses `<anonymous>` as parent. Members of a named inline nested type body are only indexed as the outer member, not recursively.
+- **Conditional text is not evaluated**: definitions of the same name in different `#if` branches all appear as candidates, and the annotation shows the raw `#if`/`#ifdef` stack rather than the branch a given build takes. Conventional file-level include guards (`#ifndef NAME` + `#define NAME` … final `#endif`, or `#if !defined(NAME)` / `#if !defined NAME`) are transparent; an `#ifndef` without that `#define`, with a same-depth `#else`/conditional before it, or that does not cover the whole file still counts as a condition. The same guard suppression applies to the new member / enum-constant / global symbols.
 - **`#else` / `#elif` branches are not distinguished**: a definition inside such a branch displays the enclosing condition text, the same as the `#if` branch.
 - **Ranking is soft**: include-visible definitions are preferred but never filtered; a same-named definition that no indexed file includes still appears after the included ones.
 - **Include edges are resolved when a file is scanned** and reused for unchanged files: after adding or restoring headers (branch switch, `git checkout`) run **Rebuild Index** or save the includer to refresh its edges. The index cannot discover newly appearing targets for files whose mtime/size did not change, because raw `#include` directives are not stored in the snapshot.
@@ -191,7 +201,7 @@ MIT
 
 # 中文说明
 
-> 面向大型 C/C++ 工程的代码导航扩展：自建**独立、持久、可增量更新**的函数符号索引，不依赖编译数据库、clangd 或任何外部工具。
+> 面向大型 C/C++ 工程的代码导航扩展：自建**独立、持久、可增量更新**的符号索引（函数、类型、成员、枚举常量与全局变量），不依赖编译数据库、clangd 或任何外部工具。
 
 十几万文件级的仓库（实测 **121,606 个 C/H 文件、2.6 GB、108 万个函数定义**）往往编译配置复杂、工程庞大，靠 IntelliSense 建索引慢且经常不完整。Code Insight 自己解析源码并维护符号库，跳转、搜索、引用都走本地索引，毫秒级响应。
 
@@ -201,17 +211,19 @@ MIT
 |---|---|
 | **跳转定义** | 光标在函数调用或类型名处按 `F12` / `Ctrl+Click`；无定义时回退到头文件原型 / 前置声明 |
 | **类型跳转** | `struct` / `union` / `enum` 标签与 `typedef` 名字（含匿名结构体、函数指针 typedef）和函数一样进索引 |
+| **成员 / 枚举 / 全局符号** | 结构体/联合体成员、枚举常量与文件作用域全局变量带父类型进索引；悬停与列表详情显示 `member of struct sk_buff` / `enumerator of enum E` / `variable` |
+| **字段跳转** | 在 `p->field`、`v.field`、`.field =` 上按 `F12` 跳到同名成员定义——纯词法判断、**不做类型推导**：所有同名成员都是候选（按 include/距离排序，上限 50，重复副本折叠），无成员命中时回退普通定义 |
 | **候选智能排序** | 同名有很多定义时（多份内核/驱动拷贝），`F12` / 悬停 / 调用层次会把「离光标最近」的排在前面（同索引根 → 共享路径前缀） |
 | **include 感知跳转** | 当前文件经已解析 `#include` 图可达的定义排在前面——**软排序**：只重排、不丢候选 |
 | **重复副本折叠** | 内容完全相同（64 位内容哈希一致）且名字/种类相同的文件在 `F12` 中折叠为一个位置；`显示定义候选`（`si.showDefinitionCandidates`）可展开每个副本 |
 | **条件编译标注** | `#if` / `#ifdef` / `#ifndef` 块内的符号在候选、悬停与列表详情中显示原始条件文本（不求值；传统文件级 include guard 透明） |
-| **函数搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索函数`（列出签名与位置） |
+| **符号搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索符号`（列出签名、位置与种类；支持 `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` 过滤） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
 | **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：中间当前函数，**左调用者、右被调用者**，可逐层展开、点击名字跳转 |
-| **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 函数（带签名摘要），按需加载 |
-| **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` 与定义/声明位置 |
-| **文档大纲** | `Ctrl+Shift+O` 列出当前文件函数 |
+| **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 符号（函数带签名，成员/枚举/全局带种类），按需加载 |
+| **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` 与定义/声明位置；成员/枚举常量/全局变量额外显示 parent/种类 |
+| **文档大纲** | `Ctrl+Shift+O` 列出当前文件的函数、类型，以及嵌套在类型下的成员与枚举常量 |
 | **索引诊断** | 命令 `Code Insight: 索引诊断` 打开 Markdown 报告：base/delta 体积、待合并变更、各类符号数、上次构建摘要、预算状态与内存占用 |
 | **索引管理** | 状态栏显示索引状态与函数数量；命令：配置索引目录、重建索引、清除缓存 |
 
@@ -232,11 +244,11 @@ code --install-extension cinsight.insight-c
 
 或在扩展面板搜索 **Code Insight** 后安装。
 
-离线安装：下载与版本对应的 `code-insight-<version>.vsix`（例如 `code-insight-0.8.0.vsix`）后执行
+离线安装：下载与版本对应的 `code-insight-<version>.vsix`（例如 `code-insight-0.9.0.vsix`）后执行
 
 ```bash
-code   --install-extension code-insight-0.8.0.vsix
-cursor --install-extension code-insight-0.8.0.vsix
+code   --install-extension code-insight-0.9.0.vsix
+cursor --install-extension code-insight-0.9.0.vsix
 ```
 
 要求宿主 **VS Code ≥ 1.90**（Cursor 3.x 满足），无需另装 C/C++ 扩展。
@@ -245,10 +257,32 @@ cursor --install-extension code-insight-0.8.0.vsix
 
 1. 打开你的 C 工程目录（`File → Open Folder`）。
 2. 命令面板执行 **`Code Insight: 配置索引目录`**，勾选要索引的目录（例如 `component`、`plat`、`plugin`）。
-3. 确认重建，状态栏显示进度，完成后显示 `$(symbol-function) <符号数> 个函数`。
+3. 确认重建，状态栏显示进度，完成后显示 `$(symbol-function) <符号数> symbols`。
 4. 打开任意 `.c` 文件，光标放到函数调用上按 `F12`。
 
 > 默认**不索引任何目录**，由你显式选择，避免误索引内核副本、第三方库和构建产物。默认排除 `.git`、`build`、`tmp`、`node_modules`。
+
+## 命令
+
+| 命令 | ID |
+|---|---|
+| 配置索引目录 | `si.configureRoots` |
+| 重建索引 | `si.rebuildIndex` |
+| 搜索符号 | `si.searchSymbol` |
+| 跳转定义 | `si.gotoDefinition` |
+| 显示定义候选 | `si.showDefinitionCandidates` |
+| 查找所有引用 | `si.findReferences` |
+| 显示调用者 | `si.showCallers` |
+| 显示被调用者 | `si.showCallees` |
+| 调用关系图 | `si.showCallGraph` |
+| 索引诊断 | `si.showIndexDiagnostics` |
+| 清除索引缓存 | `si.clearCache` |
+
+编辑器右键菜单在 C/C++ 文件中提供跳转定义、查找引用与调用者/被调用者；符号视图标题栏提供搜索、重建与配置。
+
+### `@kind` 搜索过滤
+
+符号搜索输入框支持可选的种类过滤词：`@func`、`@type`（struct / union / enum / typedef）、`@macro`、`@member`、`@enum`（枚举常量）、`@var`（文件作用域全局变量）。多个过滤词取并集、大小写不敏感、空白会归一；未知的 `@token` 原样保留在查询文本里。示例：`@member len`、`@var len`、`@type sk`、`@enum E_`。命令 id 仍为 `si.searchSymbol`；`@func` 只匹配 `function`，函数原型与 `struct foo;` 前置声明属于单独的 `declaration` 种类，没有专用过滤词。
 
 ## 配置
 
@@ -258,7 +292,7 @@ cursor --install-extension code-insight-0.8.0.vsix
 | `sourceInsight.exclude` | `["**/.git/**","**/build/**","**/tmp/**","**/node_modules/**"]` | 排除的 glob（`*` / `**` / `?`） |
 | `sourceInsight.maxFileSizeKB` | `4096` | 超过该大小的源文件跳过 |
 | `sourceInsight.concurrency` | `4` | 建索引的 worker 线程数 |
-| `sourceInsight.maxSymbols` | `3000000` | 符号数超过该值时状态栏警告 |
+| `sourceInsight.maxSymbols` | `3000000` | 符号数超过该值时状态栏警告；超过硬上限 `6000000` 时状态栏报错并一次性提示缩小索引目录 |
 | `sourceInsight.maxFiles` | `120000` | 文件数超过该值时状态栏警告 |
 | `sourceInsight.autoCompact` | `true` | 空闲 / 累计变更较多 / 关闭时把索引增量合并回 base。`false` 时自动合并被推迟（delta 仍逐次追加，不丢数据），但到达安全上限（累计 5000 个文件变更或 32 MB delta）时仍会强制合并一次；overlay 很大时查询可能变慢。共享存储的符号 delta 冲突期间，自动 compaction（含该安全上限）会停用，直到重新加载窗口 |
 | `sourceInsight.searchLimit` | `200` | 单次搜索返回上限 |
@@ -271,9 +305,9 @@ cursor --install-extension code-insight-0.8.0.vsix
 ## 工作原理
 
 - 解析器按字节工作，行号列号稳定；单遍状态机剥离注释、字符串、`#define` 续行，在文件作用域按"类型 + 名字 + 平衡括号 + `{`/`;`"判定定义与声明，并做花括号配对得到函数体范围。
-- 快照为**列式**二进制格式（v4：字符串表 + TypedArray + 名字/文件/条件查找表，每文件 64 位内容哈希、include 边 CSR、每符号条件 id）；118,730 符号加载约 **31 ms**（0.5.x 的 v3 表实测每符号约 41 B 堆占用；v4 每符号多 4 B 条件 id、每文件多 8 B 内容哈希）。未变化的文件直接复用旧符号；v3 快照升级后会自动重建一次。
-- 保存文件是**增量**的：只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录，并在内存 overlay 上做 O(Δ) 更新，不再重写快照、也不重建列数组（22 符号文件实测追加 **约 1 KB / 1 ms**（v2 delta；0.7.0 的 v1 为 904 B）、overlay 更新 **<1 ms**）。写入成本是「**O(Δ) 字节**，但不是 O(Δ) 时间」：每次追加只按记录长度偏移扫描 delta 尾部（不解码 `SymbolEntry`），且只在仅本进程写入时命中缓存——实测稳态均值 **0.11 ms**、4.09 MB delta 附近 **0.74 ms**（修复前保存运行 0.44 ms）、冷启动读 + 扫描 4.17 MB 尾部 **5.48 ms**（修复前 5.06 ms；保存的修复后运行）。启动时把已保存的 delta 重放在 base 快照之上；delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s** 以及关闭时合并回 base（118,730 符号实测写出 5.78 MB base 用 **45 ms**（保存的修复后运行；修复前 56 ms））。`sourceInsight.autoCompact=false` 只推迟这些合并：到达 **5,000** 个文件变更或 **32 MB** delta 的安全上限时仍会强制合并一次（共享存储 delta 冲突期间除外）。base 格式已升为 v4：v3 快照升级后自动重建一次（无需手动操作），之后未变化文件照常复用。
-- 每个文件的**标识符哈希倒排索引**（`symbols.names`，6,838 文件约 3.6 MB）让查找引用只读可能包含该名字的文件：实测**候选文件 1 个 vs 6,838 个**，保存的修复后热缓存运行 **1–2 ms vs 全量扫描 162 ms**（修复前运行 158 ms）。32 位哈希碰撞只会多出候选文件，不会漏报——候选文件仍按词边界精确校验。
+- 快照为**列式**二进制格式（v5：字符串表 + TypedArray + 名字/文件/条件/parent 查找表，每文件 64 位内容哈希、include 边 CSR、每符号条件 id 与 parent id）。保存的 0.9.0 运行中 **206,430 符号加载约 40 ms**（0.8.0 的 v4 快照：118,730 符号 / 31 ms）。v5 在 v4 的每符号 4 B 条件 id、每文件 8 B 内容哈希之外，再增加每符号 4 B parent id。未变化的文件直接复用旧符号；v4 快照升级后会自动重建一次（无需手动操作）。
+- 保存文件是**增量**的：只向 `symbols.sidx.delta` 追加一条 KB 级 delta 记录，并在内存 overlay 上做 O(Δ) 更新，不再重写快照、也不重建列数组（0.9.0 实测 23 符号文件追加 **1.1 KB / 1 ms**（v3 delta）、overlay 更新 **<1 ms**）。写入成本是「**O(Δ) 字节**，但不是 O(Δ) 时间」：每次追加只按记录长度偏移扫描 delta 尾部（不解码 `SymbolEntry`），且只在仅本进程写入时命中缓存——实测稳态均值 **0.10 ms**、4.13 MB delta 附近 **0.51 ms**、冷启动读 + 扫描 4.22 MB 尾部 **7.30 ms**（0.8.0：0.11 / 0.74 / 5.48 ms）。启动时把已保存的 delta 重放在 base 快照之上；delta 超过 **4 MB** 或累计 **500** 个文件变更、空闲 **60 s** 以及关闭时合并回 base（0.9.0 实测 206,430 符号写出 10.16 MB base 用 **60 ms**；0.8.0：118,730 符号 / 5.78 MB 用 45 ms）。`sourceInsight.autoCompact=false` 只推迟这些合并：到达 **5,000** 个文件变更或 **32 MB** delta 的安全上限时仍会强制合并一次（共享存储 delta 冲突期间除外）。base 格式已升为 v5：v4 快照升级后自动重建一次（无需手动操作），之后未变化文件照常复用。
+- 每个文件的**标识符哈希倒排索引**（`symbols.names`，6,838 文件约 3.6 MB）让查找引用只读可能包含该名字的文件：实测**候选文件 1 个 vs 6,838 个**，0.9.0 保存运行 **1–2 ms vs 全量扫描 144 ms**（0.8.0 保存运行 162 ms）。32 位哈希碰撞只会多出候选文件，不会漏报——候选文件仍按词边界精确校验。
 - 索引**单遍构建**：解析 worker 对每个文件只剥离注释/字符串一次，符号、标识符哈希与原始 `#include` 列表共用该结果，64 位内容哈希按原始文本计算；每个源码文件只读一次，include 目标随后按索引内文件集合解析。
 - 引用索引**惰性加载**（首次查找引用/调用层次才读盘；68k 文件语料约省 194 ms 与 69 MB），并**增量维护**：保存一个文件只追加 <1 KB 的 delta 记录，超阈值自动合并回 base。
 - 引用与调用关系先用「每文件标识符倒排索引」缩小候选集，只对候选文件读盘并做词法剥离与词边界精确匹配。
@@ -281,15 +315,48 @@ cursor --install-extension code-insight-0.8.0.vsix
 
 ## 性能
 
-对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测（0.8.0）：符号 **118,730**；include 图 **34,538 条原始指令 → 索引根内 6,820 条边**（3,027 个文件）；**27,967 / 118,730（23.6%）** 个符号带条件标注（2,070 种文本；传统文件级保护宏已透明，抑制前为 78,199 / 65.9%）；建索引（单遍剥离，4 workers）热缓存典型 **1.71–1.89 s**（中位数约 1.84 s；保存的基准运行 1.89 s；单遍剥离修复前 1.97–2.13 s）；修复后未重测冷盘，修复前 0.8.0 首次冷盘 **6.6 s**；0.7.0 在本机没有冷盘运行，其文档冷盘区间为 5.7–6.5 s（热缓存 1.5–1.6 s）；快照 **5.78 MB / 加载 31 ms**（保存的修复后运行；修复前 28 ms；0.7.0 为 5.13 MB，**+12.7%**，已进入 <15% 目标内）；内容哈希 74.9 MB 用 **101 ms**（742 MB/s），原始 include 扫描单线程 **0.67 s** + 解析 **0.13 s**（保存的修复后运行；修复前 105 ms / 713 MB/s、0.71 s + 0.14 s）；F12 排序+分组在最热名字（470 个定义）上平均 **rank 约 0.52 ms / group 约 0.84 ms**、首次冷调用 **2.62 ms**、热路径最大观测 **3.03 ms**；函数搜索 4–5 ms；按名查找 <1 ms；签名重建 1–10 ms；**查找引用：倒排索引 1–2 ms，全量扫描 162 ms（保存的修复后运行；修复前 158 ms；0.8.0 冷盘未重测）**；调用者/被调用者 6 ms / 1 ms（保存的修复后运行；修复前 5 ms / 0 ms）；保存单文件约 **1 KB / <1 ms**（v2 delta），compaction **45 ms** 写出 5.78 MB base（保存的修复后运行；修复前 56 ms）；加载后快照常驻内存 **约 76 MB**（0.7.0 为 72.5 MB，+3 MB），构建期 RSS **441–478 MB**（保存的修复后基准 461.5 MB；0.8.0 交替 A/B 实测 539–588 MB vs 0.7.0 452–509 MB）。0.7.0 的数字来自不同轮次，会随缓存状态与运行波动。
+对 **6,838 个 C/H 文件 / 75 MB** 的模块集合实测（0.9.0 保存的热缓存运行；括号内为 0.8.0 历史）：
 
-**预算核对**：快照增长 **+12.7%**，满足 <15%；F12 排序/分组均值约 rank 0.52 ms / group 0.84 ms，但最坏名字（470 个定义）首次冷调用为 2.62 ms、热路径最大观测 3.03 ms，**<2 ms 热路径预算未达成**；加载后的索引内存满足 <+20 MB，构建期 RSS 在修复后各轮为 441–478 MB（保存的基准运行 461.5 MB），不再整体高于 0.7.0 区间 452–509 MB，但交替 A/B 轮仍达 539–588 MB；单遍剥离让热缓存构建快约 **8–13%（约 0.2 s）**、worker 扫描流水线 CPU 降约 **32%**，但仍比 0.7.0 慢 **约 15–20%**（典型 1.71–1.89 s vs 1.5–1.6 s），**<10% 目标未达成**。残余开销不再是重复剥离，而是 0.8.0 新增扫描本身（一次剥离、条件/include 解析、内容哈希、条件 id 与更大的快照写入），且 4 workers 时部分被主线程派发/消息开销掩盖。
+| 指标 | 0.9.0 结果（0.8.0 历史） |
+|---|---|
+| 符号 | **206,430**：成员 51,165 + 枚举常量 26,936 + 全局变量 9,510 = 新增 87,611 个符号；78,101 个带 `parent`（占全部符号 37.8%，所有成员与枚举常量都有），9,002 种 parent 名（0.8.0：118,730 符号，无成员/枚举/全局） |
+| include 图 | 34,538 条原始 `#include` 指令 → 索引根内 6,820 条边（**19.7%**，按文件去重；3,027 个文件；系统头文件与根外目标不建边；与 0.8.0 相同） |
+| 条件符号 | 40,890 / 206,430（**19.8%**）带条件标注，2,309 种文本（0.8.0：27,967 / 118,730 = 23.6%，2,070 种文本）。比例下降是因为新增的成员/枚举/全局大多无条件；带条件的绝对数量增加了 12,923 个 |
+| 内容哈希 | 6,838 / 6,838 个文件（64 位；与 0.8.0 相同） |
+| 建索引（单遍剥离，4 workers） | 保存运行 **2.14 s**；交替 A/B 运行 **2.14–2.45 s（中位数约 2.24 s）**，同语料 0.8.0 为 **1.64–1.85 s（中位数约 1.68 s）**——总计 **+34%**，parse 阶段 **中位数 1.86 s vs 1.38 s（+35%）**。**<20% 的构建开销目标未达成**。0.8.0 历史：热缓存典型 1.71–1.89 s（中位数约 1.84 s；单遍剥离修复前 1.97–2.13 s） |
+| 快照体积 / 加载（列式 v5） | 保存运行 **10.16 MB / 40 ms**（0.8.0 v4：5.78 MB / 31 ms）——**+75.8%**，超过 <35% 目标。增长来自 87,611 个新符号（每符号 27 B）、更大的名字表与新增的 parent 表（186.6 KB） |
+| 哈希 / include 扫描成本 | 74.9 MB 内容哈希 101 ms（742 MB/s）；原始 include 扫描单线程 0.67 s + 解析 0.13 s（页缓存热；与 0.8.0 相同） |
+| 定义排序 + 分组（`F12`） | 最热名字（`public`，1,001 个定义）上 rank 均值 **0.91 ms** / group 均值 **1.38 ms**；首次冷调用 4.61 ms；热路径最大观测 rank 1.14 ms / group 2.50 ms（0.8.0：470 个定义时 rank 约 0.52 ms / group 约 0.84 ms） |
+| **字段跳转（`->` / `.`）** | 最热成员名（`public`，1,001 个成员定义，截断 50）上 **均值 0.94 ms / 最大 1.22 ms**（`findByName` + kind 过滤 + rank + group）——满足 **<5 ms** 目标 |
+| 保存单文件（增量符号索引） | 追加 **1.1 KB / 1 ms**（v3 delta）；overlay 更新 **<1 ms**（23 符号文件；0.8.0：约 1 KB v2 delta） |
+| delta 尾部校验 | 稳态均值 **0.10 ms**；4.13 MB delta 附近 **0.51 ms**（热缓存）；冷读 + 偏移扫描 4.22 MB 尾部 **7.30 ms**（0.8.0：0.11 / 0.74 / 5.48 ms） |
+| delta compaction（206,430 符号） | 保存运行写出 10.16 MB base 用 **60 ms**（0.8.0：5.78 MB / 45 ms） |
+| 符号搜索（上限 50） | **5–8 ms**（0.8.0：4–5 ms） |
+| 按名精确查找 | <1 ms |
+| 签名重建（首次读取） | 保存运行 1 ms（与页缓存有关；0.8.0：1–10 ms） |
+| 查找引用，全量扫描 | 保存运行 144 ms（0.8.0 保存运行 162 ms） |
+| 查找引用，**倒排索引** | **1–2 ms**（候选文件 1 个 / 6,838 个） |
+| 引用索引体积 / 加载（惰性，首次使用） | 3.57 MB / 13–14 ms（0.8.0：3.57 MB / 15 ms；68k 文件语料：69 MB / 约 194 ms） |
+| 调用者 / 被调用者 | 7 ms / 0 ms（0.8.0：6 ms / 1 ms） |
+| 加载后快照常驻内存 | **约 84 MB**，同法测得 0.8.0 v4 快照约 **75 MB**（**+9 MB，+12%**） |
+| 构建期峰值 RSS | 保存运行 544 MB；各轮 463–544 MB（0.8.0 保存的基准运行 461.5 MB） |
+
+- **预算核对（0.9.0）**：**字段跳转 <5 ms** 目标达成（1,001 个成员定义的最热名字上均值 0.94 ms / 最大 1.22 ms）。**快照 <+35%** 目标**未达成**：10.16 MB vs 5.78 MB（+75.8%），由 87,611 个新符号推动。**构建开销 <20%** 目标**未达成**：交替 A/B 中位数 2.24 s vs 1.68 s（+34%），额外成本在 parse 阶段（中位数 1.86 s vs 1.38 s），即三趟新扫描运行在同一份剥离文本上。加载后快照常驻内存增加约 9 MB（+12%）。F12 排序/分组升至 rank 约 0.91 ms / group 约 1.38 ms，因为最热名字现在有 1,001 个定义（名为 `public` 的成员）而不是 470 个；热路径 group 最大观测 2.50 ms。
+- 0.8.0 历史：快照 5.78 MB（相对 0.7.0 为 +12.7%，在 <15% 目标内）、加载 31 ms、构建典型 1.71–1.89 s、搜索 4–5 ms、倒排索引查找引用 1–2 ms（全量 162 ms）、最热名字（470 个定义）上 rank 约 0.52 ms / group 约 0.84 ms、加载后内存约 76 MB。0.7.0 实测 5.13 MB / 72.5 MB、热缓存构建 1.5–1.6 s。
+- 单独索引 `plat`（5,573 文件 / 57.5 MB）：0.8.0 为 74,194 符号；0.9.0 在此基础上增加成员/枚举/全局，未单独重测。
+- 全量 121,606 个文件（2.6 GB）单线程扫描约 157 s；建议按模块配置 `indexRoots`，只索引实际浏览的目录。
+
+> 查找引用与调用关系先用「每文件标识符倒排索引」缩小候选集，只对候选文件读盘并做词法剥离与词边界精确匹配。索引随符号索引一次构建（解析 worker 在同一次扫描中返回哈希、内容哈希与 include 指令），并增量维护：保存一个文件只刷新该文件的切片。结果按快照缓存。
 
 ## 已知限制
 
 - 启发式解析：宏展开生成的函数、K&R 老式参数表、极端函数指针写法可能漏识别（头文件原型可兜底跳转）。
-- 已索引：函数、函数原型、函数式宏、`struct`/`union`/`enum` 标签与 `typedef` 名字。**结构体成员、普通变量、枚举常量暂不索引**——`obj->field` 的跳转需要类型推导。
-- **条件文本不求值**：同一名字在多个 `#if` 分支的定义都会出现在候选里，标注显示原始 `#if`/`#ifdef` 栈，而不是某次构建实际走的分支。传统文件级 include guard（`#ifndef NAME` + `#define NAME` … 文件末尾 `#endif`，或 `#if !defined(NAME)` / `#if !defined NAME`）透明；无同名 `#define`、同层提前出现其他条件、或未覆盖整个文件的 `#ifndef` 仍算条件。
+- 已索引：函数、函数原型、函数式宏、`struct`/`union`/`enum` 标签、`typedef` 名字、结构体/联合体成员、枚举常量与文件作用域全局变量。**函数内局部变量与参数不索引。**
+- **字段跳转不推断类型**：`p->field` / `v.field` 只是词法判断（光标词前是否紧跟 `.` / `->`），再按名字查找索引中**所有**同名成员——不相关结构体的同名成员同样是候选，按既有 include/距离软排序，上限 50。字符串或注释里的 `.`/`->` 也可能触发该查找；没有成员命中时回退普通定义路径。
+- **`@func` 只匹配 `function` 种类**：函数原型与 `struct foo;` 前置声明属于 `declaration` 种类，没有专用 `@kind` 过滤词，只能用不带过滤词的查询匹配。
+- **类型体之后带属性**：`typedef struct { ... } __attribute__((packed)) foo_t;` 仍会丢失 `foo_t` 的 typedef **符号**（别名提取未做属性感知）；成员仍以 `foo_t` 作为 `parent` 正常索引。
+- **匿名类型体**：匿名 `struct`/`union` 体的成员以第一个 typedef 别名作为 `parent` 索引；没有别名时跳过。无 typedef 的匿名 enum 以 `<anonymous>` 为 parent。具名内联嵌套类型的内部成员不会递归索引，只索引外层成员。
+- **条件文本不求值**：同一名字在多个 `#if` 分支的定义都会出现在候选里，标注显示原始 `#if`/`#ifdef` 栈，而不是某次构建实际走的分支。传统文件级 include guard（`#ifndef NAME` + `#define NAME` … 文件末尾 `#endif`，或 `#if !defined(NAME)` / `#if !defined NAME`）透明；无同名 `#define`、同层提前出现其他条件、或未覆盖整个文件的 `#ifndef` 仍算条件。该保护宏抑制同样适用于新增的成员/枚举常量/全局变量。
 - **`#else` / `#elif` 分支不区分**：这类分支里的定义同样显示外层条件文本，与 `#if` 分支一致。
 - **排序是软排序**：已包含的定义优先，但不过滤；没有任何索引内文件包含的同名定义仍会排在后面。
 - **include 边在扫描文件时解析**，未变化的文件复用旧边：新增或恢复头文件（切分支、`git checkout`）后请执行 **重建索引** 或保存 includer 来刷新它的边。文件的 mtime/size 未变化时，索引无法发现新出现的目标，因为快照里不保存原始 `#include` 指令。

@@ -4,7 +4,7 @@
   "command.category": "Code Insight",
   "command.configureRoots.title": "Configure Index Roots",
   "command.rebuildIndex.title": "Rebuild Index",
-  "command.searchSymbol.title": "Search Function",
+  "command.searchSymbol.title": "Search Symbols",
   "command.gotoDefinition.title": "Go to Definition",
   "command.showDefinitionCandidates.title": "Show Definition Candidates",
   "command.findReferences.title": "Find References",

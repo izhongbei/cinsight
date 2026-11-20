@@ -44,7 +44,10 @@ const {
   snapshotDeltaPath,
 } = require(path.join(EXT_ROOT, 'dist/src/core/snapshot-delta.js'))
 const { DEFAULT_EXCLUDE } = require(path.join(EXT_ROOT, 'dist/src/shared/types.js'))
-const { getSymbolTableColumns } = require(path.join(EXT_ROOT, 'dist/src/core/symbol-table.js'))
+const {
+  getSymbolTableColumns,
+  KIND_NAMES,
+} = require(path.join(EXT_ROOT, 'dist/src/core/symbol-table.js'))
 const { groupDefinitions } = require(path.join(EXT_ROOT, 'dist/src/core/definition-groups.js'))
 const { rankDefinitions } = require(path.join(EXT_ROOT, 'dist/src/core/rank-definitions.js'))
 const { execFile } = require('node:child_process')
@@ -165,6 +168,9 @@ async function main() {
 
   const t0 = performance.now()
   let lastPhase = ''
+  let phaseName = ''
+  let phaseMark = t0
+  const phaseTimes = new Map()
   const result = await buildIndex({
     workspaceRoot: WORKSPACE_ROOT,
     roots,
@@ -176,6 +182,14 @@ async function main() {
     snapshotPath,
     nameIndexPath,
     onProgress: (p) => {
+      const now = performance.now()
+      if (p.phase !== phaseName) {
+        if (phaseName) {
+          phaseTimes.set(phaseName, (phaseTimes.get(phaseName) ?? 0) + now - phaseMark)
+        }
+        phaseName = p.phase
+        phaseMark = now
+      }
       const label = p.phase + (p.phase === 'parse' && p.total ? ` ${p.done}/${p.total}` : '')
       if (label !== lastPhase && (p.phase !== 'parse' || p.done === p.total || p.done % 5000 === 0)) {
         lastPhase = label
@@ -184,6 +198,9 @@ async function main() {
     },
   })
   process.stdout.write('\r')
+  if (phaseName) {
+    phaseTimes.set(phaseName, (phaseTimes.get(phaseName) ?? 0) + performance.now() - phaseMark)
+  }
   const total = ms(t0)
   const summary = result.summary
   const snapshotBytes = summary.snapshotBytes || (await fsp.stat(snapshotPath)).size
@@ -193,6 +210,8 @@ async function main() {
   console.log('  symbols      :', summary.entries)
   console.log('  added/updated/removed/unchanged/skipped:',
     summary.added, summary.updated, summary.removed, summary.unchanged, summary.skipped)
+  console.log('  phases       :',
+    [...phaseTimes].map(([phase, value]) => phase + ' ' + Math.round(value) + ' ms').join(' | '))
   console.log('  duration     :', total, 'ms')
   console.log('  snapshot     :', mb(snapshotBytes))
   console.log('  nameIndex    :', summary.nameIndexBytes ? mb(summary.nameIndexBytes) : 'not built')
@@ -229,7 +248,26 @@ async function main() {
     console.log('  content hashes:', hashedFiles, '/', result.snapshot.fileCount, 'files')
     console.log('')
 
-    // 快照体积构成（与 store.encodeSnapshot 的布局逐项对齐，便于核对增长来源）
+    // v5 元数据（0.9.0）：新 kind 计数、parent 覆盖率、快照体积
+    const kindCounts = new Map(KIND_NAMES.map((kind) => [kind, 0]))
+    let parentedEntries = 0
+    for (let index = 0; index < columns.kinds.length; index++) {
+      const kind = KIND_NAMES[columns.kinds[index]]
+      kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1)
+      if (columns.parentIds[index] !== 0) parentedEntries += 1
+    }
+    const entryTotal = columns.nameIds.length
+    console.log('=== v5 metadata (built table) ===')
+    console.log('  members      :', kindCounts.get('member') ?? 0,
+      '| enum constants:', kindCounts.get('enumConstant') ?? 0,
+      '| globals:', kindCounts.get('variable') ?? 0)
+    console.log('  parented     :', parentedEntries, '/', entryTotal,
+      '(' + percent(parentedEntries, entryTotal) + ') |',
+      Math.max(0, columns.parents.length - 1), 'distinct parent names')
+    console.log('  snapshot size:', mb(snapshotBytes))
+    console.log('')
+
+    // 快照体积构成（与 store.encodeSnapshot 的 v5 布局逐项对齐，便于核对增长来源）
     const rootsBytes = Buffer.byteLength(JSON.stringify(result.snapshot.roots), 'utf8')
     const headerBytes = 32 + rootsBytes
     let fileBytes = 0
@@ -240,7 +278,11 @@ async function main() {
     for (const name of columns.names) nameBytes += 4 + Buffer.byteLength(name, 'utf8')
     let conditionBytes = 4
     for (const condition of columns.conditions) conditionBytes += 4 + Buffer.byteLength(condition, 'utf8')
-    const symbolColumnBytes = columns.nameIds.length * 23
+    let parentBytes = 4
+    for (const parent of columns.parents) parentBytes += 4 + Buffer.byteLength(parent, 'utf8')
+    // v5 entry = nameId/fileIndex/line/endLine(u32×4) + column(u16) + kind(u8)
+    //            + conditionId(u32) + parentId(u32) = 27 B
+    const symbolColumnBytes = columns.nameIds.length * 27
     const offsetBytes =
       (columns.names.length + 1) * 4 +
       (result.snapshot.fileCount + 1) * 4 +
@@ -248,14 +290,16 @@ async function main() {
       (result.snapshot.fileCount + 1) * 4
     const includeBytes = includeEdgeCount * 4
     const compositionBytes =
-      headerBytes + fileBytes + nameBytes + conditionBytes + symbolColumnBytes + offsetBytes + includeBytes
-    console.log('=== snapshot composition (v4) ===')
+      headerBytes + fileBytes + nameBytes + conditionBytes + parentBytes +
+      symbolColumnBytes + offsetBytes + includeBytes
+    console.log('=== snapshot composition (v5) ===')
     console.log('  header+roots :', size(headerBytes))
     console.log('  file records :', size(fileBytes),
       '(' + result.snapshot.fileCount + ' paths + 64-bit content hash)')
     console.log('  name table   :', size(nameBytes), '(' + columns.names.length + ' names)')
     console.log('  conditions   :', size(conditionBytes), '(' + Math.max(0, columns.conditions.length - 1) + ' distinct texts)')
-    console.log('  symbol cols  :', size(symbolColumnBytes), '(' + columns.nameIds.length + ' entries x 23 B)')
+    console.log('  parents      :', size(parentBytes), '(' + Math.max(0, columns.parents.length - 1) + ' distinct parent names)')
+    console.log('  symbol cols  :', size(symbolColumnBytes), '(' + columns.nameIds.length + ' entries x 27 B)')
     console.log('  offsets      :', size(offsetBytes), '(name/file/entry lookup arrays)')
     console.log('  include CSR  :', size(includeBytes), '(' + includeEdgeCount + ' edges)')
     console.log('  total        :', size(compositionBytes), compositionBytes === snapshotBytes
@@ -592,6 +636,74 @@ async function main() {
         console.log('  preserved    :', entriesKept === hotDefs.length
           ? 'all ' + hotDefs.length + ' definitions kept ✅'
           : '⚠️ ' + entriesKept + '/' + hotDefs.length)
+        console.log('')
+      }
+    }
+  }
+
+  // 0.9.0 字段跳转：真实表上按成员名走 findByName -> kind 过滤 -> rank -> group
+  {
+    const loadedColumns = getSymbolTableColumns(loaded)
+    if (loadedColumns) {
+      const memberCode = KIND_NAMES.indexOf('member')
+      const memberCounts = new Map()
+      for (let index = 0; index < loadedColumns.kinds.length; index++) {
+        if (loadedColumns.kinds[index] !== memberCode) continue
+        const nameId = loadedColumns.nameIds[index]
+        memberCounts.set(nameId, (memberCounts.get(nameId) ?? 0) + 1)
+      }
+      let hotNameId = -1
+      let hotCount = 0
+      for (const [nameId, count] of memberCounts) {
+        if (count > hotCount) {
+          hotCount = count
+          hotNameId = nameId
+        }
+      }
+      if (hotNameId >= 0 && hotCount > 1) {
+        const hotMemberName = loadedColumns.names[hotNameId]
+        const memberDefs = loaded.findByName(hotMemberName).filter((entry) => entry.kind === 'member')
+        const defFiles = new Set(memberDefs.map((entry) => entry.file))
+        let sourceFile = memberDefs[0].file
+        let bestHits = 0
+        for (const file of loaded.files) {
+          const targets = loaded.includedFiles(file.path)
+          if (targets.length === 0) continue
+          let hits = 0
+          for (const target of targets) if (defFiles.has(target)) hits += 1
+          if (hits > bestHits) {
+            bestHits = hits
+            sourceFile = file.path
+          }
+        }
+        const context = { sourceFile, roots: loaded.roots, table: loaded }
+        const runs = 20
+        let total = 0
+        let max = 0
+        let groupCount = 0
+        for (let run = 0; run < runs; run++) {
+          const start = performance.now()
+          const candidates = loaded
+            .findByName(hotMemberName)
+            .filter((entry) => entry.kind === 'member')
+          // 与 DefinitionProvider 的字段跳转路径一致：先 rank 再截断 50，最后分组
+          const ranked = rankDefinitions(candidates, context).slice(0, 50)
+          const groups = groupDefinitions(ranked, context)
+          const duration = performance.now() - start
+          total += duration
+          if (duration > max) max = duration
+          if (run === 0) groupCount = groups.length
+        }
+        const fallbackNote = bestHits === 0 ? ' (no includer; first definition file)' : ''
+        console.log('=== field jump (fresh table, hottest member name) ===')
+        console.log('  hot member   :', hotMemberName, '(' + memberDefs.length, 'member definitions in',
+          defFiles.size, 'files)')
+        console.log('  cursor file  :', sourceFile + fallbackNote)
+        console.log('  field jump   :', (total / runs).toFixed(2), 'ms avg |', max.toFixed(2),
+          'ms max (' + runs + 'x: findByName + kind filter + rankDefinitions + top-50 + groupDefinitions)',
+          total / runs < 5 ? '(✅ avg <5 ms)' : '(⚠️ avg >=5 ms)')
+        console.log('  groups       :', groupCount, '| candidates:', Math.min(50, memberDefs.length),
+          'of', memberDefs.length, 'member definitions (cap 50)')
         console.log('')
       }
     }

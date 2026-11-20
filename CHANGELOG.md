@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.0 — 2026-11-20
+
+### English
+
+- **Struct/union members, enum constants and file-scope globals are now indexed.** Three new symbol kinds (`member`, `enumConstant`, `variable`) and an optional `parent` (member → struct/union tag, enum constant → enum tag or typedef alias, globals have none). On the measured corpus this adds **87,611 symbols** (51,165 members, 26,936 enum constants, 9,510 globals); every member and enum constant carries a parent (78,101 symbols, 9,002 distinct parent names).
+- **Nested document outline.** Members and enum constants are shown under their type — the innermost enclosing `struct`/`union`/`enum` range, with a fallback to the `parent` name so anonymous typedef bodies work; symbols that cannot be attached stay at the top level instead of disappearing. Outline kinds map to VS Code `Field` / `EnumMember` / `Variable`.
+- **Field jump.** `F12` on `p->field`, `v.field` or `.field =` now jumps to the member definition with that name. The check is lexical (a `.` / `->` immediately before the cursor word) and deliberately **does not infer types**: every same-name member in the index is a candidate, ordered by the existing include/distance ranking, capped at 50 and duplicate-folded; with no member match it falls back to the normal definition, so same-name members of unrelated structs can appear as candidates.
+- **Hover parent / kind.** Hover and list details show `member of struct X`, `enumerator of enum X` or `variable` in addition to the existing signature / location / inclusion annotations.
+- **`@kind` filters in Search Symbols.** The search box accepts `@func`, `@type` (struct/union/enum/typedef), `@macro`, `@member`, `@enum` and `@var`; multiple filters are OR-ed, matching is case-insensitive and unknown `@tokens` stay in the query. The command is renamed **`Code Insight: Search Symbols`** / **搜索符号** (id `si.searchSymbol` unchanged), since it now searches every kind.
+- **Snapshot v5 and delta v3.** Snapshot v5 adds a parent string table and a parent id per symbol; a v4 snapshot is **rebuilt once automatically after upgrading** (no manual action) and unchanged files are reused afterwards. Delta v3 stores the parent per entry and still reads v1/v2 delta files; appending to an old delta rewrites it as v3, as before.
+- **Budget defaults raised.** `sourceInsight.maxSymbols` 2,000,000 → **3,000,000**, hard maximum 5,000,000 → **6,000,000**; `maxFiles` stays 120,000.
+- **Measured performance (6,838 C/H files).** 206,430 symbols (+87,611) and a **10.16 MB** snapshot (0.8.0: 118,730 symbols / 5.78 MB, **+75.8%**, above the <35% target); warm build **2.14 s** canonical and **2.14–2.45 s** in interleaved A/B runs vs **1.64–1.85 s** for 0.8.0 (**+34%**, above the <20% target; parse phase median 1.86 s vs 1.38 s); field jump **0.94 ms avg / 1.22 ms max** on the hottest member name (1,001 definitions, capped at 50) — within the **<5 ms** target; snapshot load 40 ms; symbol search 5–8 ms; indexed find-references 1–2 ms (full scan 144 ms); callers/callees 7 ms / 0 ms; snapshot-resident memory ~84 MB vs ~75 MB (+9 MB); build RSS 544 MB. Conditional symbols are 40,890 / 206,430 (**19.8%**, 2,309 distinct texts) — the ratio is lower than 0.8.0's 23.6% because most new symbols are unconditional.
+- **Scan edge cases.** Macro-generated enum entries such as `CINIT(FILE, LONG) = 1` are skipped instead of being indexed as enum constants; the conventional file-level include-guard suppression applies to the new kinds too (enum constants inside a standard guard carry no condition). The known `typedef struct { ... } __attribute__((packed)) alias;` limitation is unchanged: the alias typedef symbol is still lost, while its members are indexed with the alias as parent.
+- 354 tests pass.
+
+### 中文
+
+- **结构体/联合体成员、枚举常量与文件作用域全局变量进入索引**：新增 `member` / `enumConstant` / `variable` 三种符号种类，以及可选的 `parent`（成员 → struct/union 标签；枚举常量 → enum 标签或 typedef 别名；全局变量无 parent）。实测语料新增 **87,611 个符号**（成员 51,165、枚举常量 26,936、全局变量 9,510）；所有成员与枚举常量都带 parent（共 78,101 个，9,002 种 parent 名）。
+- **大纲嵌套**：成员与枚举常量挂在所属类型下——取最内层 `struct`/`union`/`enum` 区间，区间不匹配时按 `parent` 名字兜底（匿名 typedef 类型体因此可用）；无法归属的符号留在顶层而不是丢失。大纲种类映射到 VS Code 的 `Field` / `EnumMember` / `Variable`。
+- **字段跳转**：在 `p->field`、`v.field`、`.field =` 上按 `F12` 跳到同名成员定义。判断是词法级的（光标词前紧跟 `.` / `->`），**刻意不做类型推导**：索引里所有同名成员都是候选，按既有 include/距离软排序，上限 50 并折叠重复副本；没有成员命中时回退普通定义，因此不相关结构体的同名成员也可能出现。
+- **悬停 parent / kind**：悬停与列表详情在原有签名/位置/包含标注之外，显示 `member of struct X`、`enumerator of enum X` 或 `variable`。
+- **搜索支持 `@kind` 过滤**：输入框支持 `@func`、`@type`（struct/union/enum/typedef）、`@macro`、`@member`、`@enum`、`@var`；多个过滤词取并集、大小写不敏感，未知 `@token` 原样保留在查询里。命令更名为 **`Code Insight: 搜索符号`** / **Search Symbols**（命令 id `si.searchSymbol` 不变），因为它现在搜索所有种类。
+- **快照 v5 与 delta v3**：快照 v5 新增 parent 字符串表与每符号 parent id；v4 快照升级后**自动重建一次**（无需手动操作），之后未变化文件照常复用。delta v3 每个条目保存 parent，并仍可读取 v1/v2 delta；向旧 delta 追加时按原有语义整体重写为 v3。
+- **预算默认值上调**：`sourceInsight.maxSymbols` 2,000,000 → **3,000,000**，硬上限 5,000,000 → **6,000,000**；`maxFiles` 保持 120,000。
+- **实测性能（6,838 个 C/H 文件）**：206,430 个符号（+87,611），快照 **10.16 MB**（0.8.0：118,730 符号 / 5.78 MB，**+75.8%**，超过 <35% 目标）；热缓存构建保存运行 **2.14 s**、交替 A/B **2.14–2.45 s**，0.8.0 为 **1.64–1.85 s**（**+34%**，超过 <20% 目标；parse 阶段中位数 1.86 s vs 1.38 s）；字段跳转在最热成员名（1,001 个定义，截断 50）上 **均值 0.94 ms / 最大 1.22 ms**，满足 **<5 ms** 目标；快照加载 40 ms；符号搜索 5–8 ms；倒排索引查找引用 1–2 ms（全量扫描 144 ms）；调用者/被调用者 7 ms / 0 ms；加载后快照常驻内存约 84 MB vs 约 75 MB（+9 MB）；构建期 RSS 544 MB。条件符号 40,890 / 206,430（**19.8%**，2,309 种文本）——比例低于 0.8.0 的 23.6%，因为新增符号大多无条件。
+- **扫描边界**：`CINIT(FILE, LONG) = 1` 这类宏生成的枚举项会被跳过，不再伪造成枚举常量；传统文件级 include guard 抑制同样作用于新种类（标准 guard 内的枚举常量不带条件）。已知的 `typedef struct { ... } __attribute__((packed)) alias;` 限制不变：别名 typedef 符号仍会丢失，但其成员仍以该别名作为 parent 索引。
+- 354 个单测通过。
+
 ## 0.8.0 — 2026-11-17
 
 ### English

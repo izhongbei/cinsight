@@ -2311,6 +2311,12 @@ async function checkMemberSymbolUi() {
     )
 
     pick._onChange('@var le')
+    // 输入变化同步清空旧结果：防抖窗口内快速回车不会接受上一轮查询的首选
+    assert.deepEqual(
+      pick.items.map((item) => item.label),
+      [],
+      'searchSymbol clears the previous items synchronously before the debounce fires',
+    )
     await new Promise((resolve) => setTimeout(resolve, 180))
     assert.deepEqual(
       pick.items.map((item) => item.label),

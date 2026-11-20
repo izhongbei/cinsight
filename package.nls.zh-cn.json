@@ -4,7 +4,7 @@
   "command.category": "Code Insight",
   "command.configureRoots.title": "配置索引目录",
   "command.rebuildIndex.title": "重建索引",
-  "command.searchSymbol.title": "搜索函数",
+  "command.searchSymbol.title": "搜索符号",
   "command.gotoDefinition.title": "跳转定义",
   "command.showDefinitionCandidates.title": "显示定义候选",
   "command.findReferences.title": "查找所有引用",
