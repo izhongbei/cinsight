@@ -88,7 +88,7 @@ The editor context menu offers go-to-definition, find-references and callers/cal
 
 ### Call graph panel
 
-`Show Call Graph` opens a panel titled `Call Graph: <name>` with a single **Relation** tree view: a compact single-column tree with collapsible **Callers (N)** and **Callees (N)** sections; expanding a node inside a section keeps that direction (the callers of a caller, the callees of a callee). Clicking a name opens its definition in an editor group and never changes the root or moves the panel. **Set as root** — the hover action on a row, or Alt+click — re-roots the panel to that node and auto-loads its callers and callees without a code jump. The toolbar re-roots from the function under the cursor and collapses every nested expansion. Empty sections show `No callers` / `No callees`; the existing per-direction (100) and total (300) caps, cycle skipping and deduplication still apply.
+`Show Call Graph` opens a panel titled `Call Graph: <name>` with a single **Relation** tree view: a compact single-column tree with collapsible **Callers (N)** and **Callees (N)** sections; expanding a node inside a section keeps that direction (the callers of a caller, the callees of a callee). Clicking a name opens its definition in an editor group and never changes the root or moves the panel. **Set as root** — the hover action on a row, or Alt+click — re-roots the panel to that node and auto-loads its callers and callees without a code jump. The toolbar re-roots from the function under the cursor and collapses every nested expansion. Rows prioritize the name: it takes the remaining width and wraps long identifiers, while `file:line` ellipsizes or moves to an indented second line when the panel is narrow. Empty sections show `No callers` / `No callees`; the existing per-direction (100) and total (300) caps, cycle skipping and deduplication still apply.
 
 `F8` (`Highlight Symbol`) is contributed for C/C++ editors only; while a highlight is active, `F3` / `Shift+F3` are bound to `si.nextOccurrence` / `si.prevOccurrence`. Outside a C/C++ editor — or outside an active highlight — the VS Code defaults (*Next Problem*, *Find Next*) still apply. Clicking the highlight status bar item toggles the highlight off.
 
@@ -302,7 +302,7 @@ cursor --install-extension code-insight-0.9.0.vsix
 
 ### 调用关系面板
 
-`显示调用关系图` 打开标题为 `调用关系图：<名字>` 的面板，只有单一的 **Relation** 关系树视图：单列紧凑树，分 **调用者 (N)** 与 **被调用者 (N)** 两个可折叠 section；在某个 section 内展开节点时保持同一方向（调用者的调用者、被调用者的被调用者）。单击名字会在代码编辑器组打开定义，**不会改变根、也不会移动面板**；**设为根**（行上的悬停操作，或 Alt+点击）会把该节点设为新根，并自动加载它的调用者与被调用者，且不跳转代码。工具栏支持「以光标处函数为根」和「全部折叠」。空 section 显示 `无调用者` / `无被调用者`；原有的单方向（100）与全图（300）上限、跳过环、去重逻辑保持不变。
+`显示调用关系图` 打开标题为 `调用关系图：<名字>` 的面板，只有单一的 **Relation** 关系树视图：单列紧凑树，分 **调用者 (N)** 与 **被调用者 (N)** 两个可折叠 section；在某个 section 内展开节点时保持同一方向（调用者的调用者、被调用者的被调用者）。单击名字会在代码编辑器组打开定义，**不会改变根、也不会移动面板**；**设为根**（行上的悬停操作，或 Alt+点击）会把该节点设为新根，并自动加载它的调用者与被调用者，且不跳转代码。工具栏支持「以光标处函数为根」和「全部折叠」。行宽优先显示函数名：名字占满剩余宽度并对长标识符换行，`file:line` 在面板变窄时省略或换到带缩进的第二行。空 section 显示 `无调用者` / `无被调用者`；原有的单方向（100）与全图（300）上限、跳过环、去重逻辑保持不变。
 
 `F8`（高亮符号）只在 C/C++ 编辑器中注册；有高亮时 `F3` / `Shift+F3` 绑定到 `si.nextOccurrence` / `si.prevOccurrence`。在其他语言、或没有活动高亮时，仍使用 VS Code 默认的「下一个问题」/「查找下一个」。点击高亮状态栏项可关闭高亮。
 

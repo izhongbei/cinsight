@@ -92,7 +92,8 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   .icon-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 
   /* ---- Relation tree ---- */
-  .relation-body { padding: 2px 6px 8px; }
+  /* 容器查询后备：面板很窄时让 file:line 换到第二行（无容器查询能力时由 @media 兜底）。 */
+  .relation-body { padding: 2px 6px 8px; container-type: inline-size; }
   .relation-section + .relation-section { margin-top: 2px; }
   .section-head {
     display: flex; align-items: center; gap: 5px; width: 100%;
@@ -112,15 +113,21 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     color: var(--vscode-descriptionForeground); font-size: 11px;
   }
   .tree-node { min-width: 0; }
+  /* 行是可换行 flex：名字优先占满剩余宽度，file:line 让位（收窄/省略/换到第二行）。 */
   .row {
-    display: flex; align-items: center; gap: 4px;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px;
     padding: 3px 4px; border-radius: 4px;
     cursor: default; outline: none;
   }
   .row:hover, .row:focus-visible { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.12)); }
   .row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  /* 箭头/方向标记与名字同处一个不换行子行：名字换行时它们仍对齐第一行。 */
+  .leading {
+    display: flex; align-items: baseline; gap: 2px 6px;
+    flex: 1 1 auto; min-width: 0;
+  }
   .toggle {
-    width: 16px; height: 16px; flex: 0 0 16px; padding: 0;
+    width: 16px; height: 16px; flex: 0 0 16px; padding: 0; align-self: flex-start;
     border: none; border-radius: 3px; background: transparent;
     color: var(--vscode-descriptionForeground);
     cursor: pointer; font-size: 12px; line-height: 16px; text-align: center;
@@ -128,14 +135,16 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   .toggle:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.15)); }
   .toggle.placeholder { visibility: hidden; cursor: default; }
   .direction { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 11px; }
+  /* 名字：占满剩余宽度、可换行，长标识符不省略；行高随内容自然增长。 */
   .name {
-    flex: 0 1 auto; min-width: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 0;
+    overflow-wrap: anywhere; word-break: break-word; white-space: normal;
     cursor: pointer;
   }
   .name:hover { color: var(--vscode-textLink-foreground); text-decoration: underline; }
+  /* 位置：单行省略，最多占 45% 宽度，优先把宽度让给函数名。 */
   .meta {
-    flex: 0 1 auto; min-width: 0;
+    flex: 0 1 auto; min-width: 0; max-width: 45%;
     color: var(--vscode-descriptionForeground); font-size: 11px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
@@ -151,6 +160,15 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   .children {
     margin-left: 13px; padding-left: 6px;
     border-left: 1px solid var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,.3));
+  }
+  /* 深层嵌套：从第 6 层起每级只加 5px 的固定小步进，名字仍有可用宽度（树语义不变）。 */
+  .children.deep { margin-left: 2px; padding-left: 3px; }
+  /* 窄面板：file:line 换到第二行并缩进对齐名字，名字独占整行；仍保持省略。 */
+  @media (max-width: 480px) {
+    .row .meta { flex-basis: 100%; max-width: 100%; padding-left: 20px; }
+  }
+  @container (max-width: 480px) {
+    .row .meta { flex-basis: 100%; max-width: 100%; padding-left: 20px; }
   }
   .empty { color: var(--vscode-descriptionForeground); font-size: 12px; padding: 3px 4px 3px 24px; }
   .truncated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); font-size: 11px; padding: 2px 4px 2px 24px; }
@@ -238,13 +256,15 @@ export function renderCallGraphHtml(options: RenderOptions): string {
 
   const directionLabel = { callers: I18N.callers, callees: I18N.callees };
   const directionGlyph = { callers: '←', callees: '→' };
+  // 从第 6 层起缩进只加固定小步进（与 CSS .children.deep 对应），保证深层名字宽度。
+  const DEEP_INDENT_LEVEL = 6;
   let currentLoadingIds = [];
 
   function emptyLabel(direction) {
     return direction === 'callers' ? I18N.noCallers : I18N.noCallees;
   }
 
-  function renderNodes(container, children, direction) {
+  function renderNodes(container, children, direction, depth) {
     for (const tree of children) {
       const childList = direction === 'callers' ? tree.callers : tree.callees;
       const expanded = direction === 'callers' ? tree.expandedCallers : tree.expandedCallees;
@@ -256,6 +276,8 @@ export function renderCallGraphHtml(options: RenderOptions): string {
       row.setAttribute('aria-expanded', String(!!expanded));
       row.dataset.focusKey = direction + '|' + tree.node.id;
 
+      const leading = el('div', 'leading');
+
       if (expanded && childList.length > 0) {
         const toggle = el('button', 'toggle', '−');
         toggle.type = 'button';
@@ -265,7 +287,7 @@ export function renderCallGraphHtml(options: RenderOptions): string {
           event.stopPropagation();
           collapseNode(tree.node.id, direction);
         });
-        row.appendChild(toggle);
+        leading.appendChild(toggle);
       } else if (!expanded) {
         const toggle = el('button', 'toggle', '+');
         toggle.type = 'button';
@@ -275,16 +297,17 @@ export function renderCallGraphHtml(options: RenderOptions): string {
           event.stopPropagation();
           expandNode(tree.node.id, direction);
         });
-        row.appendChild(toggle);
+        leading.appendChild(toggle);
       } else {
-        row.appendChild(el('span', 'toggle placeholder', ''));
+        leading.appendChild(el('span', 'toggle placeholder', ''));
       }
 
-      row.appendChild(el('span', 'direction', directionGlyph[direction]));
+      leading.appendChild(el('span', 'direction', directionGlyph[direction]));
 
       const name = el('span', 'name', tree.node.name);
       name.title = tree.node.file + ':' + (tree.node.line + 1);
-      row.appendChild(name);
+      leading.appendChild(name);
+      row.appendChild(leading);
 
       const meta = el('span', 'meta', tree.node.file + ':' + (tree.node.line + 1));
       meta.title = meta.textContent;
@@ -336,7 +359,8 @@ export function renderCallGraphHtml(options: RenderOptions): string {
       if (expanded) {
         if (childList.length > 0) {
           const childrenBox = el('div', 'children');
-          renderNodes(childrenBox, childList, direction);
+          if (depth + 1 >= DEEP_INDENT_LEVEL) childrenBox.classList.add('deep');
+          renderNodes(childrenBox, childList, direction, depth + 1);
           node.appendChild(childrenBox);
           if (truncated) node.appendChild(el('div', 'truncated', '…'));
         } else if (truncated) {
@@ -364,7 +388,7 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     body.textContent = '';
     body.hidden = !!collapsedSections[direction];
     if (expanded && count > 0) {
-      renderNodes(body, children, direction);
+      renderNodes(body, children, direction, 0);
       if (truncated) body.appendChild(el('div', 'truncated', '…'));
     } else if (expanded && truncated) {
       body.appendChild(el('div', 'truncated', '…'));
