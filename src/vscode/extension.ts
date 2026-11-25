@@ -4,7 +4,7 @@
  * activate():
  *   1. 创建输出通道日志 + SymbolService（恢复磁盘快照，无快照则等配置/后台构建）；
  *   2. 注册 6 个语言 Provider（Call Hierarchy 受 enableCallHierarchy 控制）、符号树、状态栏；
- *   3. 注册 9 个命令、C/C++ 文件监听（防抖 800 ms）、配置变更监听；
+ *   3. 注册 15 个命令、F8 符号高亮控制器、C/C++ 文件监听（防抖 800 ms）、配置变更监听；
  *   4. 已配置 indexRoots 时后台构建索引（withProgress 可取消）。
  *
  * 容错：storageUri / 输出通道 / 无 workspace folder / mock vscode（集成冒烟）都不允许抛错。
@@ -22,6 +22,7 @@ import { registerReferenceProvider } from './providers/references'
 import { registerWorkspaceSymbolProvider } from './providers/workspace-symbol'
 import { SymbolService } from './service'
 import { createStatusBar } from './status'
+import { createSymbolHighlighter } from './symbol-highlight'
 import { executeCommand, showInformationMessage } from './util'
 import { SymbolsTreeProvider, type SiTreeNode } from './views/symbols-tree'
 import { createFileWatcher } from './watcher'
@@ -133,7 +134,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const status = createStatusBar(service)
     add(status)
 
-    add(registerCommands(context, service))
+    // F8 高亮控制器：命令层与扩展生命周期共享同一实例，dispose 时清除装饰/状态栏/上下文键。
+    const highlighter = createSymbolHighlighter(service)
+    add(highlighter)
+
+    add(registerCommands(context, service, highlighter))
     add(createFileWatcher(service, logger))
 
     const updateViewMessage = (): void => {

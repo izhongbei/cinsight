@@ -5,6 +5,7 @@
  *  - 所有 package.json 声明的命令都被注册
  *  - 语言 Provider 注册数量符合预期
  *  - 预算状态栏（warn/exceeded 颜色）与 exceeded 一次性提示（含按钮动作）
+ *  - F8 符号高亮：装饰/状态栏/F3 跳转/编辑防抖/编辑器切换清除
  *  - autoCompact=false 时 flush/dispose 只保证 delta 落盘、不写 base
  *  - deactivate() 不抛异常
  *
@@ -48,6 +49,12 @@ const registrations = {
   informationMessages: [],
   /** showWarningMessage 的返回值（模拟用户点击按钮） */
   warningChoice: undefined,
+  /** createTextEditorDecorationType 创建过的装饰类型（F8 高亮断言用） */
+  decorations: [],
+  /** 活动编辑器/文档编辑/文档关闭 事件监听器（冒烟里手动触发以模拟宿主） */
+  activeEditorListeners: [],
+  documentChangeListeners: [],
+  documentCloseListeners: [],
 }
 const disposables = []
 
@@ -122,6 +129,22 @@ class Range {
   }
   get isEmpty() {
     return this.start.isEqual(this.end)
+  }
+}
+
+class Selection {
+  constructor(anchor, active) {
+    this.anchor = anchor
+    this.active = active
+  }
+  get start() {
+    return this.anchor.isBefore(this.active) ? this.anchor : this.active
+  }
+  get end() {
+    return this.anchor.isBefore(this.active) ? this.active : this.anchor
+  }
+  get isEmpty() {
+    return this.anchor.isEqual(this.active)
   }
 }
 
@@ -344,6 +367,7 @@ const vscode = {
   Uri,
   Position,
   Range,
+  Selection,
   Location,
   SymbolInformation,
   DocumentSymbol,
@@ -418,7 +442,10 @@ const vscode = {
   window: {
     activeTextEditor: undefined,
     visibleTextEditors: [],
-    onDidChangeActiveTextEditor: () => disposable('onDidChangeActiveTextEditor'),
+    onDidChangeActiveTextEditor: (listener) => {
+      if (typeof listener === 'function') registrations.activeEditorListeners.push(listener)
+      return disposable('onDidChangeActiveTextEditor')
+    },
     onDidChangeVisibleTextEditors: () => disposable('onDidChangeVisibleTextEditors'),
     onDidChangeTextEditorSelection: () => disposable('onDidChangeTextEditorSelection'),
     createTreeView: (id, options) => {
@@ -429,6 +456,11 @@ const vscode = {
       registrations.treeViews.push([id, undefined])
       return disposable('treeDataProvider')
     },
+    createTextEditorDecorationType: (options) => {
+      const type = { options, dispose() {} }
+      registrations.decorations.push(type)
+      return type
+    },
     createStatusBarItem: () => {
       registrations.statusBar += 1
       const item = {
@@ -436,8 +468,13 @@ const vscode = {
         tooltip: undefined,
         command: undefined,
         backgroundColor: undefined,
-        show() {},
-        hide() {},
+        visible: false,
+        show() {
+          item.visible = true
+        },
+        hide() {
+          item.visible = false
+        },
         dispose() {},
       }
       registrations.statusBarItems.push(item)
@@ -569,10 +606,16 @@ const vscode = {
       return disposable('onDidChangeConfiguration')
     },
     onDidSaveTextDocument: () => disposable('onDidSaveTextDocument'),
-    onDidChangeTextDocument: () => disposable('onDidChangeTextDocument'),
+    onDidChangeTextDocument: (listener) => {
+      if (typeof listener === 'function') registrations.documentChangeListeners.push(listener)
+      return disposable('onDidChangeTextDocument')
+    },
     onDidChangeWorkspaceFolders: () => disposable('onDidChangeWorkspaceFolders'),
     onDidOpenTextDocument: () => disposable('onDidOpenTextDocument'),
-    onDidCloseTextDocument: () => disposable('onDidCloseTextDocument'),
+    onDidCloseTextDocument: (listener) => {
+      if (typeof listener === 'function') registrations.documentCloseListeners.push(listener)
+      return disposable('onDidCloseTextDocument')
+    },
     onDidCreateFiles: () => disposable('onDidCreateFiles'),
     onDidDeleteFiles: () => disposable('onDidDeleteFiles'),
     onDidRenameFiles: () => disposable('onDidRenameFiles'),
@@ -2428,6 +2471,232 @@ async function checkMemberSymbolUi() {
   }
 }
 
+/**
+ * F8 符号高亮（0.9.3）：目标文件内整词装饰、注释/字符串排除、状态栏 `N in file / M index refs`、
+ * F3/Shift+F3 前后跳转与首尾循环、编辑防抖重扫、文档关闭/编辑器切换清除、setContext 上下文键。
+ */
+async function checkSymbolHighlight() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { registerCommands } = require(path.join(dist, 'src/vscode/commands.js'))
+  const { findWordOccurrences } = require(path.join(dist, 'src/core/word-occurrences.js'))
+
+  const sourceFile = 'src/highlight.c'
+  const documentText = [
+    '#include <stdio.h>',
+    '// foo in a line comment',
+    'int foo(int x) { return foo(x - 1); }',
+    'const char *s = "foo";',
+    '/* foo in a block comment */',
+    'int foobar = foo(1);   /* foo */',
+    "char c = 'f';",
+    '#define USE_FOO foo + 1',
+  ].join('\n')
+  const document = new TextDocument(Uri.file(path.join(EXT_ROOT, sourceFile)), documentText)
+  const definition = {
+    name: 'foo',
+    kind: 'function',
+    file: sourceFile,
+    line: 2,
+    endLine: 2,
+    column: 4,
+  }
+  const indexReferences = [
+    { file: sourceFile, line: 2, column: 4, preview: 'foo' },
+    { file: sourceFile, line: 5, column: 13, preview: 'foo' },
+    { file: 'src/other.c', line: 9, column: 0, preview: 'foo' },
+  ]
+  const service = {
+    configuredRoots: ['.'],
+    workspaceRoot: EXT_ROOT,
+    definitions: (name) => (name === 'foo' ? [definition] : []),
+    references: async (name) => (name === 'foo' ? indexReferences : []),
+    toRelative: (absPath) => path.relative(EXT_ROOT, absPath).split(path.sep).join('/'),
+    toAbsolute: (relPath) => path.join(EXT_ROOT, relPath),
+  }
+
+  const makeEditor = (doc, cursor) => {
+    const editor = {
+      document: doc,
+      viewColumn: 1,
+      selection: new Selection(cursor, cursor),
+      visibleRanges: [new Range(0, 0, doc.lineCount, 0)],
+      decorations: new Map(),
+      revealed: [],
+      setDecorations(type, ranges) {
+        editor.decorations.set(type, Array.isArray(ranges) ? ranges.slice() : [])
+      },
+      revealRange(range, revealType) {
+        editor.revealed.push({ range, revealType })
+      },
+    }
+    return editor
+  }
+  const editor = makeEditor(document, new Position(2, 4))
+
+  const GREEN = 'rgba(46,160,67,0.25)'
+  const YELLOW = 'rgba(255,196,0,0.25)'
+  // 扩展激活时已创建自己的两个装饰类型；只在本检查创建的类型里按背景色找。
+  const decorationBaseline = registrations.decorations.length
+  const decorationRanges = (background) => {
+    const type = registrations.decorations
+      .slice(decorationBaseline)
+      .find((candidate) => candidate.options && candidate.options.backgroundColor === background)
+    assert.ok(type, `decoration type with background ${background} exists`)
+    assert.ok(type.options.overviewRulerColor, 'decoration type has overviewRulerColor')
+    return editor.decorations.get(type) ?? []
+  }
+  const starts = (ranges) => ranges.map((range) => [range.start.line, range.start.character])
+
+  const previousEditor = vscode.window.activeTextEditor
+  const previousVisible = vscode.window.visibleTextEditors
+  const statusBaseline = registrations.statusBarItems.length
+  vscode.window.activeTextEditor = editor
+  vscode.window.visibleTextEditors = [editor]
+  const commands = registerCommands(undefined, service)
+  const handler = (id) =>
+    [...registrations.commands].reverse().find(([command]) => command === id)[1]
+  const contextCalls = () =>
+    registrations.executedCommands.filter(
+      ([command, key]) => command === 'setContext' && key === 'si.highlightActive',
+    )
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
+  try {
+    // ---- F8 激活：定义绿、其余黄；注释/字符串/字符字面量里的 foo 都不算 ----
+    await handler('si.highlightSymbol')()
+    await tick()
+
+    assert.deepEqual(
+      findWordOccurrences(documentText, 'foo').map((occurrence) => [
+        occurrence.line,
+        occurrence.column,
+      ]),
+      [
+        [2, 4],
+        [2, 24],
+        [5, 13],
+        [7, 16],
+      ],
+      'occurrence scan skips comments/strings and keeps macro-line code',
+    )
+    assert.deepEqual(starts(decorationRanges(GREEN)), [[2, 4]], 'definition occurrence is green')
+    assert.deepEqual(
+      starts(decorationRanges(YELLOW)),
+      [
+        [2, 24],
+        [5, 13],
+        [7, 16],
+      ],
+      'references are yellow; occurrences inside comments/strings are not decorated',
+    )
+
+    assert.equal(registrations.statusBarItems.length, statusBaseline + 1, 'one highlight status item')
+    const item = registrations.statusBarItems[registrations.statusBarItems.length - 1]
+    assert.equal(item.visible, true, 'highlight status item is shown')
+    assert.equal(item.command, 'si.highlightSymbol', 'clicking the item toggles the highlight')
+    assert.match(item.text, /foo · 4 in file/, 'status shows the in-file count')
+    assert.match(item.text, /3 index refs/, 'status shows the async index reference count')
+    assert.deepEqual(
+      contextCalls().pop(),
+      ['setContext', 'si.highlightActive', true],
+      'activation sets si.highlightActive=true',
+    )
+
+    // ---- 再按 F8：清除装饰/状态栏/上下文键 ----
+    await handler('si.highlightSymbol')()
+    await tick()
+    assert.deepEqual(decorationRanges(GREEN), [], 'toggle off clears definition decorations')
+    assert.deepEqual(decorationRanges(YELLOW), [], 'toggle off clears reference decorations')
+    assert.equal(item.visible, false, 'toggle off hides the status item')
+    assert.deepEqual(
+      contextCalls().pop(),
+      ['setContext', 'si.highlightActive', false],
+      'toggle off sets si.highlightActive=false',
+    )
+
+    // ---- 再次激活后 F3 / Shift+F3 跳转（含首尾循环） ----
+    editor.selection = new Selection(new Position(2, 4), new Position(2, 4))
+    await handler('si.highlightSymbol')()
+    await tick()
+    assert.equal(decorationRanges(GREEN).length, 1, 're-activation restores decorations')
+
+    await handler('si.nextOccurrence')()
+    assert.equal(editor.selection.start.line, 2, 'next stays on the current line')
+    assert.equal(editor.selection.start.character, 24, 'next selects the following occurrence')
+    assert.equal(editor.selection.active.character, 27, 'selection active sits at the match end')
+    await handler('si.prevOccurrence')()
+    assert.equal(editor.selection.start.character, 4, 'prev selects the definition again')
+    assert.ok(editor.revealed.length > 0, 'jumping reveals the occurrence')
+    assert.equal(editor.revealed[editor.revealed.length - 1].revealType, 2, 'reveal uses InCenter')
+
+    editor.selection = new Selection(new Position(7, 16), new Position(7, 16))
+    await handler('si.nextOccurrence')()
+    assert.deepEqual(
+      [editor.selection.start.line, editor.selection.start.character],
+      [2, 4],
+      'next wraps from the last occurrence to the first',
+    )
+    await handler('si.prevOccurrence')()
+    assert.deepEqual(
+      [editor.selection.start.line, editor.selection.start.character],
+      [7, 16],
+      'prev wraps from the first occurrence to the last',
+    )
+
+    // ---- 文档编辑 150 ms 防抖后按同一词重扫 ----
+    document._lines[5] = 'int foobar = 0;'
+    document.version += 1
+    for (const listener of registrations.documentChangeListeners) {
+      listener({ document, contentChanges: [] })
+    }
+    assert.equal(decorationRanges(YELLOW).length, 3, 'decorations wait for the debounce')
+    await new Promise((resolve) => setTimeout(resolve, 220))
+    assert.equal(decorationRanges(YELLOW).length, 2, 'debounced rescan drops the edited-out reference')
+    assert.equal(decorationRanges(GREEN).length, 1, 'debounced rescan keeps the definition')
+    assert.match(item.text, /foo · 3 in file/, 'status in-file count follows the rescan')
+
+    // ---- 文档关闭：清除 ----
+    for (const listener of registrations.documentCloseListeners) {
+      listener(document)
+    }
+    await tick()
+    assert.deepEqual(decorationRanges(GREEN), [], 'closing the document clears decorations')
+    assert.equal(item.visible, false, 'closing the document hides the status item')
+    assert.deepEqual(
+      contextCalls().pop(),
+      ['setContext', 'si.highlightActive', false],
+      'closing the document clears si.highlightActive',
+    )
+
+    // ---- 活动编辑器切到别的文档：清除 ----
+    await handler('si.highlightSymbol')()
+    await tick()
+    assert.equal(decorationRanges(GREEN).length, 1, 'highlight is active before the editor switch')
+    const otherDocument = new TextDocument(
+      Uri.file(path.join(EXT_ROOT, 'src/highlight-other.c')),
+      'int bar;\n',
+    )
+    const otherEditor = makeEditor(otherDocument, new Position(0, 4))
+    vscode.window.activeTextEditor = otherEditor
+    vscode.window.visibleTextEditors = [otherEditor]
+    for (const listener of registrations.activeEditorListeners) {
+      listener(otherEditor)
+    }
+    await tick()
+    assert.deepEqual(decorationRanges(GREEN), [], 'editor switch clears definition decorations')
+    assert.deepEqual(decorationRanges(YELLOW), [], 'editor switch clears reference decorations')
+    assert.equal(item.visible, false, 'editor switch hides the status item')
+    assert.deepEqual(
+      contextCalls().pop(),
+      ['setContext', 'si.highlightActive', false],
+      'editor switch clears si.highlightActive',
+    )
+  } finally {
+    commands.dispose()
+    vscode.window.activeTextEditor = previousEditor
+    vscode.window.visibleTextEditors = previousVisible
+  }
+}
+
 async function checkSymbolTreeLimits() {
   const { SymbolsTreeProvider } = require(
     path.join(EXT_ROOT, 'dist/src/vscode/views/symbols-tree.js'),
@@ -2502,9 +2771,9 @@ async function main() {
   const missing = expectedCommands.filter((id) => !registered.includes(id))
   assert.deepEqual(missing, [], `missing registered commands: ${missing.join(', ')}`)
 
-  // package.json 声明 12 个命令（0.8.0 新增 si.showDefinitionCandidates），必须全部注册
-  assert.equal(expectedCommands.length, 12, 'package.json declares 12 commands')
-  assert.equal(registered.length, 12, 'all 12 declared commands are registered')
+  // package.json 声明 15 个命令（0.9.3 新增 F8 高亮/下一个/上一个），必须全部注册
+  assert.equal(expectedCommands.length, 15, 'package.json declares 15 commands')
+  assert.equal(registered.length, 15, 'all 15 declared commands are registered')
 
   const providerKinds = new Set(registrations.providers.map(([kind]) => kind))
   for (const kind of ['definition', 'references', 'hover', 'documentSymbol', 'workspaceSymbol', 'callHierarchy']) {
@@ -2525,6 +2794,7 @@ async function main() {
   await checkListAnnotations()
   await checkCallHierarchyIncludeAware()
   await checkMemberSymbolUi()
+  await checkSymbolHighlight()
   await checkSymbolTreeLimits()
 
   await extension.deactivate()
@@ -2557,6 +2827,7 @@ async function main() {
   console.log('  gotoDefinition single multi-copy group: copy picker (not direct representative) OK')
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
   console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
+  console.log('  F8 symbol highlight: definition/reference decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
 }
 
 main()

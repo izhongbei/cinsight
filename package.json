@@ -2,7 +2,7 @@
   "name": "code-insight",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "publisher": "cinsight",
   "license": "MIT",
   "engines": {
@@ -91,6 +91,38 @@
         "command": "si.showIndexDiagnostics",
         "title": "%command.showIndexDiagnostics.title%",
         "category": "%command.category%"
+      },
+      {
+        "command": "si.highlightSymbol",
+        "title": "%command.highlightSymbol.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.nextOccurrence",
+        "title": "%command.nextOccurrence.title%",
+        "category": "%command.category%"
+      },
+      {
+        "command": "si.prevOccurrence",
+        "title": "%command.prevOccurrence.title%",
+        "category": "%command.category%"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "si.highlightSymbol",
+        "key": "f8",
+        "when": "editorTextFocus && (editorLangId == c || editorLangId == cpp)"
+      },
+      {
+        "command": "si.nextOccurrence",
+        "key": "f3",
+        "when": "si.highlightActive && editorTextFocus && (editorLangId == c || editorLangId == cpp)"
+      },
+      {
+        "command": "si.prevOccurrence",
+        "key": "shift+f3",
+        "when": "si.highlightActive && editorTextFocus && (editorLangId == c || editorLangId == cpp)"
       }
     ],
     "configuration": {

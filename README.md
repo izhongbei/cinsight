@@ -20,6 +20,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Conditional annotations** | Symbols inside `#if` / `#ifdef` / `#ifndef` blocks show the raw condition text in candidates, hover and list details (the text is not evaluated; conventional file-level include guards are transparent) |
 | **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Symbols` (lists name, `file:line` location and kind/parent — no signature; accepts `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` filters) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
+| **Symbol highlight (F8)** | `F8` on a name highlights every occurrence in the **current file** — definitions in green, references in yellow; `F3` / `Shift+F3` jump to the next / previous occurrence (wrapping around) and `F8` again clears. Comments, strings and character literals are ignored, so only real code matches. The status bar shows `N in file / M index refs`, and decorations follow edits (150 ms debounce). The `F8` binding is scoped to C/C++ editors, so it overrides *Next Problem* only there; `F3` / `Shift+F3` are taken over only while a highlight is active |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
 | **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style relation panel: the current function in the middle, **callers on the left, callees on the right**, expandable node by node, click a name to jump |
 | **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → symbols (`:line · kind`; hover shows the signature), loaded on demand. Each file shows up to `sourceInsight.treeSymbolLimit` symbols (default 2000, independent of the search limit); beyond that an overflow hint suggests raising it |
@@ -78,9 +79,14 @@ Requires a host with **VS Code ≥ 1.90** (Cursor 3.x qualifies). No C/C++ exten
 | Show Callees | `si.showCallees` |
 | Show Call Graph | `si.showCallGraph` |
 | Show Index Diagnostics | `si.showIndexDiagnostics` |
+| Highlight Symbol | `si.highlightSymbol` |
+| Next Occurrence | `si.nextOccurrence` |
+| Previous Occurrence | `si.prevOccurrence` |
 | Clear Index Cache | `si.clearCache` |
 
 The editor context menu offers go-to-definition, find-references and callers/callees in C/C++ files; the view title bar offers search, rebuild and configure.
+
+`F8` (`Highlight Symbol`) is contributed for C/C++ editors only; while a highlight is active, `F3` / `Shift+F3` are bound to `si.nextOccurrence` / `si.prevOccurrence`. Outside a C/C++ editor — or outside an active highlight — the VS Code defaults (*Next Problem*, *Find Next*) still apply. Clicking the highlight status bar item toggles the highlight off.
 
 ### `@kind` search filters
 
@@ -223,6 +229,7 @@ MIT
 | **条件编译标注** | `#if` / `#ifdef` / `#ifndef` 块内的符号在候选、悬停与列表详情中显示原始条件文本（不求值；传统文件级 include guard 透明） |
 | **符号搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索符号`（列出名字、位置（`file:line`）与种类/parent——不含签名；支持 `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` 过滤） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
+| **符号高亮（F8）** | 在名字上按 `F8` 高亮它在**当前文件**中的全部出现——定义绿色、其余引用黄色；`F3` / `Shift+F3` 跳到下一个 / 上一个匹配（首尾循环），再按 `F8` 清除。注释、字符串与字符字面量会被忽略，只高亮真实代码；状态栏显示 `N in file / M index refs`，编辑后 150 ms 防抖重扫。`F8` 只在 C/C++ 编辑器内生效（仅在那里覆盖「下一个问题」），`F3` / `Shift+F3` 只在有高亮时接管 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
 | **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：中间当前函数，**左调用者、右被调用者**，可逐层展开、点击名字跳转 |
 | **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 符号（显示 `:line · 种类`；签名见悬停），按需加载；每个文件最多显示 `sourceInsight.treeSymbolLimit` 个符号（默认 2000，与搜索上限独立），超出时显示提示并建议调大该值 |
@@ -280,9 +287,14 @@ cursor --install-extension code-insight-0.9.0.vsix
 | 显示被调用者 | `si.showCallees` |
 | 调用关系图 | `si.showCallGraph` |
 | 索引诊断 | `si.showIndexDiagnostics` |
+| 高亮符号 | `si.highlightSymbol` |
+| 下一个匹配 | `si.nextOccurrence` |
+| 上一个匹配 | `si.prevOccurrence` |
 | 清除索引缓存 | `si.clearCache` |
 
 编辑器右键菜单在 C/C++ 文件中提供跳转定义、查找引用与调用者/被调用者；符号视图标题栏提供搜索、重建与配置。
+
+`F8`（高亮符号）只在 C/C++ 编辑器中注册；有高亮时 `F3` / `Shift+F3` 绑定到 `si.nextOccurrence` / `si.prevOccurrence`。在其他语言、或没有活动高亮时，仍使用 VS Code 默认的「下一个问题」/「查找下一个」。点击高亮状态栏项可关闭高亮。
 
 ### `@kind` 搜索过滤
 

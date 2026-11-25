@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.3 — 2026-11-25
+
+### English
+
+- **Source Insight-style symbol highlight.** Press `F8` on a name in a C/C++ editor to highlight every occurrence of that word in the **active file**; press `F8` again on the same word (or click the status bar item) to clear it. Definition occurrences use a translucent green background, all other references a translucent yellow one, both with matching overview-ruler colours. Comments, string literals and character literals are ignored (the scanner's `stripSources` blanks them and positions are validated against the original text), and matching is case-sensitive with `[A-Za-z0-9_]` whole-word boundaries — `foo` does not match `foobar`, `_foo` or `foo1`.
+- **`F3` / `Shift+F3` navigate between matches** in the active file, wrapping around at the ends and revealing the selected occurrence in the centre of the view. The highlight status bar item shows `$(symbol) <word> · N in file / M index refs`, where `N` is the in-file count and `M` comes asynchronously from the existing index references (`…` until loaded, stale results discarded with a generation counter).
+- **Clearing and live updates.** The highlight clears when toggled off, when the active editor switches to another document, and when the document closes. Document edits re-scan the same word after a 150 ms debounce.
+- **New commands `si.highlightSymbol`, `si.nextOccurrence`, `si.prevOccurrence`** (15 commands total). `F8` is contributed only for `editorTextFocus` in C/C++ editors, so VS Code's *Next Problem* default still applies elsewhere; `F3` / `Shift+F3` are bound only while the `si.highlightActive` context key is set, so *Find Next* is unaffected outside an active highlight. A new dependency-free core module `src/core/word-occurrences.ts` (`findWordOccurrences`) is covered by 12 new tests.
+- 380 tests pass.
+
+### 中文
+
+- **Source Insight 风格的符号高亮**：在 C/C++ 编辑器里把光标放在名字上按 `F8`，即可高亮该词在**当前文件**中的全部出现；在同一词上再按 `F8`（或点击状态栏项）清除。定义出现用半透明绿色背景，其余引用用半透明黄色，并带同色概览标尺。注释、字符串与字符字面量会被忽略（复用扫描器的 `stripSources` 涂白，并在原始文本上校验位置），匹配大小写敏感、按 `[A-Za-z0-9_]` 整词边界——`foo` 不会命中 `foobar`、`_foo` 或 `foo1`。
+- **`F3` / `Shift+F3` 在匹配之间跳转**：在当前文件内前后移动、首尾循环，并把选中的出现 reveal 到视野中央。高亮状态栏项显示 `$(symbol) <词> · N in file / M index refs`：`N` 是文件内出现数，`M` 来自既有索引引用（异步；未就绪显示 `…`，用代号丢弃过期结果）。
+- **清除与实时更新**：再次切换、活动编辑器切到别的文档、文档关闭时清除；文档编辑后按同一词 150 ms 防抖重扫。
+- **新命令 `si.highlightSymbol` / `si.nextOccurrence` / `si.prevOccurrence`**（共 15 个命令）。`F8` 只在 C/C++ 编辑器的 `editorTextFocus` 下注册，因此其他语言的「下一个问题」默认键位不受影响；`F3` / `Shift+F3` 仅在 `si.highlightActive` 上下文键为真时绑定，未激活高亮时仍是「查找下一个」。新增零依赖 core 模块 `src/core/word-occurrences.ts`（`findWordOccurrences`），由 12 个新单测覆盖。
+- 380 个单测通过。
+
 ## 0.9.2 — 2026-11-25
 
 ### English

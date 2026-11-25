@@ -12,6 +12,9 @@
  *   si.openSymbolAt    内部：按 (file, line, column) 打开位置（树/QuickPick 使用）
  *   si.clearCache      清空内存索引 + 删除符号快照
  *   si.showIndexDiagnostics  在 Markdown 编辑器里展示索引诊断报告
+ *   si.highlightSymbol  F8：高亮光标处整词在当前文件的全部出现（再按清除）
+ *   si.nextOccurrence   F3：跳到下一个出现位置
+ *   si.prevOccurrence   Shift+F3：跳到上一个出现位置
  */
 import * as vscode from 'vscode'
 
@@ -31,6 +34,7 @@ import {
   showSymbolQuickPick,
 } from './quickpick'
 import type { SymbolService } from './service'
+import { createSymbolHighlighter, type SymbolHighlighter } from './symbol-highlight'
 import {
   currentWord,
   executeCommand,
@@ -52,6 +56,9 @@ export const COMMAND_IDS = [
   'si.openSymbolAt',
   'si.clearCache',
   'si.showIndexDiagnostics',
+  'si.highlightSymbol',
+  'si.nextOccurrence',
+  'si.prevOccurrence',
 ] as const
 
 const REBUILD_LABEL = vscode.l10n.t('Rebuild')
@@ -60,8 +67,20 @@ const LATER_LABEL = vscode.l10n.t('Later')
 export function registerCommands(
   _context: vscode.ExtensionContext | undefined,
   service: SymbolService,
+  highlighter?: SymbolHighlighter,
 ): vscode.Disposable {
   const disposables: vscode.Disposable[] = []
+  // 未传入高亮控制器时（单测/冒烟直接调用本函数）按需创建一个，随命令一起释放。
+  let ownedHighlighter: SymbolHighlighter | undefined
+  const highlight = (): SymbolHighlighter => {
+    if (highlighter) {
+      return highlighter
+    }
+    if (!ownedHighlighter) {
+      ownedHighlighter = createSymbolHighlighter(service)
+    }
+    return ownedHighlighter
+  }
   const add = (id: string, handler: (...args: unknown[]) => unknown): void => {
     try {
       if (typeof vscode.commands.registerCommand !== 'function') {
@@ -99,6 +118,9 @@ export function registerCommands(
   add('si.showIndexDiagnostics', async () => {
     await showIndexDiagnostics(service)
   })
+  add('si.highlightSymbol', async () => highlight().toggle())
+  add('si.nextOccurrence', async () => highlight().next())
+  add('si.prevOccurrence', async () => highlight().prev())
 
   return {
     dispose: (): void => {
@@ -110,6 +132,12 @@ export function registerCommands(
         }
       }
       disposables.length = 0
+      try {
+        ownedHighlighter?.dispose()
+      } catch {
+        // ignore
+      }
+      ownedHighlighter = undefined
     },
   }
 }
