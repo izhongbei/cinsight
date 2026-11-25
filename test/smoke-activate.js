@@ -57,6 +57,12 @@ const registrations = {
   documentCloseListeners: [],
   /** onDidChangeConfiguration 监听器（颜色配置变更断言用） */
   configurationListeners: [],
+  /** createWebviewPanel 创建过的面板（Relation 面板断言用） */
+  webviewPanels: [],
+  /** 面板 webview.postMessage 消息（state/error） */
+  webviewMessages: [],
+  /** 面板 webview.onDidReceiveMessage 监听器（模拟 webview 发消息） */
+  webviewMessageListeners: [],
 }
 const disposables = []
 
@@ -470,6 +476,39 @@ const vscode = {
       }
       registrations.decorations.push(type)
       return type
+    },
+    createWebviewPanel: (viewType, title, showOptions, options) => {
+      const webview = {
+        cspSource: 'vscode-resource://smoke',
+        html: '',
+        options,
+        postMessage: async (message) => {
+          registrations.webviewMessages.push(message)
+          return true
+        },
+        onDidReceiveMessage: (listener) => {
+          registrations.webviewMessageListeners.push(listener)
+          return disposable('webviewMessage')
+        },
+      }
+      const panel = {
+        viewType,
+        title,
+        viewColumn: 2,
+        webview,
+        revealed: 0,
+        disposed: false,
+        reveal() {
+          panel.revealed += 1
+        },
+        onDidDispose: () => disposable('webviewDispose'),
+        dispose() {
+          panel.disposed = true
+        },
+      }
+      void showOptions
+      registrations.webviewPanels.push(panel)
+      return panel
     },
     createStatusBarItem: () => {
       registrations.statusBar += 1
@@ -2893,6 +2932,128 @@ async function checkSymbolTreeLimits() {
   }
 }
 
+/**
+ * Relation 面板：mock webview 面板，验证 HTML 双 Tab、双向自动展开、
+ * 展开/折叠、setRoot 不跳编辑器、open 跳转与 collapseAll。
+ */
+async function checkCallGraphRelationPanel() {
+  const dist = path.join(EXT_ROOT, 'dist')
+  const { showCallGraph, CallGraphPanel } = require(path.join(
+    dist,
+    'src/vscode/views/call-graph-panel.js',
+  ))
+  const { nodeIdOf } = require(path.join(dist, 'src/vscode/call-graph-model.js'))
+  CallGraphPanel.disposeCurrent()
+
+  const entry = (name, line) => ({ name, kind: 'function', file: 'src/main.c', line, endLine: line + 1, column: 0 })
+  const rootEntry = entry('root_fn', 10)
+  const callerA = entry('caller_a', 5)
+  const callerB = entry('caller_b', 6)
+  const calleeA = entry('callee_a', 20)
+  const callerOfA = entry('caller_of_a', 2)
+  const deepCallee = entry('deep_callee', 30)
+  const service = {
+    workspaceRoot: EXT_ROOT,
+    configuredRoots: ['.'],
+    toAbsolute: (file) => path.join(EXT_ROOT, file),
+    definitions: () => [rootEntry],
+    callers: async (name) => {
+      if (name === 'root_fn') return [{ from: callerA }, { from: callerB }, { from: callerA }]
+      if (name === 'caller_a') return [{ from: callerOfA }]
+      return []
+    },
+    callees: async (name) => {
+      if (name === 'root_fn') return [calleeA]
+      if (name === 'callee_a') return [deepCallee]
+      return []
+    },
+  }
+
+  const panel = await showCallGraph(service, rootEntry)
+  assert.ok(panel, 'relation panel instance')
+  assert.equal(registrations.webviewPanels.length, 1, 'one webview panel created')
+  const created = registrations.webviewPanels[0]
+  const html = created.webview.html
+  for (const token of [
+    'data-tab="relation"',
+    'data-tab="graph"',
+    'id="section-title-callers"',
+    'id="section-title-callees"',
+    'Use cursor function as root',
+    'Collapse all',
+    'No callers',
+    'No callees',
+    'Set as root',
+    "type: 'setRoot'",
+    "type: 'collapseAll'",
+  ]) {
+    assert.ok(html.includes(token), `relation html contains ${token}`)
+  }
+  assert.equal(created.title, 'Call Graph: root_fn', 'panel title keeps the current root name')
+
+  const latestState = () => {
+    for (let i = registrations.webviewMessages.length - 1; i >= 0; i--) {
+      const message = registrations.webviewMessages[i]
+      if (message && message.type === 'state') return message
+    }
+    return undefined
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+  let state = latestState().state
+  assert.equal(state.root.node.name, 'root_fn')
+  assert.equal(state.root.callers.length, 2, 'callers auto-expanded and deduped')
+  assert.equal(state.root.callees.length, 1, 'callees auto-expanded')
+
+  const listener = registrations.webviewMessageListeners[0]
+  listener({ type: 'ready' })
+  await tick()
+  assert.equal(latestState().state.root.node.name, 'root_fn', 'ready resends the current state')
+
+  listener({ type: 'expand', id: nodeIdOf(calleeA), direction: 'callees' })
+  await tick()
+  state = latestState().state
+  const calleeTree = state.root.callees.find((tree) => tree.node.id === nodeIdOf(calleeA))
+  assert.equal(calleeTree.callees.length, 1, 'nested callee expansion loads one more level')
+  assert.equal(latestState().loading.callees, false, 'per-direction loading flag clears')
+
+  listener({ type: 'collapseAll' })
+  await tick()
+  state = latestState().state
+  assert.equal(state.root.callees.length, 1, 'collapseAll keeps root direct callees')
+  assert.equal(state.root.callees[0].callees.length, 0, 'collapseAll drops nested callees')
+  assert.equal(state.root.callers.length, 2, 'collapseAll keeps root direct callers')
+
+  const openedBefore = registrations.openedDocuments.length
+  listener({ type: 'setRoot', id: nodeIdOf(callerA) })
+  await tick()
+  state = latestState().state
+  assert.equal(created.title, 'Call Graph: caller_a', 'setRoot updates the panel title')
+  assert.equal(state.root.node.name, 'caller_a', 'setRoot re-roots to the clicked node')
+  assert.equal(state.root.callers.length, 1, 'setRoot auto-expands callers')
+  assert.equal(state.root.callees.length, 0, 'setRoot auto-expands callees')
+  assert.equal(
+    registrations.openedDocuments.length,
+    openedBefore,
+    'setRoot never opens/moves the editor',
+  )
+
+  listener({ type: 'open', id: nodeIdOf(callerOfA) })
+  await tick()
+  assert.equal(
+    registrations.openedDocuments.length,
+    openedBefore + 1,
+    'clicking a name opens the definition in an editor group',
+  )
+
+  listener({ type: 'collapse', id: nodeIdOf(callerA), direction: 'callers' })
+  await tick()
+  assert.equal(latestState().state.root.callers.length, 0, 'collapse clears the expanded direction')
+
+  CallGraphPanel.disposeCurrent()
+  assert.equal(created.disposed, true, 'panel dispose is forwarded to the host panel')
+}
+
 async function main() {
   const extension = require(path.join(EXT_ROOT, 'dist/src/vscode/extension.js'))
   assert.equal(typeof extension.activate, 'function', 'extension.activate must be a function')
@@ -2931,6 +3092,7 @@ async function main() {
   await checkMemberSymbolUi()
   await checkSymbolHighlight()
   await checkSymbolTreeLimits()
+  await checkCallGraphRelationPanel()
 
   await extension.deactivate()
   for (const item of context.subscriptions) {
@@ -2963,6 +3125,7 @@ async function main() {
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
   console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
   console.log('  F8 symbol highlight: theme-aware ThemeColor defaults, custom colour override reload without index rebuild, decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
+  console.log('  call graph relation panel: Relation/Graph tabs, auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
 }
 
 main()

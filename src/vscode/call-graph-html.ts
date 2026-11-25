@@ -1,6 +1,7 @@
 /**
- * 调用关系图的 HTML（纯字符串生成，不依赖 vscode，可单测）。
- * 所有代码内容都经 escapeHtml / textContent 处理；脚本使用 nonce + CSP。
+ * 调用关系面板的 HTML（纯字符串生成，不依赖 vscode，可单测）。
+ * 顶部两个 Tab：Relation（默认，单列紧凑树）/ Graph（原三列图）。
+ * 静态文案经 escapeHtml，动态内容一律走 textContent；脚本使用 nonce + CSP。
  */
 import type { CallGraphState } from './call-graph-model'
 
@@ -19,6 +20,14 @@ export function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;')
 }
 
+/** 嵌入 <script> 的 JSON：转义 `<`（防 </script> 注入）与行分隔符。 */
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
 export function renderCallGraphHtml(options: RenderOptions): string {
   const { nonce, cspSource, t } = options
   const csp = [
@@ -26,6 +35,20 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     `style-src ${cspSource} 'unsafe-inline'`,
     `script-src 'nonce-${nonce}'`,
   ].join('; ')
+  const i18n = {
+    callers: t('Callers'),
+    callees: t('Callees'),
+    setAsRoot: t('Set as root'),
+    noCallers: t('No callers'),
+    noCallees: t('No callees'),
+    loading: t('Loading…'),
+    collapse: t('Collapse'),
+    expand: t('Expand'),
+    noFunctionSelected: t('No function selected.'),
+    nodes: t('{0} nodes'),
+    graphTruncated: t('Graph truncated ({0} nodes)'),
+  }
+  const i18nJson = scriptJson(i18n)
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -33,34 +56,150 @@ export function renderCallGraphHtml(options: RenderOptions): string {
 <meta http-equiv="Content-Security-Policy" content="${csp}" />
 <style>
   :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
-    margin: 0; padding: 0 8px 16px;
+    margin: 0; padding: 0 0 18px;
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
     color: var(--vscode-foreground);
     background: var(--vscode-editor-background);
   }
-  header {
+  button { font: inherit; }
+
+  /* ---- Tab strip ---- */
+  .tab-strip {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: stretch; gap: 2px;
+    padding: 0 8px;
+    background: var(--vscode-editor-background);
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, rgba(128,128,128,.3)));
+  }
+  .tab {
+    appearance: none; border: none; border-bottom: 2px solid transparent;
+    background: transparent; cursor: pointer;
+    color: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
+    padding: 7px 10px 5px; font-size: 12px; letter-spacing: .02em;
+  }
+  .tab:hover { color: var(--vscode-tab-activeForeground, var(--vscode-foreground)); }
+  .tab.active {
+    color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+    border-bottom-color: var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder, #007acc));
+  }
+  .tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
+  .tab-panel[hidden] { display: none !important; }
+
+  /* ---- Relation header ---- */
+  .relation-header {
+    position: sticky; top: 29px; z-index: 9;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px 6px;
+    background: var(--vscode-editor-background);
+  }
+  .root-line { min-width: 0; flex: 1 1 auto; }
+  .root-title {
+    display: block; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .root-meta {
+    display: block; margin-top: 1px;
+    color: var(--vscode-descriptionForeground); font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .toolbar { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+  .icon-btn {
+    width: 24px; height: 24px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 4px;
+    background: transparent; color: var(--vscode-icon-foreground, var(--vscode-foreground));
+    cursor: pointer; font-size: 14px; line-height: 1;
+  }
+  .icon-btn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground, rgba(128,128,128,.15))); }
+  .icon-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+  /* ---- Relation tree ---- */
+  .relation-body { padding: 2px 6px 8px; }
+  .relation-section + .relation-section { margin-top: 2px; }
+  .section-head {
+    display: flex; align-items: center; gap: 5px; width: 100%;
+    padding: 4px; border: none; border-radius: 4px;
+    background: transparent; color: var(--vscode-foreground);
+    cursor: pointer; text-align: left;
+  }
+  .section-head:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.12)); }
+  .section-head:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .section-chevron {
+    width: 14px; flex: 0 0 14px; text-align: center;
+    color: var(--vscode-descriptionForeground); font-size: 12px;
+  }
+  .section-title { font-weight: 600; font-size: 12px; }
+  .section-loading {
+    margin-left: auto; padding-right: 2px;
+    color: var(--vscode-descriptionForeground); font-size: 11px;
+  }
+  .tree-node { min-width: 0; }
+  .row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 4px; border-radius: 4px;
+    cursor: default; outline: none;
+  }
+  .row:hover, .row:focus-visible { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.12)); }
+  .row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .toggle {
+    width: 16px; height: 16px; flex: 0 0 16px; padding: 0;
+    border: none; border-radius: 3px; background: transparent;
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer; font-size: 12px; line-height: 16px; text-align: center;
+  }
+  .toggle:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.15)); }
+  .toggle.placeholder { visibility: hidden; cursor: default; }
+  .direction { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 11px; }
+  .name {
+    flex: 0 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .name:hover { color: var(--vscode-textLink-foreground); text-decoration: underline; }
+  .meta {
+    flex: 0 1 auto; min-width: 0;
+    color: var(--vscode-descriptionForeground); font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .badge { flex: 0 0 auto; font-size: 10px; color: var(--vscode-descriptionForeground); }
+  .row-action {
+    margin-left: auto; flex: 0 0 auto; opacity: 0;
+    padding: 1px 4px; border: none; border-radius: 3px;
+    background: transparent; color: var(--vscode-textLink-foreground);
+    font-size: 11px; cursor: pointer;
+  }
+  .row:hover .row-action, .row:focus-within .row-action { opacity: 1; }
+  .row-action:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.15)); }
+  .children {
+    margin-left: 13px; padding-left: 6px;
+    border-left: 1px solid var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,.3));
+  }
+  .empty { color: var(--vscode-descriptionForeground); font-size: 12px; padding: 3px 4px 3px 24px; }
+  .truncated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); font-size: 11px; padding: 2px 4px 2px 24px; }
+  .loading-row { color: var(--vscode-descriptionForeground); font-size: 11px; font-style: italic; padding: 3px 4px 3px 24px; }
+
+  /* ---- Graph tab（保留原三列布局） ---- */
+  #tab-graph > header {
+    position: sticky; top: 29px; z-index: 9;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 10px 0 8px; position: sticky; top: 0; z-index: 2;
+    padding: 8px 10px 6px;
     background: var(--vscode-editor-background);
     border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
   }
-  header .title { font-weight: 600; }
-  header .hint { color: var(--vscode-descriptionForeground); font-size: 12px; }
-  button {
-    font: inherit; cursor: pointer; border-radius: 4px;
-    border: 1px solid var(--vscode-button-border, transparent);
-    background: var(--vscode-button-secondaryBackground, rgba(128,128,128,.18));
-    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-    padding: 2px 8px;
-  }
-  button:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,.3)); }
+  #tab-graph > header .title { font-weight: 600; }
+  #tab-graph > header .hint { color: var(--vscode-descriptionForeground); font-size: 12px; }
   button.primary {
+    border-radius: 4px; padding: 2px 8px; cursor: pointer;
+    border: 1px solid var(--vscode-button-border, transparent);
     background: var(--vscode-button-background); color: var(--vscode-button-foreground);
   }
-  #columns { display: flex; gap: 18px; align-items: flex-start; padding-top: 10px; }
-  .column { flex: 1 1 0; min-width: 160px; }
+  button.primary:hover { background: var(--vscode-button-hoverBackground); }
+  #columns { display: flex; gap: 18px; align-items: flex-start; padding: 10px 10px 0; overflow-x: auto; }
+  .column { flex: 1 1 0; min-width: 170px; }
   .column > .column-title {
     font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
     color: var(--vscode-descriptionForeground); margin: 0 0 6px 4px;
@@ -69,50 +208,290 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   .tree ul { list-style: none; margin: 0 0 0 12px; padding: 0;
     border-left: 1px solid var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,.35)); }
   .node { padding: 2px 0; }
-  .row { display: flex; align-items: center; gap: 4px; border-radius: 4px; padding: 1px 4px; }
-  .row:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.12)); }
-  .toggle {
-    width: 16px; height: 16px; line-height: 14px; text-align: center; padding: 0;
-    border: none; background: transparent; color: var(--vscode-descriptionForeground);
-    font-size: 12px;
-  }
-  .toggle:hover { background: transparent; color: var(--vscode-foreground); }
-  .name { cursor: pointer; color: var(--vscode-textLink-foreground); white-space: nowrap; }
-  .name:hover { text-decoration: underline; }
-  .meta { color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .root .name { font-weight: 700; color: var(--vscode-foreground); cursor: default; text-decoration: none; }
-  .badge { font-size: 10px; color: var(--vscode-descriptionForeground); }
-  .empty { color: var(--vscode-descriptionForeground); font-size: 12px; padding: 4px; }
-  .truncated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); font-size: 11px; padding-left: 20px; }
   #status { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--vscode-descriptionForeground); }
-  #error { color: var(--vscode-errorForeground); font-size: 12px; padding: 6px 0; }
+  .error { color: var(--vscode-errorForeground); font-size: 12px; padding: 6px 10px 0; }
 </style>
 </head>
 <body>
-<header>
-  <span class="title" id="root-name"></span>
-  <span class="hint" id="root-meta"></span>
-  <button class="primary" data-action="refresh" title="${escapeHtml(t('Rebuild the graph from the function under the cursor'))}">${escapeHtml(t('Refresh'))}</button>
-  <span class="hint">${escapeHtml(t('Click a name to jump · + to expand · − to collapse'))}</span>
-</header>
-<div id="error"></div>
-<div id="columns">
-  <div class="column"><div class="column-title">${escapeHtml(t('Callers'))}</div><div id="callers"></div></div>
-  <div class="column"><div class="column-title">${escapeHtml(t('Current function'))}</div><div id="root"></div></div>
-  <div class="column"><div class="column-title">${escapeHtml(t('Callees'))}</div><div id="callees"></div></div>
+<div class="tab-strip" role="tablist">
+  <button class="tab active" id="tab-btn-relation" type="button" role="tab" aria-selected="true" aria-controls="tab-relation" data-tab="relation">${escapeHtml(t('Relation'))}</button>
+  <button class="tab" id="tab-btn-graph" type="button" role="tab" aria-selected="false" aria-controls="tab-graph" data-tab="graph">${escapeHtml(t('Graph'))}</button>
 </div>
+<main>
+  <section class="tab-panel" id="tab-relation" role="tabpanel" aria-labelledby="tab-btn-relation">
+    <header class="relation-header">
+      <div class="root-line">
+        <span class="root-title" id="relation-root-name"></span>
+        <span class="root-meta" id="relation-root-meta"></span>
+      </div>
+      <div class="toolbar">
+        <button class="icon-btn" id="btn-root-from-editor" type="button" data-action="root-from-editor" title="${escapeHtml(t('Use cursor function as root'))}" aria-label="${escapeHtml(t('Use cursor function as root'))}">&#8635;</button>
+        <button class="icon-btn" id="btn-collapse-all" type="button" data-action="collapse-all" title="${escapeHtml(t('Collapse all'))}" aria-label="${escapeHtml(t('Collapse all'))}">&#8862;</button>
+      </div>
+    </header>
+    <div class="error" id="relation-error"></div>
+    <div class="relation-body">
+      <section class="relation-section" data-direction="callers">
+        <button class="section-head" id="section-head-callers" type="button" aria-expanded="true" aria-controls="relation-callers">
+          <span class="section-chevron" id="section-chevron-callers" aria-hidden="true">&#8722;</span>
+          <span class="section-title" id="section-title-callers">${escapeHtml(t('Callers'))} (0)</span>
+          <span class="section-loading" id="section-loading-callers" hidden>${escapeHtml(t('Loading…'))}</span>
+        </button>
+        <div class="section-body" id="relation-callers"></div>
+      </section>
+      <section class="relation-section" data-direction="callees">
+        <button class="section-head" id="section-head-callees" type="button" aria-expanded="true" aria-controls="relation-callees">
+          <span class="section-chevron" id="section-chevron-callees" aria-hidden="true">&#8722;</span>
+          <span class="section-title" id="section-title-callees">${escapeHtml(t('Callees'))} (0)</span>
+          <span class="section-loading" id="section-loading-callees" hidden>${escapeHtml(t('Loading…'))}</span>
+        </button>
+        <div class="section-body" id="relation-callees"></div>
+      </section>
+    </div>
+  </section>
+  <section class="tab-panel" id="tab-graph" role="tabpanel" aria-labelledby="tab-btn-graph" hidden>
+    <header>
+      <span class="title" id="root-name"></span>
+      <span class="hint" id="root-meta"></span>
+      <button class="primary" type="button" data-action="refresh" title="${escapeHtml(t('Rebuild the graph from the function under the cursor'))}">${escapeHtml(t('Refresh'))}</button>
+      <span class="hint">${escapeHtml(t('Click a name to jump · + to expand · − to collapse'))}</span>
+    </header>
+    <div class="error" id="error"></div>
+    <div id="columns">
+      <div class="column"><div class="column-title">${escapeHtml(t('Callers'))}</div><div id="callers"></div></div>
+      <div class="column"><div class="column-title">${escapeHtml(t('Current function'))}</div><div id="root"></div></div>
+      <div class="column"><div class="column-title">${escapeHtml(t('Callees'))}</div><div id="callees"></div></div>
+    </div>
+  </section>
+</main>
 <div id="status"></div>
 <script nonce="${nonce}">
 (function () {
+  'use strict';
   const vscode = acquireVsCodeApi();
-  const COLORS = {};
+  const I18N = ${i18nJson};
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
   }
-  function renderTree(tree, direction, isRoot) {
+  function format(template, value) {
+    return String(template).replace('{0}', String(value));
+  }
+  function post(message) { vscode.postMessage(message); }
+  function openNode(id) { post({ type: 'open', id: id }); }
+  function setRootNode(id) { post({ type: 'setRoot', id: id }); }
+  function expandNode(id, direction) { post({ type: 'expand', id: id, direction: direction }); }
+  function collapseNode(id, direction) { post({ type: 'collapse', id: id, direction: direction }); }
+
+  // ---- 会话内持久化：默认 Relation；Tab 与 section 折叠状态跨 state 更新保留 ----
+  let saved;
+  try { saved = vscode.getState ? vscode.getState() : undefined; } catch (e) { saved = undefined; }
+  let activeTab = saved && saved.tab === 'graph' ? 'graph' : 'relation';
+  const collapsedSections = {
+    callers: !!(saved && saved.collapsedSections && saved.collapsedSections.callers),
+    callees: !!(saved && saved.collapsedSections && saved.collapsedSections.callees),
+  };
+  function persist() {
+    try {
+      if (vscode.setState) vscode.setState({ tab: activeTab, collapsedSections: collapsedSections });
+    } catch (e) { /* ignore */ }
+  }
+
+  function setTab(tab) {
+    activeTab = tab === 'graph' ? 'graph' : 'relation';
+    const relationPanel = document.getElementById('tab-relation');
+    const graphPanel = document.getElementById('tab-graph');
+    const relationButton = document.getElementById('tab-btn-relation');
+    const graphButton = document.getElementById('tab-btn-graph');
+    relationPanel.hidden = activeTab !== 'relation';
+    graphPanel.hidden = activeTab !== 'graph';
+    relationButton.classList.toggle('active', activeTab === 'relation');
+    graphButton.classList.toggle('active', activeTab === 'graph');
+    relationButton.setAttribute('aria-selected', String(activeTab === 'relation'));
+    graphButton.setAttribute('aria-selected', String(activeTab === 'graph'));
+    persist();
+  }
+
+  function applySectionCollapsed(direction) {
+    const body = document.getElementById('relation-' + direction);
+    const head = document.getElementById('section-head-' + direction);
+    const chevron = document.getElementById('section-chevron-' + direction);
+    const collapsed = !!collapsedSections[direction];
+    body.hidden = collapsed;
+    head.setAttribute('aria-expanded', String(!collapsed));
+    chevron.textContent = collapsed ? '+' : '−';
+  }
+  function toggleSection(direction) {
+    collapsedSections[direction] = !collapsedSections[direction];
+    applySectionCollapsed(direction);
+    persist();
+  }
+
+  const directionLabel = { callers: I18N.callers, callees: I18N.callees };
+  const directionGlyph = { callers: '←', callees: '→' };
+  let currentLoadingIds = [];
+
+  function emptyLabel(direction) {
+    return direction === 'callers' ? I18N.noCallers : I18N.noCallees;
+  }
+
+  function renderNodes(container, children, direction) {
+    for (const tree of children) {
+      const childList = direction === 'callers' ? tree.callers : tree.callees;
+      const expanded = direction === 'callers' ? tree.expandedCallers : tree.expandedCallees;
+      const truncated = direction === 'callers' ? tree.truncatedCallers : tree.truncatedCallees;
+      const node = el('div', 'tree-node');
+      const row = el('div', 'row');
+      row.tabIndex = 0;
+      row.setAttribute('role', 'treeitem');
+      row.setAttribute('aria-expanded', String(!!expanded));
+      row.dataset.focusKey = direction + '|' + tree.node.id;
+
+      if (expanded && childList.length > 0) {
+        const toggle = el('button', 'toggle', '−');
+        toggle.type = 'button';
+        toggle.title = I18N.collapse;
+        toggle.setAttribute('aria-label', I18N.collapse);
+        toggle.addEventListener('click', function (event) {
+          event.stopPropagation();
+          collapseNode(tree.node.id, direction);
+        });
+        row.appendChild(toggle);
+      } else if (!expanded) {
+        const toggle = el('button', 'toggle', '+');
+        toggle.type = 'button';
+        toggle.title = I18N.expand;
+        toggle.setAttribute('aria-label', I18N.expand);
+        toggle.addEventListener('click', function (event) {
+          event.stopPropagation();
+          expandNode(tree.node.id, direction);
+        });
+        row.appendChild(toggle);
+      } else {
+        row.appendChild(el('span', 'toggle placeholder', ''));
+      }
+
+      row.appendChild(el('span', 'direction', directionGlyph[direction]));
+
+      const name = el('span', 'name', tree.node.name);
+      name.title = tree.node.file + ':' + (tree.node.line + 1);
+      row.appendChild(name);
+
+      const meta = el('span', 'meta', tree.node.file + ':' + (tree.node.line + 1));
+      meta.title = meta.textContent;
+      row.appendChild(meta);
+
+      if (currentLoadingIds.indexOf(tree.node.id) >= 0) {
+        row.appendChild(el('span', 'badge', '…'));
+      } else if (truncated) {
+        row.appendChild(el('span', 'badge', '…'));
+      }
+
+      const action = el('button', 'row-action', I18N.setAsRoot);
+      action.type = 'button';
+      action.title = I18N.setAsRoot;
+      action.addEventListener('click', function (event) {
+        event.stopPropagation();
+        setRootNode(tree.node.id);
+      });
+      row.appendChild(action);
+
+      row.addEventListener('click', function (event) {
+        const target = event.target;
+        if (target && target.closest && target.closest('.toggle, .row-action')) return;
+        if (event.altKey) { setRootNode(tree.node.id); return; }
+        if (target && target.closest && target.closest('.name')) openNode(tree.node.id);
+      });
+      row.addEventListener('keydown', function (event) {
+        // 焦点在 toggle / Set as root 按钮上时交给原生按钮处理，避免行处理再触发一次。
+        if (event.target && event.target !== row && event.target.closest && event.target.closest('.toggle, .row-action')) {
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (event.altKey) setRootNode(tree.node.id);
+          else openNode(tree.node.id);
+          return;
+        }
+        if (event.key === 'ArrowRight') {
+          if (!expanded) { event.preventDefault(); expandNode(tree.node.id, direction); }
+          return;
+        }
+        if (event.key === 'ArrowLeft') {
+          if (expanded) { event.preventDefault(); collapseNode(tree.node.id, direction); }
+        }
+      });
+
+      node.appendChild(row);
+
+      if (expanded) {
+        if (childList.length > 0) {
+          const childrenBox = el('div', 'children');
+          renderNodes(childrenBox, childList, direction);
+          node.appendChild(childrenBox);
+          if (truncated) node.appendChild(el('div', 'truncated', '…'));
+        } else if (truncated) {
+          node.appendChild(el('div', 'truncated', '…'));
+        } else {
+          node.appendChild(el('div', 'empty', emptyLabel(direction)));
+        }
+      }
+      container.appendChild(node);
+    }
+  }
+
+  function renderSection(direction, rootTree, loading) {
+    const title = document.getElementById('section-title-' + direction);
+    const loadingBox = document.getElementById('section-loading-' + direction);
+    const body = document.getElementById('relation-' + direction);
+    const children = direction === 'callers' ? rootTree.callers : rootTree.callees;
+    const expanded = direction === 'callers' ? rootTree.expandedCallers : rootTree.expandedCallees;
+    const truncated = direction === 'callers' ? rootTree.truncatedCallers : rootTree.truncatedCallees;
+    const fetching = !!loading;
+    const count = children ? children.length : 0;
+    // 首次加载时还没拿到子节点，用 “–” 占位。
+    title.textContent = directionLabel[direction] + ' (' + (fetching && !expanded ? '–' : String(count)) + ')';
+    loadingBox.hidden = !fetching;
+    body.textContent = '';
+    body.hidden = !!collapsedSections[direction];
+    if (expanded && count > 0) {
+      renderNodes(body, children, direction);
+      if (truncated) body.appendChild(el('div', 'truncated', '…'));
+    } else if (expanded && truncated) {
+      body.appendChild(el('div', 'truncated', '…'));
+    } else if (expanded) {
+      body.appendChild(el('div', 'empty', emptyLabel(direction)));
+    } else if (fetching) {
+      body.appendChild(el('div', 'loading-row', I18N.loading));
+    } else {
+      body.appendChild(el('div', 'empty', '–'));
+    }
+  }
+
+  function renderRelation(state, loading) {
+    const name = document.getElementById('relation-root-name');
+    const meta = document.getElementById('relation-root-meta');
+    if (!state || !state.root) {
+      name.textContent = '';
+      meta.textContent = '';
+      document.getElementById('relation-callers').textContent = '';
+      document.getElementById('relation-callees').textContent = '';
+      return;
+    }
+    name.textContent = state.root.node.name;
+    name.title = state.root.node.name;
+    meta.textContent = state.root.node.file + ':' + (state.root.node.line + 1);
+    meta.title = meta.textContent;
+    renderSection('callers', state.root, loading && loading.callers);
+    renderSection('callees', state.root, loading && loading.callees);
+  }
+
+  // ---- Graph tab：与 0.9.4 的三列图相同的渲染逻辑 ----
+  function renderGraphTree(tree, direction, isRoot) {
     const wrap = el('div', 'node' + (isRoot ? ' root' : ''));
     const row = el('div', 'row');
     const children = direction === 'callers' ? tree.callers : direction === 'callees' ? tree.callees : [];
@@ -123,11 +502,12 @@ export function renderCallGraphHtml(options: RenderOptions): string {
       const toggle = el('button', 'toggle', '');
       if (expanded) {
         toggle.textContent = '−';
-        toggle.title = vscode._t ? vscode._t('Collapse') : 'Collapse';
-        toggle.addEventListener('click', () => vscode.postMessage({ type: 'collapse', id: tree.node.id, direction }));
+        toggle.title = I18N.collapse;
+        toggle.addEventListener('click', function () { collapseNode(tree.node.id, direction); });
       } else {
         toggle.textContent = '+';
-        toggle.addEventListener('click', () => vscode.postMessage({ type: 'expand', id: tree.node.id, direction }));
+        toggle.title = I18N.expand;
+        toggle.addEventListener('click', function () { expandNode(tree.node.id, direction); });
       }
       row.appendChild(toggle);
     } else {
@@ -135,11 +515,9 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     }
 
     const name = el('span', 'name', tree.node.name);
+    name.title = tree.node.file + ':' + (tree.node.line + 1);
     if (!isRoot) {
-      name.title = tree.node.file + ':' + (tree.node.line + 1);
-      name.addEventListener('click', () => vscode.postMessage({ type: 'open', id: tree.node.id }));
-    } else {
-      name.title = tree.node.file + ':' + (tree.node.line + 1);
+      name.addEventListener('click', function () { openNode(tree.node.id); });
     }
     row.appendChild(name);
     row.appendChild(el('span', 'meta', tree.node.file + ':' + (tree.node.line + 1)));
@@ -150,16 +528,34 @@ export function renderCallGraphHtml(options: RenderOptions): string {
       const list = el('ul', 'tree');
       for (const child of children) {
         const item = el('li', '');
-        item.appendChild(renderTree(child, direction, false));
+        item.appendChild(renderGraphTree(child, direction, false));
         list.appendChild(item);
       }
       wrap.appendChild(list);
-    } else if (expanded && children.length === 0 && truncated) {
+    } else if (expanded && truncated) {
       wrap.appendChild(el('div', 'truncated', '…'));
     }
     return wrap;
   }
-  function render(state, busy) {
+
+  function renderGraphSide(box, children, direction, expanded, truncated) {
+    if (!children || children.length === 0) {
+      if (expanded && truncated) box.appendChild(el('div', 'truncated', '…'));
+      else if (expanded) box.appendChild(el('div', 'empty', emptyLabel(direction)));
+      else box.appendChild(el('div', 'empty', '−'));
+      return;
+    }
+    const list = el('ul', 'tree');
+    for (const child of children) {
+      const item = el('li', '');
+      item.appendChild(renderGraphTree(child, direction, false));
+      list.appendChild(item);
+    }
+    box.appendChild(list);
+    if (truncated) box.appendChild(el('div', 'truncated', '…'));
+  }
+
+  function renderGraph(state, busy) {
     const rootName = document.getElementById('root-name');
     const rootMeta = document.getElementById('root-meta');
     const rootBox = document.getElementById('root');
@@ -169,50 +565,83 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     callersBox.textContent = '';
     calleesBox.textContent = '';
     if (!state || !state.root) {
-      rootBox.appendChild(el('div', 'empty', 'No function selected.'));
+      rootBox.appendChild(el('div', 'empty', I18N.noFunctionSelected));
+      document.getElementById('status').textContent = '';
       return;
     }
     rootName.textContent = state.root.node.name;
     rootMeta.textContent = state.root.node.file + ':' + (state.root.node.line + 1);
-    rootBox.appendChild(renderTree(state.root, 'root', true));
-    renderSide(callersBox, state.root.callers, 'callers', state.root.expandedCallers, state.root.truncatedCallers);
-    renderSide(calleesBox, state.root.callees, 'callees', state.root.expandedCallees, state.root.truncatedCallees);
+    rootBox.appendChild(renderGraphTree(state.root, 'root', true));
+    renderGraphSide(callersBox, state.root.callers, 'callers', state.root.expandedCallers, state.root.truncatedCallers);
+    renderGraphSide(calleesBox, state.root.callees, 'callees', state.root.expandedCallees, state.root.truncatedCallees);
     document.getElementById('status').textContent = busy
-      ? 'Loading…'
-      : state.truncated ? 'Graph truncated (' + state.nodeCount + ' nodes)' : state.nodeCount + ' nodes';
+      ? I18N.loading
+      : state.truncated ? format(I18N.graphTruncated, state.nodeCount) : format(I18N.nodes, state.nodeCount);
   }
-  function renderSide(box, children, direction, expanded, truncated) {
-    if (!children || children.length === 0) {
-      if (expanded && truncated) box.appendChild(el('div', 'truncated', '…'));
-      else if (expanded) box.appendChild(el('div', 'empty', 'none'));
-      else box.appendChild(el('div', 'empty', '−'));
-      return;
+
+  let lastState = null;
+  let lastBusy = false;
+  let lastLoading = { callers: false, callees: false };
+  let lastLoadingIds = [];
+
+  function renderAll() {
+    const active = document.activeElement;
+    const focusKey = active && active.dataset ? active.dataset.focusKey : undefined;
+    applySectionCollapsed('callers');
+    applySectionCollapsed('callees');
+    renderRelation(lastState, lastLoading);
+    renderGraph(lastState, lastBusy);
+    if (focusKey) {
+      const rows = document.querySelectorAll('.row');
+      for (const row of rows) {
+        if (row.dataset.focusKey === focusKey) { row.focus(); break; }
+      }
     }
-    const list = el('ul', 'tree');
-    for (const child of children) {
-      const item = el('li', '');
-      item.appendChild(renderTree(child, direction, false));
-      list.appendChild(item);
-    }
-    box.appendChild(list);
-    if (truncated) box.appendChild(el('div', 'truncated', '…'));
   }
-  window.addEventListener('message', (event) => {
-    const message = event.data;
+
+  window.addEventListener('message', function (event) {
+    const message = event.data || {};
     if (message.type === 'state') {
-      render(message.state, message.busy);
+      lastState = message.state;
+      lastBusy = !!message.busy;
+      lastLoading = message.loading || { callers: false, callees: false };
+      lastLoadingIds = Array.isArray(message.loadingIds) ? message.loadingIds : [];
+      currentLoadingIds = lastLoadingIds;
+      renderAll();
     } else if (message.type === 'error') {
-      const errorBox = document.getElementById('error');
-      errorBox.textContent = message.message || 'error';
+      const text = message.message || 'error';
+      const relationError = document.getElementById('relation-error');
+      const graphError = document.getElementById('error');
+      if (relationError) relationError.textContent = text;
+      if (graphError) graphError.textContent = text;
     }
   });
-  document.querySelectorAll('[data-action="refresh"]').forEach((button) => {
-    button.addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
-  });
+
+  for (const button of document.querySelectorAll('.tab')) {
+    button.addEventListener('click', function () { setTab(button.dataset.tab); });
+    button.addEventListener('keydown', function (event) {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const next = button.dataset.tab === 'relation' ? 'graph' : 'relation';
+      setTab(next);
+      const nextButton = document.getElementById('tab-btn-' + next);
+      if (nextButton) nextButton.focus();
+    });
+  }
+  document.getElementById('section-head-callers').addEventListener('click', function () { toggleSection('callers'); });
+  document.getElementById('section-head-callees').addEventListener('click', function () { toggleSection('callees'); });
+  document.getElementById('btn-root-from-editor').addEventListener('click', function () { post({ type: 'refresh' }); });
+  document.getElementById('btn-collapse-all').addEventListener('click', function () { post({ type: 'collapseAll' }); });
+  for (const button of document.querySelectorAll('[data-action="refresh"]')) {
+    button.addEventListener('click', function () { post({ type: 'refresh' }); });
+  }
+
+  applySectionCollapsed('callers');
+  applySectionCollapsed('callees');
+  setTab(activeTab);
   vscode.postMessage({ type: 'ready' });
 })();
 </script>
 </body>
 </html>`
 }
-

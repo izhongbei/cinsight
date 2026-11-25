@@ -130,6 +130,20 @@ export class CallGraphModel {
     return added
   }
 
+  /**
+   * 折叠根节点以下所有已展开的子层，但保留根节点的直接邻居。
+   * 用于 Relation 面板的「Collapse all」，避免把两个 section 也清空。
+   */
+  collapseAll(): void {
+    if (!this.rootTree) return
+    for (const child of this.rootTree.callers) {
+      this.collapse(child.node.id, 'callers')
+    }
+    for (const child of this.rootTree.callees) {
+      this.collapse(child.node.id, 'callees')
+    }
+  }
+
   collapse(id: string, direction: Direction): void {
     const tree = this.findTree(id)
     if (!tree) return

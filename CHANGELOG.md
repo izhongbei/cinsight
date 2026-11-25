@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.5 — 2026-11-25
+
+### English
+
+- **New Source Insight-style Relation panel.** `Show Call Graph` now opens a panel with two tabs: **Relation** (default) and **Graph**. Relation is a compact single-column tree with collapsible **Callers (N)** and **Callees (N)** sections. Expanding a node inside a section loads its neighbours in the same direction (callers of a caller, callees of a callee) through the existing `mergeNeighbors`/`collapse` model, keeping the 100-children-per-direction cap, the 300-node cap, cycle skipping and global deduplication.
+- **Click opens, Set as root re-roots.** A single click on a symbol name opens its definition in an editor group (never changes the root and never moves the panel); the hover action **Set as root** or **Alt+click** on a row re-roots the panel to that node and auto-expands its callers and callees without a code jump. The host handles a new `setRoot` message by rebuilding a `SymbolEntry` from the graph node (`name`/`file`/`line`/`column`/`kind`), resetting the model and updating the panel title.
+- **Relation toolbar and states.** The sticky header shows the current function and `file:line` plus buttons to re-root from the function under the cursor and to collapse all nested expansions; Callers/Callees sections have their own loading indicator, `No callers` / `No callees` empty states, hover-revealed row actions and keyboard support (Enter opens, ArrowRight expands, ArrowLeft collapses). Tab selection and section collapse state are kept in webview state for the session.
+- **Graph tab preserved.** The previous three-column callers/current/callees view now lives in the **Graph** tab with its existing CSS/JS and click-to-jump-in-another-group/expand behaviour; the panel still scrolls horizontally at narrow widths.
+- **Localization and docs.** New English + zh-cn L10n keys (`Relation`, `Graph`, `Callers`, `Callees`, `Set as root`, `Use cursor function as root`, `Collapse all`, `No callers`, `No callees`, `Loading…` and graph status strings); README and CHANGELOG updated. No command was added, removed or renamed — still **15 commands**.
+- New unit coverage for `CallGraphModel.collapseAll` and for the generated HTML (tabs, section headings, message protocol, escaped script JSON); the smoke harness now instantiates a mock webview panel and exercises auto-expansion, nested expansion, `collapseAll`, `setRoot` without opening the editor, `open` and `collapse`.
+- 389 tests pass.
+
+### 中文
+
+- **新增 Source Insight 风格的 Relation 面板**：`显示调用关系图` 现在打开含 **Relation**（默认）与 **Graph** 两个标签页的面板。Relation 是单列紧凑树，含可折叠的 **调用者 (N)** 与 **被调用者 (N)** 两个 section；在 section 内展开节点时按同一方向加载邻居（调用者的调用者、被调用者的被调用者），复用既有 `mergeNeighbors`/`collapse` 模型，并保留单方向 100 个、全图 300 个节点的上限、跳过环与全局去重。
+- **点击打开、设为根重设根**：单击符号名在代码编辑器组打开定义（不改变根、不移动面板）；行上的悬停操作 **设为根** 或 **Alt+点击** 会把面板重设为该节点为根，并自动展开它的调用者与被调用者，且不跳转代码。宿主新增 `setRoot` 消息：从图节点重建 `SymbolEntry`（`name`/`file`/`line`/`column`/`kind`），重置模型并同步面板标题。
+- **Relation 工具栏与状态**：吸顶 header 显示当前函数与 `file:line`，并提供「以光标处函数为根」「全部折叠」按钮；Callers/Callees section 各自有 loading 指示与 `无调用者` / `无被调用者` 空状态，行操作悬停显示，支持键盘（Enter 打开、ArrowRight 展开、ArrowLeft 折叠）。标签页选择与 section 折叠状态在会话内通过 webview state 保留。
+- **保留 Graph 标签页**：原三列「左调用者 / 中当前函数 / 右被调用者」视图移入 **Graph** 标签页，CSS/JS 与「点击在另一编辑器组跳转」、展开/折叠行为保持不变；窄面板下仍可横向滚动。
+- **本地化与文档**：新增英文 + zh-cn L10n 键（`Relation`、`Graph`、`Callers`、`Callees`、`Set as root`、`Use cursor function as root`、`Collapse all`、`No callers`、`No callees`、`Loading…` 及图状态文案）；README、CHANGELOG 已更新。未增删/重命名命令——仍为 **15 个命令**。
+- 新增 `CallGraphModel.collapseAll` 与生成 HTML 的单测（双 Tab、section 标题、消息协议、script JSON 转义）；冒烟测试现在会实例化 mock webview 面板并覆盖自动展开、嵌套展开、`collapseAll`、`setRoot` 不打开编辑器、`open` 与 `collapse`。
+- 389 个单测通过。
+
 ## 0.9.4 — 2026-11-25
 
 ### English

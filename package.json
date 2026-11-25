@@ -2,7 +2,7 @@
   "name": "code-insight",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "publisher": "cinsight",
   "license": "MIT",
   "engines": {

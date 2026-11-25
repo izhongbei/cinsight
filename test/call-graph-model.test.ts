@@ -66,6 +66,24 @@ test('call graph: per-direction child cap marks truncation', () => {
   assert.equal(tree?.truncatedCallees, true)
 })
 
+test('call graph: collapseAll collapses nested subtrees but keeps direct neighbours', () => {
+  const model = new CallGraphModel()
+  model.setRoot(entry('root', 1))
+  model.mergeNeighbors(nodeIdOf(entry('root', 1)), 'callers', [entry('caller_a', 5), entry('caller_b', 6)])
+  model.mergeNeighbors(nodeIdOf(entry('caller_a', 5)), 'callers', [entry('caller_of_a', 2)])
+  model.mergeNeighbors(nodeIdOf(entry('root', 1)), 'callees', [entry('callee_a', 10)])
+  model.mergeNeighbors(nodeIdOf(entry('callee_a', 10)), 'callees', [entry('deep', 20)])
+  model.collapseAll()
+
+  const state = model.toState()
+  const root = model.findTree(nodeIdOf(entry('root', 1)))
+  assert.equal(root?.callers.length, 2, 'root direct callers stay visible')
+  assert.equal(root?.callees.length, 1, 'root direct callees stay visible')
+  assert.deepEqual(model.findTree(nodeIdOf(entry('caller_a', 5)))?.callers, [])
+  assert.deepEqual(model.findTree(nodeIdOf(entry('callee_a', 10)))?.callees, [])
+  assert.equal(state.nodeCount, 4, 'nested nodes are forgotten')
+})
+
 test('call graph: setRoot resets the graph', () => {
   const model = new CallGraphModel()
   model.setRoot(entry('a', 1))
