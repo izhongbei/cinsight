@@ -16,7 +16,7 @@ import {
 import type { SymbolService } from '../service'
 import type { SymbolEntry } from '../../shared/types'
 import { renderCallGraphHtml } from '../call-graph-html'
-import { currentWord, openLocation } from '../util'
+import { currentWord, findVisibleEditorColumn, openLocation } from '../util'
 
 interface WebviewMessage {
   readonly type: 'ready' | 'expand' | 'collapse' | 'open' | 'refresh' | 'newRoot'
@@ -101,7 +101,25 @@ export class CallGraphPanel implements vscode.Disposable {
         case 'open': {
           const tree = message.id ? this.model.findTree(message.id) : undefined
           if (tree) {
-            await openLocation(this.service, tree.node.file, tree.node.line, tree.node.column)
+            // 面板通常在 ViewColumn.Beside；不能在同一组打开，否则会把面板顶掉/重排。
+            // 优先跳到已经打开该文件的代码组，否则跳到与面板不同的另一组。
+            const visibleColumn = findVisibleEditorColumn(this.service, tree.node.file)
+            const panelColumn = this.panel.viewColumn
+            const fallback =
+              panelColumn === vscode.ViewColumn.One ? vscode.ViewColumn.Two : vscode.ViewColumn.One
+            // 可见编辑器不能和面板同组（否则会把面板挤掉），同组时改用另一组。
+            const targetColumn =
+              visibleColumn !== undefined && visibleColumn !== panelColumn
+                ? visibleColumn
+                : fallback
+            await openLocation(
+              this.service,
+              tree.node.file,
+              tree.node.line,
+              tree.node.column,
+              false,
+              targetColumn,
+            )
           }
           break
         }

@@ -323,12 +323,31 @@ export async function quiet<T>(
  * 打开「workspace 相对文件 + 0-based 行列」并选中该位置。
  * 行号/列号会 clamp 到文档范围，文件不存在时只记日志。
  */
+/** 若该文件已在某个可见编辑器组中打开，返回那个组（让跳转发生在代码区而不是面板所在组）。 */
+export function findVisibleEditorColumn(
+  resolver: PathResolver,
+  file: string,
+): vscode.ViewColumn | undefined {
+  try {
+    const target = vscode.Uri.file(resolver.toAbsolute(file)).toString()
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.uri.toString() === target && typeof editor.viewColumn === 'number') {
+        return editor.viewColumn
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return undefined
+}
+
 export async function openLocation(
   resolver: PathResolver,
   file: string,
   line: number,
   column = 0,
   preview = false,
+  viewColumn?: vscode.ViewColumn,
 ): Promise<void> {
   try {
     const uri = vscode.Uri.file(resolver.toAbsolute(file))
@@ -342,10 +361,14 @@ export async function openLocation(
     }
     const safeColumn = Math.min(Math.max(0, Math.floor(column)), lineText.length)
     const position = new vscode.Position(safeLine, safeColumn)
-    await vscode.window.showTextDocument(document, {
+    const options: vscode.TextDocumentShowOptions = {
       selection: new vscode.Range(position, position),
       preview,
-    })
+    }
+    if (typeof viewColumn === 'number') {
+      options.viewColumn = viewColumn
+    }
+    await vscode.window.showTextDocument(document, options)
   } catch (error) {
     console.error(`[code-insight] cannot open ${file}:${line + 1}`, error)
   }

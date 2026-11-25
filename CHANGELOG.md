@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.2 — 2026-11-25
+
+### English
+
+- **Call graph panel no longer covers/moves itself when you click a function.** Clicking a name in the callers/callees graph now opens the definition in a separate editor group (the group that already shows that file, otherwise the other group) instead of the panel's group, so the graph stays exactly where it was while the code area jumps. `openLocation` gained an optional `viewColumn`, and a new `findVisibleEditorColumn` helper prefers an existing visible editor for the target file.
+- 368 tests pass.
+
+### 中文
+
+- **点击调用关系图中的函数时，关系图不再被顶掉/重排**：点击调用者/被调用者名字现在会在**另一个编辑器组**打开定义（优先跳到已经显示该文件的代码组，否则跳到与面板不同的组），代码区跳转的同时关系图保持原位。`openLocation` 新增可选 `viewColumn`，并新增 `findVisibleEditorColumn` 优先复用已打开的编辑器。
+- 368 个单测通过。
+
+
 ## 0.9.1 — 2026-11-20
 
 ### English
