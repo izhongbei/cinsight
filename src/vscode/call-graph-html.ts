@@ -1,9 +1,8 @@
 /**
  * 调用关系面板的 HTML（纯字符串生成，不依赖 vscode，可单测）。
- * 顶部两个 Tab：Relation（默认，单列紧凑树）/ Graph（原三列图）。
+ * 单视图：Relation（单列紧凑树）；Graph 标签页已在 0.9.6 移除。
  * 静态文案经 escapeHtml，动态内容一律走 textContent；脚本使用 nonce + CSP。
  */
-import type { CallGraphState } from './call-graph-model'
 
 export interface RenderOptions {
   readonly cspSource: string
@@ -44,9 +43,6 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     loading: t('Loading…'),
     collapse: t('Collapse'),
     expand: t('Expand'),
-    noFunctionSelected: t('No function selected.'),
-    nodes: t('{0} nodes'),
-    graphTruncated: t('Graph truncated ({0} nodes)'),
   }
   const i18nJson = scriptJson(i18n)
   return `<!DOCTYPE html>
@@ -67,31 +63,9 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   }
   button { font: inherit; }
 
-  /* ---- Tab strip ---- */
-  .tab-strip {
-    position: sticky; top: 0; z-index: 10;
-    display: flex; align-items: stretch; gap: 2px;
-    padding: 0 8px;
-    background: var(--vscode-editor-background);
-    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, rgba(128,128,128,.3)));
-  }
-  .tab {
-    appearance: none; border: none; border-bottom: 2px solid transparent;
-    background: transparent; cursor: pointer;
-    color: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
-    padding: 7px 10px 5px; font-size: 12px; letter-spacing: .02em;
-  }
-  .tab:hover { color: var(--vscode-tab-activeForeground, var(--vscode-foreground)); }
-  .tab.active {
-    color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
-    border-bottom-color: var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder, #007acc));
-  }
-  .tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
-  .tab-panel[hidden] { display: none !important; }
-
   /* ---- Relation header ---- */
   .relation-header {
-    position: sticky; top: 29px; z-index: 9;
+    position: sticky; top: 0; z-index: 9;
     display: flex; align-items: center; gap: 8px;
     padding: 8px 10px 6px;
     background: var(--vscode-editor-background);
@@ -181,91 +155,41 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   .empty { color: var(--vscode-descriptionForeground); font-size: 12px; padding: 3px 4px 3px 24px; }
   .truncated { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); font-size: 11px; padding: 2px 4px 2px 24px; }
   .loading-row { color: var(--vscode-descriptionForeground); font-size: 11px; font-style: italic; padding: 3px 4px 3px 24px; }
-
-  /* ---- Graph tab（保留原三列布局） ---- */
-  #tab-graph > header {
-    position: sticky; top: 29px; z-index: 9;
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 8px 10px 6px;
-    background: var(--vscode-editor-background);
-    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
-  }
-  #tab-graph > header .title { font-weight: 600; }
-  #tab-graph > header .hint { color: var(--vscode-descriptionForeground); font-size: 12px; }
-  button.primary {
-    border-radius: 4px; padding: 2px 8px; cursor: pointer;
-    border: 1px solid var(--vscode-button-border, transparent);
-    background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-  }
-  button.primary:hover { background: var(--vscode-button-hoverBackground); }
-  #columns { display: flex; gap: 18px; align-items: flex-start; padding: 10px 10px 0; overflow-x: auto; }
-  .column { flex: 1 1 0; min-width: 170px; }
-  .column > .column-title {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: var(--vscode-descriptionForeground); margin: 0 0 6px 4px;
-  }
-  .tree { list-style: none; margin: 0; padding: 0; }
-  .tree ul { list-style: none; margin: 0 0 0 12px; padding: 0;
-    border-left: 1px solid var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,.35)); }
-  .node { padding: 2px 0; }
-  .root .name { font-weight: 700; color: var(--vscode-foreground); cursor: default; text-decoration: none; }
-  #status { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--vscode-descriptionForeground); }
   .error { color: var(--vscode-errorForeground); font-size: 12px; padding: 6px 10px 0; }
 </style>
 </head>
 <body>
-<div class="tab-strip" role="tablist">
-  <button class="tab active" id="tab-btn-relation" type="button" role="tab" aria-selected="true" aria-controls="tab-relation" data-tab="relation">${escapeHtml(t('Relation'))}</button>
-  <button class="tab" id="tab-btn-graph" type="button" role="tab" aria-selected="false" aria-controls="tab-graph" data-tab="graph">${escapeHtml(t('Graph'))}</button>
-</div>
-<main>
-  <section class="tab-panel" id="tab-relation" role="tabpanel" aria-labelledby="tab-btn-relation">
-    <header class="relation-header">
-      <div class="root-line">
-        <span class="root-title" id="relation-root-name"></span>
-        <span class="root-meta" id="relation-root-meta"></span>
-      </div>
-      <div class="toolbar">
-        <button class="icon-btn" id="btn-root-from-editor" type="button" data-action="root-from-editor" title="${escapeHtml(t('Use cursor function as root'))}" aria-label="${escapeHtml(t('Use cursor function as root'))}">&#8635;</button>
-        <button class="icon-btn" id="btn-collapse-all" type="button" data-action="collapse-all" title="${escapeHtml(t('Collapse all'))}" aria-label="${escapeHtml(t('Collapse all'))}">&#8862;</button>
-      </div>
-    </header>
-    <div class="error" id="relation-error"></div>
-    <div class="relation-body">
-      <section class="relation-section" data-direction="callers">
-        <button class="section-head" id="section-head-callers" type="button" aria-expanded="true" aria-controls="relation-callers">
-          <span class="section-chevron" id="section-chevron-callers" aria-hidden="true">&#8722;</span>
-          <span class="section-title" id="section-title-callers">${escapeHtml(t('Callers'))} (0)</span>
-          <span class="section-loading" id="section-loading-callers" hidden>${escapeHtml(t('Loading…'))}</span>
-        </button>
-        <div class="section-body" id="relation-callers"></div>
-      </section>
-      <section class="relation-section" data-direction="callees">
-        <button class="section-head" id="section-head-callees" type="button" aria-expanded="true" aria-controls="relation-callees">
-          <span class="section-chevron" id="section-chevron-callees" aria-hidden="true">&#8722;</span>
-          <span class="section-title" id="section-title-callees">${escapeHtml(t('Callees'))} (0)</span>
-          <span class="section-loading" id="section-loading-callees" hidden>${escapeHtml(t('Loading…'))}</span>
-        </button>
-        <div class="section-body" id="relation-callees"></div>
-      </section>
+<main id="relation-view" aria-label="${escapeHtml(t('Relation'))}">
+  <header class="relation-header">
+    <div class="root-line">
+      <span class="root-title" id="relation-root-name"></span>
+      <span class="root-meta" id="relation-root-meta"></span>
     </div>
-  </section>
-  <section class="tab-panel" id="tab-graph" role="tabpanel" aria-labelledby="tab-btn-graph" hidden>
-    <header>
-      <span class="title" id="root-name"></span>
-      <span class="hint" id="root-meta"></span>
-      <button class="primary" type="button" data-action="refresh" title="${escapeHtml(t('Rebuild the graph from the function under the cursor'))}">${escapeHtml(t('Refresh'))}</button>
-      <span class="hint">${escapeHtml(t('Click a name to jump · + to expand · − to collapse'))}</span>
-    </header>
-    <div class="error" id="error"></div>
-    <div id="columns">
-      <div class="column"><div class="column-title">${escapeHtml(t('Callers'))}</div><div id="callers"></div></div>
-      <div class="column"><div class="column-title">${escapeHtml(t('Current function'))}</div><div id="root"></div></div>
-      <div class="column"><div class="column-title">${escapeHtml(t('Callees'))}</div><div id="callees"></div></div>
+    <div class="toolbar">
+      <button class="icon-btn" id="btn-root-from-editor" type="button" data-action="root-from-editor" title="${escapeHtml(t('Use cursor function as root'))}" aria-label="${escapeHtml(t('Use cursor function as root'))}">&#8635;</button>
+      <button class="icon-btn" id="btn-collapse-all" type="button" data-action="collapse-all" title="${escapeHtml(t('Collapse all'))}" aria-label="${escapeHtml(t('Collapse all'))}">&#8862;</button>
     </div>
-  </section>
+  </header>
+  <div class="error" id="relation-error"></div>
+  <div class="relation-body">
+    <section class="relation-section" data-direction="callers">
+      <button class="section-head" id="section-head-callers" type="button" aria-expanded="true" aria-controls="relation-callers">
+        <span class="section-chevron" id="section-chevron-callers" aria-hidden="true">&#8722;</span>
+        <span class="section-title" id="section-title-callers">${escapeHtml(t('Callers'))} (0)</span>
+        <span class="section-loading" id="section-loading-callers" hidden>${escapeHtml(t('Loading…'))}</span>
+      </button>
+      <div class="section-body" id="relation-callers"></div>
+    </section>
+    <section class="relation-section" data-direction="callees">
+      <button class="section-head" id="section-head-callees" type="button" aria-expanded="true" aria-controls="relation-callees">
+        <span class="section-chevron" id="section-chevron-callees" aria-hidden="true">&#8722;</span>
+        <span class="section-title" id="section-title-callees">${escapeHtml(t('Callees'))} (0)</span>
+        <span class="section-loading" id="section-loading-callees" hidden>${escapeHtml(t('Loading…'))}</span>
+      </button>
+      <div class="section-body" id="relation-callees"></div>
+    </section>
+  </div>
 </main>
-<div id="status"></div>
 <script nonce="${nonce}">
 (function () {
   'use strict';
@@ -278,42 +202,23 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     if (text !== undefined) node.textContent = text;
     return node;
   }
-  function format(template, value) {
-    return String(template).replace('{0}', String(value));
-  }
   function post(message) { vscode.postMessage(message); }
   function openNode(id) { post({ type: 'open', id: id }); }
   function setRootNode(id) { post({ type: 'setRoot', id: id }); }
   function expandNode(id, direction) { post({ type: 'expand', id: id, direction: direction }); }
   function collapseNode(id, direction) { post({ type: 'collapse', id: id, direction: direction }); }
 
-  // ---- 会话内持久化：默认 Relation；Tab 与 section 折叠状态跨 state 更新保留 ----
+  // ---- 会话内持久化：只保留 Callers/Callees section 折叠状态 ----
   let saved;
   try { saved = vscode.getState ? vscode.getState() : undefined; } catch (e) { saved = undefined; }
-  let activeTab = saved && saved.tab === 'graph' ? 'graph' : 'relation';
   const collapsedSections = {
     callers: !!(saved && saved.collapsedSections && saved.collapsedSections.callers),
     callees: !!(saved && saved.collapsedSections && saved.collapsedSections.callees),
   };
   function persist() {
     try {
-      if (vscode.setState) vscode.setState({ tab: activeTab, collapsedSections: collapsedSections });
+      if (vscode.setState) vscode.setState({ collapsedSections: collapsedSections });
     } catch (e) { /* ignore */ }
-  }
-
-  function setTab(tab) {
-    activeTab = tab === 'graph' ? 'graph' : 'relation';
-    const relationPanel = document.getElementById('tab-relation');
-    const graphPanel = document.getElementById('tab-graph');
-    const relationButton = document.getElementById('tab-btn-relation');
-    const graphButton = document.getElementById('tab-btn-graph');
-    relationPanel.hidden = activeTab !== 'relation';
-    graphPanel.hidden = activeTab !== 'graph';
-    relationButton.classList.toggle('active', activeTab === 'relation');
-    graphButton.classList.toggle('active', activeTab === 'graph');
-    relationButton.setAttribute('aria-selected', String(activeTab === 'relation'));
-    graphButton.setAttribute('aria-selected', String(activeTab === 'graph'));
-    persist();
   }
 
   function applySectionCollapsed(direction) {
@@ -490,97 +395,7 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     renderSection('callees', state.root, loading && loading.callees);
   }
 
-  // ---- Graph tab：与 0.9.4 的三列图相同的渲染逻辑 ----
-  function renderGraphTree(tree, direction, isRoot) {
-    const wrap = el('div', 'node' + (isRoot ? ' root' : ''));
-    const row = el('div', 'row');
-    const children = direction === 'callers' ? tree.callers : direction === 'callees' ? tree.callees : [];
-    const expanded = direction === 'callers' ? tree.expandedCallers : direction === 'callees' ? tree.expandedCallees : false;
-    const truncated = direction === 'callers' ? tree.truncatedCallers : direction === 'callees' ? tree.truncatedCallees : false;
-
-    if (!isRoot) {
-      const toggle = el('button', 'toggle', '');
-      if (expanded) {
-        toggle.textContent = '−';
-        toggle.title = I18N.collapse;
-        toggle.addEventListener('click', function () { collapseNode(tree.node.id, direction); });
-      } else {
-        toggle.textContent = '+';
-        toggle.title = I18N.expand;
-        toggle.addEventListener('click', function () { expandNode(tree.node.id, direction); });
-      }
-      row.appendChild(toggle);
-    } else {
-      row.appendChild(el('span', 'toggle', ''));
-    }
-
-    const name = el('span', 'name', tree.node.name);
-    name.title = tree.node.file + ':' + (tree.node.line + 1);
-    if (!isRoot) {
-      name.addEventListener('click', function () { openNode(tree.node.id); });
-    }
-    row.appendChild(name);
-    row.appendChild(el('span', 'meta', tree.node.file + ':' + (tree.node.line + 1)));
-    if (truncated) row.appendChild(el('span', 'badge', '…'));
-    wrap.appendChild(row);
-
-    if (children.length > 0) {
-      const list = el('ul', 'tree');
-      for (const child of children) {
-        const item = el('li', '');
-        item.appendChild(renderGraphTree(child, direction, false));
-        list.appendChild(item);
-      }
-      wrap.appendChild(list);
-    } else if (expanded && truncated) {
-      wrap.appendChild(el('div', 'truncated', '…'));
-    }
-    return wrap;
-  }
-
-  function renderGraphSide(box, children, direction, expanded, truncated) {
-    if (!children || children.length === 0) {
-      if (expanded && truncated) box.appendChild(el('div', 'truncated', '…'));
-      else if (expanded) box.appendChild(el('div', 'empty', emptyLabel(direction)));
-      else box.appendChild(el('div', 'empty', '−'));
-      return;
-    }
-    const list = el('ul', 'tree');
-    for (const child of children) {
-      const item = el('li', '');
-      item.appendChild(renderGraphTree(child, direction, false));
-      list.appendChild(item);
-    }
-    box.appendChild(list);
-    if (truncated) box.appendChild(el('div', 'truncated', '…'));
-  }
-
-  function renderGraph(state, busy) {
-    const rootName = document.getElementById('root-name');
-    const rootMeta = document.getElementById('root-meta');
-    const rootBox = document.getElementById('root');
-    const callersBox = document.getElementById('callers');
-    const calleesBox = document.getElementById('callees');
-    rootBox.textContent = '';
-    callersBox.textContent = '';
-    calleesBox.textContent = '';
-    if (!state || !state.root) {
-      rootBox.appendChild(el('div', 'empty', I18N.noFunctionSelected));
-      document.getElementById('status').textContent = '';
-      return;
-    }
-    rootName.textContent = state.root.node.name;
-    rootMeta.textContent = state.root.node.file + ':' + (state.root.node.line + 1);
-    rootBox.appendChild(renderGraphTree(state.root, 'root', true));
-    renderGraphSide(callersBox, state.root.callers, 'callers', state.root.expandedCallers, state.root.truncatedCallers);
-    renderGraphSide(calleesBox, state.root.callees, 'callees', state.root.expandedCallees, state.root.truncatedCallees);
-    document.getElementById('status').textContent = busy
-      ? I18N.loading
-      : state.truncated ? format(I18N.graphTruncated, state.nodeCount) : format(I18N.nodes, state.nodeCount);
-  }
-
   let lastState = null;
-  let lastBusy = false;
   let lastLoading = { callers: false, callees: false };
   let lastLoadingIds = [];
 
@@ -590,7 +405,6 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     applySectionCollapsed('callers');
     applySectionCollapsed('callees');
     renderRelation(lastState, lastLoading);
-    renderGraph(lastState, lastBusy);
     if (focusKey) {
       const rows = document.querySelectorAll('.row');
       for (const row of rows) {
@@ -603,7 +417,6 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     const message = event.data || {};
     if (message.type === 'state') {
       lastState = message.state;
-      lastBusy = !!message.busy;
       lastLoading = message.loading || { callers: false, callees: false };
       lastLoadingIds = Array.isArray(message.loadingIds) ? message.loadingIds : [];
       currentLoadingIds = lastLoadingIds;
@@ -611,34 +424,17 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     } else if (message.type === 'error') {
       const text = message.message || 'error';
       const relationError = document.getElementById('relation-error');
-      const graphError = document.getElementById('error');
       if (relationError) relationError.textContent = text;
-      if (graphError) graphError.textContent = text;
     }
   });
 
-  for (const button of document.querySelectorAll('.tab')) {
-    button.addEventListener('click', function () { setTab(button.dataset.tab); });
-    button.addEventListener('keydown', function (event) {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-      event.preventDefault();
-      const next = button.dataset.tab === 'relation' ? 'graph' : 'relation';
-      setTab(next);
-      const nextButton = document.getElementById('tab-btn-' + next);
-      if (nextButton) nextButton.focus();
-    });
-  }
   document.getElementById('section-head-callers').addEventListener('click', function () { toggleSection('callers'); });
   document.getElementById('section-head-callees').addEventListener('click', function () { toggleSection('callees'); });
   document.getElementById('btn-root-from-editor').addEventListener('click', function () { post({ type: 'refresh' }); });
   document.getElementById('btn-collapse-all').addEventListener('click', function () { post({ type: 'collapseAll' }); });
-  for (const button of document.querySelectorAll('[data-action="refresh"]')) {
-    button.addEventListener('click', function () { post({ type: 'refresh' }); });
-  }
 
   applySectionCollapsed('callers');
   applySectionCollapsed('callees');
-  setTab(activeTab);
   vscode.postMessage({ type: 'ready' });
 })();
 </script>

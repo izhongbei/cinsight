@@ -1,7 +1,6 @@
 /**
  * 调用关系面板（Source Insight Relation 风格）：
- *   Relation Tab：单列紧凑树，Callers / Callees 两个可折叠 section；
- *   Graph Tab：保留原三列图（callers 左、当前函数中、callees 右）。
+ *   单视图 Relation：单列紧凑树，Callers / Callees 两个可折叠 section。
  * 节点可逐层展开/折叠、点击名字跳到定义；Set as root 重建根并自动展开双向。
  * 数据来自 `service.callers/callees`（底层走引用倒排索引，通常是毫秒级）。
  */

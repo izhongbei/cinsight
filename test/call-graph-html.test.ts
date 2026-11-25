@@ -9,31 +9,44 @@ const options = {
   t: (message: string) => message,
 }
 
-test('call graph html: includes CSP, nonce, Relation/Graph tabs and the graph columns', () => {
+test('call graph html: includes CSP, nonce and the single Relation view', () => {
   const html = renderCallGraphHtml(options)
   assert.match(html, /Content-Security-Policy/)
   assert.match(html, /script-src 'nonce-nonce-abc123'/)
   assert.match(html, /style-src vscode-resource:\/\/test 'unsafe-inline'/)
-  assert.match(html, /data-tab="relation"/)
-  assert.match(html, /data-tab="graph"/)
-  assert.match(html, /id="tab-relation"/)
-  assert.match(html, /id="tab-graph"/)
+  assert.match(html, /id="relation-view"/)
   assert.match(html, /id="relation-root-name"/)
   assert.match(html, /id="section-title-callers"/)
   assert.match(html, /id="section-title-callees"/)
-  // Graph tab keeps the 0.9.4 three-column DOM so its JS/CSS stays unchanged.
-  assert.match(html, /id="callers"/)
-  assert.match(html, /id="root"/)
-  assert.match(html, /id="callees"/)
   assert.match(html, /acquireVsCodeApi/)
   assert.match(html, /postMessage\(\{ type: 'ready' \}\)/)
+})
+
+test('call graph html: no Graph tab, tab strip or three-column graph DOM remains', () => {
+  const html = renderCallGraphHtml(options)
+  for (const token of [
+    'data-tab="graph"',
+    'data-tab="relation"',
+    'id="tab-graph"',
+    'id="tab-btn-graph"',
+    'id="tab-btn-relation"',
+    'class="tab-strip"',
+    'role="tablist"',
+    'id="columns"',
+    'class="column"',
+  ]) {
+    assert.ok(!html.includes(token), `graph tab token removed: ${token}`)
+  }
+  // 关系树的行渲染使用 relation-* id；三列图专用的 id 不应再出现。
+  assert.ok(!/id="callers"/.test(html), 'graph callers column removed')
+  assert.ok(!/id="root"/.test(html), 'graph root column removed')
+  assert.ok(!/id="callees"/.test(html), 'graph callees column removed')
 })
 
 test('call graph html: relation toolbar, sections and localized labels are present', () => {
   const html = renderCallGraphHtml(options)
   for (const label of [
     'Relation',
-    'Graph',
     'Callers',
     'Callees',
     'Set as root',
@@ -47,6 +60,21 @@ test('call graph html: relation toolbar, sections and localized labels are prese
   }
   assert.match(html, /data-action="root-from-editor"/)
   assert.match(html, /data-action="collapse-all"/)
+})
+
+test('call graph html: graph-only labels are not shipped any more', () => {
+  const html = renderCallGraphHtml(options)
+  for (const label of [
+    '>Graph<',
+    'Current function',
+    'Click a name to jump',
+    'Rebuild the graph',
+    'No function selected.',
+    'Graph truncated',
+    '{0} nodes',
+  ]) {
+    assert.ok(!html.includes(label), `graph-only label removed: ${label}`)
+  }
 })
 
 test('call graph html: escapes translated labels in markup', () => {
@@ -72,7 +100,7 @@ test('escapeHtml: escapes all dangerous characters', () => {
   assert.equal(escapeHtml(`<a href="x">&'</a>`), '&lt;a href=&quot;x&quot;&gt;&amp;\'&lt;/a&gt;')
 })
 
-test('call graph html: contains the Relation and Graph message protocol handlers', () => {
+test('call graph html: contains the Relation message protocol handlers', () => {
   const html = renderCallGraphHtml(options)
   for (const type of [
     'ready',

@@ -2933,8 +2933,8 @@ async function checkSymbolTreeLimits() {
 }
 
 /**
- * Relation 面板：mock webview 面板，验证 HTML 双 Tab、双向自动展开、
- * 展开/折叠、setRoot 不跳编辑器、open 跳转与 collapseAll。
+ * Relation 面板：mock webview 面板，验证 HTML 单视图（无 Graph 标签页）、
+ * 双向自动展开、展开/折叠、setRoot 不跳编辑器、open 跳转与 collapseAll。
  */
 async function checkCallGraphRelationPanel() {
   const dist = path.join(EXT_ROOT, 'dist')
@@ -2975,8 +2975,7 @@ async function checkCallGraphRelationPanel() {
   const created = registrations.webviewPanels[0]
   const html = created.webview.html
   for (const token of [
-    'data-tab="relation"',
-    'data-tab="graph"',
+    'Relation',
     'id="section-title-callers"',
     'id="section-title-callees"',
     'Use cursor function as root',
@@ -2988,6 +2987,16 @@ async function checkCallGraphRelationPanel() {
     "type: 'collapseAll'",
   ]) {
     assert.ok(html.includes(token), `relation html contains ${token}`)
+  }
+  for (const token of [
+    'tab-strip',
+    'role="tablist"',
+    'tab-btn-graph',
+    'data-tab="graph"',
+    'id="tab-graph"',
+    'id="columns"',
+  ]) {
+    assert.ok(!html.includes(token), `relation html has no Graph tab marker ${token}`)
   }
   assert.equal(created.title, 'Call Graph: root_fn', 'panel title keeps the current root name')
 
@@ -3125,7 +3134,7 @@ async function main() {
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
   console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
   console.log('  F8 symbol highlight: theme-aware ThemeColor defaults, custom colour override reload without index rebuild, decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
-  console.log('  call graph relation panel: Relation/Graph tabs, auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
+  console.log('  call graph relation panel: single Relation tree view (no Graph tab), auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
 }
 
 main()

@@ -22,7 +22,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
 | **Symbol highlight (F8)** | `F8` on a name highlights every occurrence in the **current file** — by default definitions and references use the active theme's find-match colours (`editor.findMatch*` / `editor.findMatchHighlight*`) and follow light/dark theme switches automatically; `F3` / `Shift+F3` jump to the next / previous occurrence (wrapping around) and `F8` again clears. Comments, strings and character literals are ignored, so only real code matches. The status bar shows `N in file / M index refs`, and decorations follow edits (150 ms debounce). The `F8` binding is scoped to C/C++ editors, so it overrides *Next Problem* only there; `F3` / `Shift+F3` are taken over only while a highlight is active |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
-| **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style **Relation** panel: a compact single-column tree with collapsible **Callers (N)** and **Callees (N)** sections, plus a **Graph** tab with the three-column callers/current/callees view. Click a name to open its definition in the editor group; **Set as root** (hover action or Alt+click) re-roots the panel and auto-loads both directions |
+| **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style **Relation** panel: a single compact tree view with collapsible **Callers (N)** and **Callees (N)** sections. Click a name to open its definition in the editor group; **Set as root** (hover action or Alt+click) re-roots the panel and auto-loads both directions |
 | **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → symbols (`:line · kind`; hover shows the signature), loaded on demand. Each file shows up to `sourceInsight.treeSymbolLimit` symbols (default 2000, independent of the search limit); beyond that an overflow hint suggests raising it |
 | **Hover signature** | Hover a function name to see `return type name(params)` and its definition/declaration location; members/enum constants/globals get their parent/kind line |
 | **Document outline** | `Ctrl+Shift+O` lists functions, types and — nested under their type — members and enum constants |
@@ -88,7 +88,7 @@ The editor context menu offers go-to-definition, find-references and callers/cal
 
 ### Call graph panel
 
-`Show Call Graph` opens a panel titled `Call Graph: <name>` with two tabs. **Relation** (default) is a compact single-column tree with collapsible **Callers (N)** and **Callees (N)** sections; expanding a node inside a section keeps that direction (the callers of a caller, the callees of a callee). Clicking a name opens its definition in an editor group and never changes the root or moves the panel. **Set as root** — the hover action on a row, or Alt+click — re-roots the panel to that node and auto-loads its callers and callees without a code jump. The toolbar re-roots from the function under the cursor and collapses every nested expansion. **Graph** keeps the three-column callers/current/callees view and its click-to-jump/expand behaviour. Empty sections show `No callers` / `No callees`; the existing per-direction (100) and total (300) caps, cycle skipping and deduplication still apply.
+`Show Call Graph` opens a panel titled `Call Graph: <name>` with a single **Relation** tree view: a compact single-column tree with collapsible **Callers (N)** and **Callees (N)** sections; expanding a node inside a section keeps that direction (the callers of a caller, the callees of a callee). Clicking a name opens its definition in an editor group and never changes the root or moves the panel. **Set as root** — the hover action on a row, or Alt+click — re-roots the panel to that node and auto-loads its callers and callees without a code jump. The toolbar re-roots from the function under the cursor and collapses every nested expansion. Empty sections show `No callers` / `No callees`; the existing per-direction (100) and total (300) caps, cycle skipping and deduplication still apply.
 
 `F8` (`Highlight Symbol`) is contributed for C/C++ editors only; while a highlight is active, `F3` / `Shift+F3` are bound to `si.nextOccurrence` / `si.prevOccurrence`. Outside a C/C++ editor — or outside an active highlight — the VS Code defaults (*Next Problem*, *Find Next*) still apply. Clicking the highlight status bar item toggles the highlight off.
 
@@ -237,7 +237,7 @@ MIT
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
 | **符号高亮（F8）** | 在名字上按 `F8` 高亮它在**当前文件**中的全部出现——默认定义与引用都使用当前主题的 find-match 颜色（`editor.findMatch*` / `editor.findMatchHighlight*`），切换明/暗主题时自动跟随；`F3` / `Shift+F3` 跳到下一个 / 上一个匹配（首尾循环），再按 `F8` 清除。注释、字符串与字符字面量会被忽略，只高亮真实代码；状态栏显示 `N in file / M index refs`，编辑后 150 ms 防抖重扫。`F8` 只在 C/C++ 编辑器内生效（仅在那里覆盖「下一个问题」），`F3` / `Shift+F3` 只在有高亮时接管 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
-| **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：默认 **Relation** 标签页为单列紧凑树，含 **调用者 / 被调用者** 两个可折叠 section，可逐层展开；**Graph** 标签页保留中间当前函数、左调用者、右被调用者的三列视图。点击名字在代码编辑器组打开定义；**设为根**（悬停操作或 Alt+点击）以该节点为根并自动加载双向 |
+| **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：单视图 **Relation** 为单列紧凑树，含 **调用者 / 被调用者** 两个可折叠 section，可逐层展开。点击名字在代码编辑器组打开定义；**设为根**（悬停操作或 Alt+点击）以该节点为根并自动加载双向 |
 | **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 符号（显示 `:line · 种类`；签名见悬停），按需加载；每个文件最多显示 `sourceInsight.treeSymbolLimit` 个符号（默认 2000，与搜索上限独立），超出时显示提示并建议调大该值 |
 | **悬停签名** | 悬停函数名显示 `返回类型 函数名(参数)` 与定义/声明位置；成员/枚举常量/全局变量额外显示 parent/种类 |
 | **文档大纲** | `Ctrl+Shift+O` 列出当前文件的函数、类型，以及嵌套在类型下的成员与枚举常量 |
@@ -302,7 +302,7 @@ cursor --install-extension code-insight-0.9.0.vsix
 
 ### 调用关系面板
 
-`显示调用关系图` 打开标题为 `调用关系图：<名字>` 的面板，包含两个标签页。**Relation**（默认）是单列紧凑树，分 **调用者 (N)** 与 **被调用者 (N)** 两个可折叠 section；在某个 section 内展开节点时保持同一方向（调用者的调用者、被调用者的被调用者）。单击名字会在代码编辑器组打开定义，**不会改变根、也不会移动面板**；**设为根**（行上的悬停操作，或 Alt+点击）会把该节点设为新根，并自动加载它的调用者与被调用者，且不跳转代码。工具栏支持「以光标处函数为根」和「全部折叠」。**Graph** 标签页保留原有三列视图（左调用者 / 中当前函数 / 右被调用者）及其点击跳转、展开/折叠行为。空 section 显示 `无调用者` / `无被调用者`；原有的单方向（100）与全图（300）上限、跳过环、去重逻辑保持不变。
+`显示调用关系图` 打开标题为 `调用关系图：<名字>` 的面板，只有单一的 **Relation** 关系树视图：单列紧凑树，分 **调用者 (N)** 与 **被调用者 (N)** 两个可折叠 section；在某个 section 内展开节点时保持同一方向（调用者的调用者、被调用者的被调用者）。单击名字会在代码编辑器组打开定义，**不会改变根、也不会移动面板**；**设为根**（行上的悬停操作，或 Alt+点击）会把该节点设为新根，并自动加载它的调用者与被调用者，且不跳转代码。工具栏支持「以光标处函数为根」和「全部折叠」。空 section 显示 `无调用者` / `无被调用者`；原有的单方向（100）与全图（300）上限、跳过环、去重逻辑保持不变。
 
 `F8`（高亮符号）只在 C/C++ 编辑器中注册；有高亮时 `F3` / `Shift+F3` 绑定到 `si.nextOccurrence` / `si.prevOccurrence`。在其他语言、或没有活动高亮时，仍使用 VS Code 默认的「下一个问题」/「查找下一个」。点击高亮状态栏项可关闭高亮。
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.6 — 2026-11-25
+
+### English
+
+- **Remove the Graph tab; keep a single Relation view.** The call graph panel no longer has a tab strip. `Show Call Graph` opens the Source-Insight-style **Relation** tree directly: sticky root header, root-from-cursor and collapse-all toolbar, collapsible **Callers (N)** / **Callees (N)** sections, per-section loading/empty states, row chevrons, `←`/`→` direction glyphs, `file:line` metadata and hover **Set as root**.
+- **Graph rendering deleted.** The three-column callers/current/callees view, its CSS (`#columns`, `.column`, graph `.tree`/`.node`/`.root`), DOM builders (`renderGraph`, `renderGraphTree`, `renderGraphSide`), tab switching/ARIA code, graph error/status elements and graph-only message paths are gone. The Relation behaviour is unchanged: click opens in another editor group, **Set as root** / Alt+click re-roots without a code jump, Enter opens, ArrowRight expands, ArrowLeft collapses, and section-collapse state persists in webview state.
+- **Host and model unchanged in behaviour.** `CallGraphPanel` keeps `ready`, `open`, `expand`, `collapse`, `refresh`/`newRoot`, `setRoot` and `collapseAll`; the `state` payload is still compatible (the webview just no longer reads a tab field). `CallGraphModel` and `src/core` are untouched.
+- **Localization cleanup.** Removed graph-only L10n strings (`Graph`, `Graph truncated ({0} nodes)`, `{0} nodes`, `No function selected.`, `Refresh`, `Current function`, the graph hint and its refresh tooltip) plus one stale unused key; every remaining `vscode.l10n.t` literal has a zh-cn translation and the bundle has no unused keys. README (EN + 中文) now documents a single Relation tree view.
+- No command was added, removed or renamed — still **15 commands**, zero dependencies, no tag/publish. 391 tests pass.
+
+### 中文
+
+- **移除 Graph 标签页，只保留单一 Relation 视图**：调用关系面板不再有标签栏。`显示调用关系图` 直接打开 Source Insight 风格的 **Relation** 关系树：吸顶根 header、以光标处函数为根与全部折叠工具栏、可折叠的 **调用者 (N)** / **被调用者 (N)** section、各 section 的加载/空状态、行内展开箭头、`←`/`→` 方向标记、`file:line` 位置信息与悬停 **设为根**。
+- **删除三列图渲染**：左调用者 / 中当前函数 / 右被调用者的三列视图及其 CSS（`#columns`、`.column`、图的 `.tree`/`.node`/`.root`）、DOM 构造（`renderGraph`、`renderGraphTree`、`renderGraphSide`）、标签切换与 ARIA 代码、图的错误/状态元素和仅图使用的消息路径全部删除。Relation 行为保持不变：单击在另一编辑器组打开定义，**设为根** / Alt+点击不跳转代码地重设根，Enter 打开、ArrowRight 展开、ArrowLeft 折叠，section 折叠状态继续在 webview state 中保留。
+- **宿主行为不变**：`CallGraphPanel` 保留 `ready`、`open`、`expand`、`collapse`、`refresh`/`newRoot`、`setRoot` 与 `collapseAll`；`state` 载荷保持兼容（webview 只是不再读取标签字段）。`CallGraphModel` 与 `src/core` 未改动。
+- **本地化清理**：移除仅图使用的 L10n 键（`Graph`、`Graph truncated ({0} nodes)`、`{0} nodes`、`No function selected.`、`Refresh`、`Current function`、图的提示文案与刷新 tooltip）及一个遗留的未使用键；所有剩余 `vscode.l10n.t` 字面量都有 zh-cn 翻译，bundle 无未使用键。README（中英）改为描述单一 Relation 关系树视图。
+- 未增删/重命名命令——仍为 **15 个命令**，零依赖，未打标签/未发布。391 个单测通过。
+
 ## 0.9.5 — 2026-11-25
 
 ### English
