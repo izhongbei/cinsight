@@ -2998,29 +2998,44 @@ async function checkCallGraphRelationPanel() {
   ]) {
     assert.ok(!html.includes(token), `relation html has no Graph tab marker ${token}`)
   }
-  // 0.9.7 行宽优先级：函数名优先完整显示，file:line 让位（省略或换到第二行）。
-  assert.match(html, /\.row\s*\{[^}]*flex-wrap:\s*wrap/, 'relation row is a wrapping flex row')
-  assert.match(
-    html,
-    /\.row\s*\{[^}]*align-items:\s*baseline/,
-    'relation row keeps chevron/glyph on the text baseline',
+  // 0.9.7 修正：关系行固定单行；名字优先，file:line 先收窄省略、窄面板下整体隐藏。
+  assert.match(html, /\.row\s*\{[^}]*flex-wrap:\s*nowrap/, 'relation row never wraps')
+  assert.ok(
+    !/\.row\s*\{[^}]*flex-wrap:\s*wrap/.test(html),
+    'relation row is not a wrapping flex row',
   )
   const nameRule = (html.match(/\.name\s*\{([^}]*)\}/) || [])[1] || ''
-  assert.match(nameRule, /overflow-wrap:\s*anywhere/, 'name wraps long identifiers')
-  assert.match(nameRule, /word-break:\s*break-word/, 'name breaks long words')
   assert.match(nameRule, /flex:\s*1 1 auto/, 'name takes the remaining row width')
-  assert.ok(!nameRule.includes('text-overflow'), 'name never ellipsizes')
-  assert.ok(!nameRule.includes('white-space: nowrap'), 'name may wrap onto several lines')
+  assert.match(nameRule, /min-width:\s*0/, 'name may shrink only on a panel narrower than itself')
+  assert.match(nameRule, /white-space:\s*nowrap/, 'name stays on one line')
+  assert.match(nameRule, /text-overflow:\s*ellipsis/, 'name ellipsizes only when the panel is too narrow')
+  assert.ok(!nameRule.includes('overflow-wrap'), 'name has no overflow-wrap rule')
+  assert.ok(!nameRule.includes('word-break'), 'name has no word-break rule')
+  assert.ok(!nameRule.includes('white-space: normal'), 'name never wraps')
   const metaRule = (html.match(/\.meta\s*\{([^}]*)\}/) || [])[1] || ''
   assert.match(metaRule, /text-overflow:\s*ellipsis/, 'location truncates with an ellipsis')
-  assert.match(metaRule, /max-width:\s*45%/, 'location yields width to the name')
-  assert.match(html, /@media \(max-width: 480px\)/, 'narrow-panel media rule for the location')
-  assert.match(
-    html,
-    /@container \(max-width: 480px\)/,
-    'container-query fallback for the location',
+  assert.match(metaRule, /max-width:\s*45%/, 'location is capped at 45% of the row')
+  assert.match(metaRule, /min-width:\s*0/, 'location can collapse completely')
+  assert.match(metaRule, /white-space:\s*nowrap/, 'location stays on one line')
+  const flexShrinkOf = (rule) => {
+    const explicit = /flex-shrink:\s*(\d+)/.exec(rule)
+    if (explicit) return Number(explicit[1])
+    const shorthand = /flex:\s*\d+\s+(\d+)/.exec(rule)
+    return shorthand ? Number(shorthand[1]) : NaN
+  }
+  assert.ok(
+    flexShrinkOf(metaRule) > flexShrinkOf(nameRule),
+    'location shrinks before the name',
   )
-  assert.match(html, /flex-basis:\s*100%/, 'location takes its own line when the panel is narrow')
+  const narrowRule =
+    (html.match(/@media \(max-width: 420px\)\s*\{([\s\S]*?)\n  \}/) || [])[1] || ''
+  assert.match(narrowRule, /\.meta\s*\{[^}]*display:\s*none/, 'narrow panel hides the location')
+  assert.ok(!html.includes('@container'), 'no container-query fallback')
+  assert.ok(!/flex-basis:\s*100%/.test(html), 'location never moves to its own line')
+  assert.ok(!html.includes('container-type'), 'no inline-size container for row layout')
+  assert.ok(!html.includes('class="leading"'), 'no wrapping sub-row in the markup')
+  assert.ok(!html.includes("el('div', 'leading')"), 'no wrapping sub-row in the render code')
+  assert.ok(!/\.leading\s*\{/.test(html), 'no wrapping sub-row CSS')
   assert.match(html, /\.children\.deep\s*\{/, 'deep nesting caps the visual indentation')
   assert.ok(html.includes('name.title = tree.node.file'), 'name keeps the full file:line tooltip')
   assert.ok(html.includes('meta.title = meta.textContent'), 'location keeps the full path tooltip')
@@ -3160,7 +3175,7 @@ async function main() {
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
   console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
   console.log('  F8 symbol highlight: theme-aware ThemeColor defaults, custom colour override reload without index rebuild, decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
-  console.log('  call graph relation panel: single Relation tree view (no Graph tab), wrap-priority name/location rows (name wraps, location ellipsizes/moves to line 2, deep indent capped), auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
+  console.log('  call graph relation panel: single Relation tree view (no Graph tab), single-line rows (name prioritized, location truncates then hides on narrow panels, deep indent capped), auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
 }
 
 main()
