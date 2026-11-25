@@ -114,6 +114,7 @@ export function renderCallGraphHtml(options: RenderOptions): string {
   .tree-node { min-width: 0; }
   /* 单行行：任何宽度都不换行；名字优先取得宽度，file:line 先收窄、再整体隐藏。 */
   .row {
+    position: relative;
     display: flex; flex-wrap: nowrap; align-items: center; gap: 4px;
     padding: 3px 4px; border-radius: 4px;
     cursor: default; outline: none;
@@ -143,14 +144,20 @@ export function renderCallGraphHtml(options: RenderOptions): string {
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .badge { flex: 0 0 auto; font-size: 10px; color: var(--vscode-descriptionForeground); }
+  /* 悬停操作：绝对定位，脱离行内 flex 流，平时不占宽度；名字因此优先拿到全部可用宽度。
+     默认 opacity:0 + pointer-events:none 不可见不可点，行悬停或焦点在行/按钮上时显示并恢复可点。
+     按钮始终留在 DOM 中（可键盘 Tab 到），聚焦时由 :focus-within 显示。 */
   .row-action {
-    margin-left: auto; flex: 0 0 auto; opacity: 0;
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    opacity: 0; pointer-events: none; transition: opacity .1s;
     padding: 1px 4px; border: none; border-radius: 3px;
     background: transparent; color: var(--vscode-textLink-foreground);
     font-size: 11px; cursor: pointer;
   }
-  .row:hover .row-action, .row:focus-within .row-action { opacity: 1; }
+  .row:hover .row-action, .row:focus-within .row-action { opacity: 1; pointer-events: auto; }
   .row-action:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.15)); }
+  /* 按钮覆盖行右端时才临时给位置让出空间，平时不预留；文本永不被永久隐藏。 */
+  .row:hover .meta, .row:focus-within .meta { padding-right: 70px; }
   .children {
     margin-left: 13px; padding-left: 6px;
     border-left: 1px solid var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,.3));

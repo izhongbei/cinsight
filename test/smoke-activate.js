@@ -3037,6 +3037,27 @@ async function checkCallGraphRelationPanel() {
   assert.ok(!html.includes("el('div', 'leading')"), 'no wrapping sub-row in the render code')
   assert.ok(!/\.leading\s*\{/.test(html), 'no wrapping sub-row CSS')
   assert.match(html, /\.children\.deep\s*\{/, 'deep nesting caps the visual indentation')
+  // 0.9.8：悬停 “Set as root” 脱离行内 flex 流（绝对定位），不再为每行预留 ~66px。
+  assert.match(html, /\.row\s*\{[^}]*position:\s*relative/, 'row is the containing block for the action')
+  const actionRule = (html.match(/^  \.row-action\s*\{([^}]*)\}/m) || [])[1] || ''
+  assert.match(actionRule, /position:\s*absolute/, 'hover action is absolutely positioned')
+  assert.ok(!/flex/.test(actionRule), 'hover action is out of the row flex flow (no flex rules)')
+  assert.ok(!/margin-left:\s*auto/.test(actionRule), 'hover action does not reserve space via margin')
+  assert.match(actionRule, /opacity:\s*0/, 'hover action is hidden by default')
+  assert.match(actionRule, /pointer-events:\s*none/, 'hidden action is not clickable')
+  assert.match(actionRule, /right:\s*4px/, 'action is anchored to the row right edge')
+  const actionHoverRule =
+    (html.match(/\.row:hover \.row-action[^{]*\{([^}]*)\}/) || [])[1] || ''
+  assert.match(actionHoverRule, /opacity:\s*1/, 'row hover reveals the action')
+  assert.match(actionHoverRule, /pointer-events:\s*auto/, 'revealed action is clickable')
+  assert.match(html, /\.row:focus-within \.row-action/, 'keyboard focus reveals the action')
+  assert.ok(!/^  \.row-action\s*\{[^}]*flex:/m.test(html), 'action never takes flex width')
+  assert.ok(!/padding-right/.test(metaRule), 'location reserves no right padding by default')
+  assert.match(
+    html,
+    /\.row:hover \.meta[^{]*\{[^}]*padding-right:\s*70px/,
+    'location yields width only while the action is visible',
+  )
   assert.ok(html.includes('name.title = tree.node.file'), 'name keeps the full file:line tooltip')
   assert.ok(html.includes('meta.title = meta.textContent'), 'location keeps the full path tooltip')
   assert.equal(created.title, 'Call Graph: root_fn', 'panel title keeps the current root name')
@@ -3175,7 +3196,7 @@ async function main() {
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
   console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
   console.log('  F8 symbol highlight: theme-aware ThemeColor defaults, custom colour override reload without index rebuild, decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
-  console.log('  call graph relation panel: single Relation tree view (no Graph tab), single-line rows (name prioritized, location truncates then hides on narrow panels, deep indent capped), auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
+  console.log('  call graph relation panel: single Relation tree view (no Graph tab), single-line rows (name prioritized, location truncates then hides on narrow panels, deep indent capped), absolutely-positioned hover action outside the flex flow (no width reserved, revealed on hover/focus, location padded only while visible), auto-expanded callers/callees, nested expand, collapseAll, setRoot without editor jump, open/collapse OK')
 }
 
 main()

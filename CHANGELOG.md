@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.8 — 2026-11-25
+
+### English
+
+- **The hover Set as root action no longer reserves row width.** It is absolutely positioned inside the row (row `position:relative`), hidden with `opacity:0; pointer-events:none` and revealed only on `:hover` / `:focus-within` (`opacity:1; pointer-events:auto`, `transition:opacity .1s`). Because it is out of the row's flex flow it no longer occupies ~58 px on every row, so the function name gets that width back and rows that used to ellipsize now show the full name even though the raw panel width has not changed.
+- **The location stays truncatable; its right padding is temporary.** `file:line` keeps its ellipsis and collapses before the name, and only while the action is visible (row hover/focus) it yields a 70 px right pad (`.row:hover .meta { padding-right:70px }`) so the overlaid action does not permanently hide text. That padding is not reserved by default; nothing is permanently hidden.
+- **Single-line layout and all behaviour are unchanged.** Rows stay `flex-wrap:nowrap`, the name stays `white-space:nowrap` with priority, and `file:line` still collapses first and hides entirely on narrow (≤420 px) panels. Click-to-open, Alt+click/**Set as root**, the action click, expand/collapse, keyboard navigation (the button stays in the DOM, tabbable and revealed on focus), empty/loading states, section collapse state and the sticky header all work as before; no model/host message changed.
+- No command was added, removed or renamed — still **15 commands**, zero dependencies, no tag/publish. 391 tests pass.
+
+### 中文
+
+- **悬停的“设为根”操作不再占用行宽**：按钮改为行内绝对定位（行 `position:relative`），默认 `opacity:0; pointer-events:none` 隐藏，仅在行 `:hover` / `:focus-within` 时显示并可点（`opacity:1; pointer-events:auto`，`transition:opacity .1s`）。它已脱离行的 flex 布局流，不再为每行预留约 58 px，函数名因此拿回这段宽度——面板原始宽度不变，原先被提前省略的名字现在可以完整显示。
+- **位置仍可截断，右侧留白只是临时的**：`file:line` 保持省略号并先于名字收缩；仅在操作按钮可见时（行悬停/聚焦）让出 70 px 右内边距（`.row:hover .meta { padding-right:70px }`），避免浮在上面的按钮把文字永久挡住。该内边距默认不预留，文字不会被永久隐藏。
+- **单行布局与全部行为不变**：行仍是 `flex-wrap:nowrap`，名字仍是 `white-space:nowrap` 且优先取得宽度，`file:line` 仍先收窄、在窄面板（≤420 px）整体隐藏。点击打开、Alt+点击/ **设为根**、按钮点击、展开/折叠、键盘导航（按钮仍在 DOM 中、可 Tab、聚焦即显示）、空/加载状态、section 折叠状态与吸顶 header 均保持原样；模型与宿主消息未变。
+- 未增删/重命名命令——仍为 **15 个命令**，零依赖，未打标签/未发布。391 个单测通过。
+
 ## 0.9.7 — 2026-11-25
 
 ### English
