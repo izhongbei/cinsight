@@ -55,6 +55,8 @@ const registrations = {
   activeEditorListeners: [],
   documentChangeListeners: [],
   documentCloseListeners: [],
+  /** onDidChangeConfiguration 监听器（颜色配置变更断言用） */
+  configurationListeners: [],
 }
 const disposables = []
 
@@ -323,6 +325,8 @@ const configurationValues = {
   autoReindexOnSave: true,
   enableCallHierarchy: true,
   followSymlinks: false,
+  highlightDefinitionColor: '',
+  highlightReferenceColor: '',
 }
 
 const workspaceFolder = { uri: uriFromPath(EXT_ROOT), name: 'smoke', index: 0 }
@@ -457,7 +461,13 @@ const vscode = {
       return disposable('treeDataProvider')
     },
     createTextEditorDecorationType: (options) => {
-      const type = { options, dispose() {} }
+      const type = {
+        options,
+        disposed: false,
+        dispose() {
+          type.disposed = true
+        },
+      }
       registrations.decorations.push(type)
       return type
     },
@@ -602,7 +612,7 @@ const vscode = {
     name: 'smoke',
     isTrusted: true,
     onDidChangeConfiguration: (listener) => {
-      void listener
+      if (typeof listener === 'function') registrations.configurationListeners.push(listener)
       return disposable('onDidChangeConfiguration')
     },
     onDidSaveTextDocument: () => disposable('onDidSaveTextDocument'),
@@ -2533,19 +2543,58 @@ async function checkSymbolHighlight() {
   }
   const editor = makeEditor(document, new Position(2, 4))
 
-  const GREEN = 'rgba(46,160,67,0.25)'
-  const YELLOW = 'rgba(255,196,0,0.25)'
+  const DEFINITION_THEME = 'editor.findMatchBackground'
+  const DEFINITION_BORDER = 'editor.findMatchBorder'
+  const REFERENCE_THEME = 'editor.findMatchHighlightBackground'
+  const REFERENCE_BORDER = 'editor.findMatchHighlightBorder'
   // 扩展激活时已创建自己的两个装饰类型；只在本检查创建的类型里按背景色找。
+  // 颜色配置变化会重建类型并追加到 registrations.decorations，故取最后一个匹配项。
   const decorationBaseline = registrations.decorations.length
+  const backgroundId = (options) => {
+    const background = options && options.backgroundColor
+    if (typeof background === 'string') return background
+    if (background && typeof background === 'object' && typeof background.id === 'string') {
+      return background.id
+    }
+    return undefined
+  }
+  const decorationType = (background) => {
+    const candidates = registrations.decorations.slice(decorationBaseline)
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      if (backgroundId(candidates[index].options) === background) return candidates[index]
+    }
+    return undefined
+  }
   const decorationRanges = (background) => {
-    const type = registrations.decorations
-      .slice(decorationBaseline)
-      .find((candidate) => candidate.options && candidate.options.backgroundColor === background)
+    const type = decorationType(background)
     assert.ok(type, `decoration type with background ${background} exists`)
     assert.ok(type.options.overviewRulerColor, 'decoration type has overviewRulerColor')
     return editor.decorations.get(type) ?? []
   }
   const starts = (ranges) => ranges.map((range) => [range.start.line, range.start.character])
+  // 默认颜色必须是 ThemeColor（跟随主题），而不是固定字符串。
+  const assertThemeSpec = (background, border, label) => {
+    const type = decorationType(background)
+    assert.ok(type, `${label}: decoration type exists`)
+    assert.equal(type.options.backgroundColor.id, background, `${label}: background follows the theme`)
+    assert.equal(type.options.borderColor.id, border, `${label}: border follows the theme`)
+    assert.equal(
+      type.options.overviewRulerColor.id,
+      border,
+      `${label}: overview ruler follows the theme`,
+    )
+    assert.equal(type.options.borderWidth, '1px', `${label}: borderWidth`)
+    assert.equal(type.options.borderStyle, 'solid', `${label}: borderStyle`)
+    return type
+  }
+  const fireConfigurationChange = (keys) => {
+    const event = {
+      affectsConfiguration: (key) => keys.includes(key),
+    }
+    for (const listener of registrations.configurationListeners.slice()) {
+      listener(event)
+    }
+  }
 
   const previousEditor = vscode.window.activeTextEditor
   const previousVisible = vscode.window.visibleTextEditors
@@ -2561,7 +2610,7 @@ async function checkSymbolHighlight() {
     )
   const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
   try {
-    // ---- F8 激活：定义绿、其余黄；注释/字符串/字符字面量里的 foo 都不算 ----
+    // ---- F8 激活：定义/引用使用主题 find-match 色；注释/字符串/字符字面量里的 foo 都不算 ----
     await handler('si.highlightSymbol')()
     await tick()
 
@@ -2578,15 +2627,21 @@ async function checkSymbolHighlight() {
       ],
       'occurrence scan skips comments/strings and keeps macro-line code',
     )
-    assert.deepEqual(starts(decorationRanges(GREEN)), [[2, 4]], 'definition occurrence is green')
+    assertThemeSpec(DEFINITION_THEME, DEFINITION_BORDER, 'definition default')
+    assertThemeSpec(REFERENCE_THEME, REFERENCE_BORDER, 'reference default')
     assert.deepEqual(
-      starts(decorationRanges(YELLOW)),
+      starts(decorationRanges(DEFINITION_THEME)),
+      [[2, 4]],
+      'definition occurrence uses the theme colour',
+    )
+    assert.deepEqual(
+      starts(decorationRanges(REFERENCE_THEME)),
       [
         [2, 24],
         [5, 13],
         [7, 16],
       ],
-      'references are yellow; occurrences inside comments/strings are not decorated',
+      'references use the theme colour; occurrences inside comments/strings are not decorated',
     )
 
     assert.equal(registrations.statusBarItems.length, statusBaseline + 1, 'one highlight status item')
@@ -2604,8 +2659,8 @@ async function checkSymbolHighlight() {
     // ---- 再按 F8：清除装饰/状态栏/上下文键 ----
     await handler('si.highlightSymbol')()
     await tick()
-    assert.deepEqual(decorationRanges(GREEN), [], 'toggle off clears definition decorations')
-    assert.deepEqual(decorationRanges(YELLOW), [], 'toggle off clears reference decorations')
+    assert.deepEqual(decorationRanges(DEFINITION_THEME), [], 'toggle off clears definition decorations')
+    assert.deepEqual(decorationRanges(REFERENCE_THEME), [], 'toggle off clears reference decorations')
     assert.equal(item.visible, false, 'toggle off hides the status item')
     assert.deepEqual(
       contextCalls().pop(),
@@ -2617,7 +2672,7 @@ async function checkSymbolHighlight() {
     editor.selection = new Selection(new Position(2, 4), new Position(2, 4))
     await handler('si.highlightSymbol')()
     await tick()
-    assert.equal(decorationRanges(GREEN).length, 1, 're-activation restores decorations')
+    assert.equal(decorationRanges(DEFINITION_THEME).length, 1, 're-activation restores decorations')
 
     await handler('si.nextOccurrence')()
     assert.equal(editor.selection.start.line, 2, 'next stays on the current line')
@@ -2648,18 +2703,98 @@ async function checkSymbolHighlight() {
     for (const listener of registrations.documentChangeListeners) {
       listener({ document, contentChanges: [] })
     }
-    assert.equal(decorationRanges(YELLOW).length, 3, 'decorations wait for the debounce')
+    assert.equal(decorationRanges(REFERENCE_THEME).length, 3, 'decorations wait for the debounce')
     await new Promise((resolve) => setTimeout(resolve, 220))
-    assert.equal(decorationRanges(YELLOW).length, 2, 'debounced rescan drops the edited-out reference')
-    assert.equal(decorationRanges(GREEN).length, 1, 'debounced rescan keeps the definition')
+    assert.equal(decorationRanges(REFERENCE_THEME).length, 2, 'debounced rescan drops the edited-out reference')
+    assert.equal(decorationRanges(DEFINITION_THEME).length, 1, 'debounced rescan keeps the definition')
     assert.match(item.text, /foo · 3 in file/, 'status in-file count follows the rescan')
+
+    // ---- 颜色配置变化：重建装饰类型并重新应用当前高亮（不重建索引、不重查引用数） ----
+    const previousDefinitionColor = configurationValues.highlightDefinitionColor
+    const previousReferenceColor = configurationValues.highlightReferenceColor
+    const definitionTypeBefore = decorationType(DEFINITION_THEME)
+    const referenceTypeBefore = decorationType(REFERENCE_THEME)
+    const CUSTOM_DEFINITION = '#2ea04366'
+    const CUSTOM_REFERENCE = 'rgba(255,196,0,0.4)'
+    const informationBaseline = registrations.informationMessages.length
+    configurationValues.highlightDefinitionColor = CUSTOM_DEFINITION
+    configurationValues.highlightReferenceColor = CUSTOM_REFERENCE
+    fireConfigurationChange([
+      'sourceInsight.highlightDefinitionColor',
+      'sourceInsight.highlightReferenceColor',
+    ])
+    const customDefinitionType = decorationType(CUSTOM_DEFINITION)
+    const customReferenceType = decorationType(CUSTOM_REFERENCE)
+    assert.ok(customDefinitionType, 'custom definition decoration type created')
+    assert.ok(customReferenceType, 'custom reference decoration type created')
+    assert.equal(customDefinitionType.options.borderColor, CUSTOM_DEFINITION, 'custom definition border')
+    assert.equal(
+      customDefinitionType.options.overviewRulerColor,
+      CUSTOM_DEFINITION,
+      'custom definition overview ruler',
+    )
+    assert.equal(customDefinitionType.options.borderWidth, '1px', 'custom definition borderWidth')
+    assert.equal(customDefinitionType.options.borderStyle, 'solid', 'custom definition borderStyle')
+    assert.equal(definitionTypeBefore.disposed, true, 'old definition decoration type disposed')
+    assert.equal(referenceTypeBefore.disposed, true, 'old reference decoration type disposed')
+    assert.deepEqual(
+      starts(editor.decorations.get(customDefinitionType) ?? []),
+      [[2, 4]],
+      'custom definition colour re-applies the definition',
+    )
+    assert.deepEqual(
+      starts(editor.decorations.get(customReferenceType) ?? []),
+      [
+        [2, 24],
+        [7, 16],
+      ],
+      'custom reference colour re-applies the references',
+    )
+    assert.equal(item.visible, true, 'highlight stays active after a colour change')
+    assert.match(item.text, /foo · 3 in file/, 'colour change keeps the current in-file count')
+    assert.equal(
+      registrations.informationMessages.length,
+      informationBaseline,
+      'colour change does not mark the index as needing a rebuild',
+    )
+
+    // 恢复空配置 -> 回到主题色，仍然保持高亮。
+    configurationValues.highlightDefinitionColor = previousDefinitionColor
+    configurationValues.highlightReferenceColor = previousReferenceColor
+    fireConfigurationChange([
+      'sourceInsight.highlightDefinitionColor',
+      'sourceInsight.highlightReferenceColor',
+    ])
+    const restoredDefinitionType = assertThemeSpec(
+      DEFINITION_THEME,
+      DEFINITION_BORDER,
+      'restored definition',
+    )
+    assert.equal(
+      customDefinitionType.disposed,
+      true,
+      'custom definition decoration type disposed after reset',
+    )
+    assert.deepEqual(
+      starts(editor.decorations.get(restoredDefinitionType) ?? []),
+      [[2, 4]],
+      'theme colour is re-applied after resetting the override',
+    )
+    assert.deepEqual(
+      starts(decorationRanges(REFERENCE_THEME)),
+      [
+        [2, 24],
+        [7, 16],
+      ],
+      'theme reference colour is re-applied after resetting the override',
+    )
 
     // ---- 文档关闭：清除 ----
     for (const listener of registrations.documentCloseListeners) {
       listener(document)
     }
     await tick()
-    assert.deepEqual(decorationRanges(GREEN), [], 'closing the document clears decorations')
+    assert.deepEqual(decorationRanges(DEFINITION_THEME), [], 'closing the document clears decorations')
     assert.equal(item.visible, false, 'closing the document hides the status item')
     assert.deepEqual(
       contextCalls().pop(),
@@ -2670,7 +2805,7 @@ async function checkSymbolHighlight() {
     // ---- 活动编辑器切到别的文档：清除 ----
     await handler('si.highlightSymbol')()
     await tick()
-    assert.equal(decorationRanges(GREEN).length, 1, 'highlight is active before the editor switch')
+    assert.equal(decorationRanges(DEFINITION_THEME).length, 1, 'highlight is active before the editor switch')
     const otherDocument = new TextDocument(
       Uri.file(path.join(EXT_ROOT, 'src/highlight-other.c')),
       'int bar;\n',
@@ -2682,8 +2817,8 @@ async function checkSymbolHighlight() {
       listener(otherEditor)
     }
     await tick()
-    assert.deepEqual(decorationRanges(GREEN), [], 'editor switch clears definition decorations')
-    assert.deepEqual(decorationRanges(YELLOW), [], 'editor switch clears reference decorations')
+    assert.deepEqual(decorationRanges(DEFINITION_THEME), [], 'editor switch clears definition decorations')
+    assert.deepEqual(decorationRanges(REFERENCE_THEME), [], 'editor switch clears reference decorations')
     assert.equal(item.visible, false, 'editor switch hides the status item')
     assert.deepEqual(
       contextCalls().pop(),
@@ -2827,7 +2962,7 @@ async function main() {
   console.log('  gotoDefinition single multi-copy group: copy picker (not direct representative) OK')
   console.log('  member symbols: field jump (p->f/v.f/.f=) only member + fallback, outline nesting, hover parent, @kind search OK')
   console.log('  symbol tree cap: 479-symbol header fully rendered, overflow hint only beyond treeSymbolLimit (@kind-only placeholder hint OK)')
-  console.log('  F8 symbol highlight: definition/reference decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
+  console.log('  F8 symbol highlight: theme-aware ThemeColor defaults, custom colour override reload without index rebuild, decorations exclude comments+strings, status in-file/index counts, F3 toggle/wrap, debounce rescan, close+editor-switch clear, si.highlightActive OK')
 }
 
 main()

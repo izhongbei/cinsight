@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.4 — 2026-11-25
+
+### English
+
+- **The F8 highlight now follows the VS Code theme.** Definition occurrences use `editor.findMatchBackground` / `editor.findMatchBorder` and reference occurrences use `editor.findMatchHighlightBackground` / `editor.findMatchHighlightBorder` via `ThemeColor`, so the colours adapt to light and dark themes (and to theme switches) automatically instead of being fixed rgba values. The border is drawn as a solid 1 px outline and the overview ruler uses the matching border colour.
+- **New settings `sourceInsight.highlightDefinitionColor` and `sourceInsight.highlightReferenceColor`** (both `window`-scoped, default `""`). A non-empty CSS colour such as `#2ea04366` or `rgba(46,160,67,0.25)` overrides the background, border and overview-ruler colour for that kind only; empty keeps the theme colour. Changing either setting recreates the decoration types and re-applies the active highlight immediately (no index reference re-query). These settings are classified as not affecting the index, so no rebuild prompt appears.
+- New dependency-free helper `src/vscode/highlight-colors.ts` (`resolveHighlightColorSpec`) covered by 6 new unit tests; the smoke test asserts the `ThemeColor` defaults, a custom-colour reload that keeps the highlight active, and reverting to the theme colour.
+- 386 tests pass.
+
+### 中文
+
+- **F8 高亮颜色改为跟随 VS Code 主题**：定义出现使用 `editor.findMatchBackground` / `editor.findMatchBorder`，引用出现使用 `editor.findMatchHighlightBackground` / `editor.findMatchHighlightBorder`（通过 `ThemeColor`），明/暗主题及主题切换都会自动适配，不再是固定 rgba 值。边框为 1 px 实线，概览标尺使用对应的边框色。
+- **新增配置 `sourceInsight.highlightDefinitionColor` 与 `sourceInsight.highlightReferenceColor`**（均为 `window` 作用域，默认空字符串）。填入非空 CSS 颜色（如 `#2ea04366`、`rgba(46,160,67,0.25)`）可单独覆盖该类高亮的背景、边框与概览标尺颜色；为空则继续跟随主题。修改任一配置会重建装饰类型并立即重新应用当前高亮（不重新查询索引引用数）。两项配置被归类为不影响索引，因此不会弹出重建提示。
+- 新增零依赖 helper `src/vscode/highlight-colors.ts`（`resolveHighlightColorSpec`），由 6 个新单测覆盖；冒烟测试断言默认 `ThemeColor`、自定义颜色后高亮保持激活，以及恢复为空后回到主题色。
+- 386 个单测通过。
+
 ## 0.9.3 — 2026-11-25
 
 ### English

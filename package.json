@@ -2,7 +2,7 @@
   "name": "code-insight",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "publisher": "cinsight",
   "license": "MIT",
   "engines": {
@@ -198,6 +198,18 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "%config.followSymlinks%"
+        },
+        "sourceInsight.highlightDefinitionColor": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "markdownDescription": "%config.highlightDefinitionColor%"
+        },
+        "sourceInsight.highlightReferenceColor": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "markdownDescription": "%config.highlightReferenceColor%"
         }
       }
     },

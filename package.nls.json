@@ -29,6 +29,8 @@
   "config.autoReindexOnSave": "Re-parse a file automatically when it is saved, created or deleted.",
   "config.enableCallHierarchy": "Also register the native VS Code call hierarchy provider (right-click a function to show callers/callees interactively).",
   "config.followSymlinks": "Follow symbolic links nested inside the indexed directories. A root that is itself a symbolic link is always followed.",
+  "config.highlightDefinitionColor": "CSS colour used for the definition occurrences of the F8 symbol highlight (for example `#2ea04366` or `rgba(46,160,67,0.25)`). Empty follows the active theme (`editor.findMatchBackground` / `editor.findMatchBorder`).",
+  "config.highlightReferenceColor": "CSS colour used for the reference occurrences of the F8 symbol highlight (for example `#ffc40066` or `rgba(255,196,0,0.25)`). Empty follows the active theme (`editor.findMatchHighlightBackground` / `editor.findMatchHighlightBorder`).",
   "viewContainer.title": "Code Insight",
   "view.symbols.name": "Symbols",
   "viewWelcome": "No index configured yet.\n\n[Configure Index Roots](command:si.configureRoots)\n\nPick the C/C++ directories to index. Source Insight C builds a compact symbol index in the background, then enables go to definition (F12), find references (Shift+F12), call hierarchy, symbol search (Ctrl+T) and this symbol tree.\n\n[Rebuild Index](command:si.rebuildIndex)",

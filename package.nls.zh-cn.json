@@ -29,6 +29,8 @@
   "config.autoReindexOnSave": "文件保存、新建或删除后自动重新解析该文件。",
   "config.enableCallHierarchy": "同时注册 VS Code 原生调用层次 Provider（右键函数可交互查看调用者/被调用者）。",
   "config.followSymlinks": "是否跟随索引目录内部嵌套的符号链接；索引根本身是符号链接时始终跟随。",
+  "config.highlightDefinitionColor": "F8 符号高亮中「定义」出现所用的 CSS 颜色（例如 `#2ea04366`、`rgba(46,160,67,0.25)`）。为空时跟随当前主题（`editor.findMatchBackground` / `editor.findMatchBorder`）。",
+  "config.highlightReferenceColor": "F8 符号高亮中「引用」出现所用的 CSS 颜色（例如 `#ffc40066`、`rgba(255,196,0,0.25)`）。为空时跟随当前主题（`editor.findMatchHighlightBackground` / `editor.findMatchHighlightBorder`）。",
   "viewContainer.title": "Code Insight",
   "view.symbols.name": "符号",
   "viewWelcome": "尚未配置索引目录。\n\n[配置索引目录](command:si.configureRoots)\n\n选择要索引的 C/C++ 目录后，Source Insight C 会在后台建立紧凑的符号索引，随后即可使用跳转定义（F12）、查找引用（Shift+F12）、调用层次、符号搜索（Ctrl+T）与左侧符号树。\n\n[重建索引](command:si.rebuildIndex)",

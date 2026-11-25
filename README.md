@@ -20,7 +20,7 @@ On codebases with more than a hundred thousand C/H files (measured on **121,606 
 | **Conditional annotations** | Symbols inside `#if` / `#ifdef` / `#ifndef` blocks show the raw condition text in candidates, hover and list details (the text is not evaluated; conventional file-level include guards are transparent) |
 | **Symbol search** | `Ctrl+T` (native *Go to Symbol in Workspace*) or `Code Insight: Search Symbols` (lists name, `file:line` location and kind/parent — no signature; accepts `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` filters) |
 | **Find references** | `Shift+F12`; progress, cancellable, results cached |
-| **Symbol highlight (F8)** | `F8` on a name highlights every occurrence in the **current file** — definitions in green, references in yellow; `F3` / `Shift+F3` jump to the next / previous occurrence (wrapping around) and `F8` again clears. Comments, strings and character literals are ignored, so only real code matches. The status bar shows `N in file / M index refs`, and decorations follow edits (150 ms debounce). The `F8` binding is scoped to C/C++ editors, so it overrides *Next Problem* only there; `F3` / `Shift+F3` are taken over only while a highlight is active |
+| **Symbol highlight (F8)** | `F8` on a name highlights every occurrence in the **current file** — by default definitions and references use the active theme's find-match colours (`editor.findMatch*` / `editor.findMatchHighlight*`) and follow light/dark theme switches automatically; `F3` / `Shift+F3` jump to the next / previous occurrence (wrapping around) and `F8` again clears. Comments, strings and character literals are ignored, so only real code matches. The status bar shows `N in file / M index refs`, and decorations follow edits (150 ms debounce). The `F8` binding is scoped to C/C++ editors, so it overrides *Next Problem* only there; `F3` / `Shift+F3` are taken over only while a highlight is active |
 | **Call hierarchy** | `Code Insight: Show Callers / Show Callees`, plus the native VS Code call hierarchy view |
 | **Call graph panel** | `Code Insight: Show Call Graph` opens a Source-Insight-style relation panel: the current function in the middle, **callers on the left, callees on the right**, expandable node by node, click a name to jump |
 | **Symbol tree** | The **Code Insight** icon in the Activity Bar: folders → files → symbols (`:line · kind`; hover shows the signature), loaded on demand. Each file shows up to `sourceInsight.treeSymbolLimit` symbols (default 2000, independent of the search limit); beyond that an overflow hint suggests raising it |
@@ -108,8 +108,10 @@ The Search Symbols input box accepts optional kind filters: `@func`, `@type` (st
 | `sourceInsight.autoReindexOnSave` | `true` | Re-parse a file when it is saved, created or deleted |
 | `sourceInsight.enableCallHierarchy` | `true` | Also register the native call hierarchy provider |
 | `sourceInsight.followSymlinks` | `false` | Follow symbolic links while walking roots |
+| `sourceInsight.highlightDefinitionColor` | `""` | CSS colour for the F8 *definition* highlight (e.g. `#2ea04366` / `rgba(46,160,67,0.25)`); applies to background, border and overview ruler. Empty = theme's `editor.findMatchBackground` / `editor.findMatchBorder` |
+| `sourceInsight.highlightReferenceColor` | `""` | CSS colour for the F8 *reference* highlight (e.g. `#ffc40066` / `rgba(255,196,0,0.25)`). Empty = theme's `editor.findMatchHighlightBackground` / `editor.findMatchHighlightBorder` |
 
-After changing `indexRoots` / `exclude` / `maxFileSizeKB`, run **Rebuild Index** (the extension prompts you).
+After changing `indexRoots` / `exclude` / `maxFileSizeKB`, run **Rebuild Index** (the extension prompts you). The two highlight colours never affect the index: they only rebuild the decorations and re-apply the active highlight immediately.
 
 The `6,000,000` hard symbol budget is **advisory only** (status-bar error plus a one-shot prompt; indexing is not refused). It is deliberately kept: v5 stores ~27 B per symbol plus shared string tables, so the cap is a memory-pressure signal rather than a hard limit.
 
@@ -229,7 +231,7 @@ MIT
 | **条件编译标注** | `#if` / `#ifdef` / `#ifndef` 块内的符号在候选、悬停与列表详情中显示原始条件文本（不求值；传统文件级 include guard 透明） |
 | **符号搜索** | `Ctrl+T`（原生"转到工作区中的符号"）或命令 `Code Insight: 搜索符号`（列出名字、位置（`file:line`）与种类/parent——不含签名；支持 `@func` / `@type` / `@macro` / `@member` / `@enum` / `@var` 过滤） |
 | **查找所有引用** | `Shift+F12`；带进度、可取消，结果缓存 |
-| **符号高亮（F8）** | 在名字上按 `F8` 高亮它在**当前文件**中的全部出现——定义绿色、其余引用黄色；`F3` / `Shift+F3` 跳到下一个 / 上一个匹配（首尾循环），再按 `F8` 清除。注释、字符串与字符字面量会被忽略，只高亮真实代码；状态栏显示 `N in file / M index refs`，编辑后 150 ms 防抖重扫。`F8` 只在 C/C++ 编辑器内生效（仅在那里覆盖「下一个问题」），`F3` / `Shift+F3` 只在有高亮时接管 |
+| **符号高亮（F8）** | 在名字上按 `F8` 高亮它在**当前文件**中的全部出现——默认定义与引用都使用当前主题的 find-match 颜色（`editor.findMatch*` / `editor.findMatchHighlight*`），切换明/暗主题时自动跟随；`F3` / `Shift+F3` 跳到下一个 / 上一个匹配（首尾循环），再按 `F8` 清除。注释、字符串与字符字面量会被忽略，只高亮真实代码；状态栏显示 `N in file / M index refs`，编辑后 150 ms 防抖重扫。`F8` 只在 C/C++ 编辑器内生效（仅在那里覆盖「下一个问题」），`F3` / `Shift+F3` 只在有高亮时接管 |
 | **调用关系** | 命令 `Code Insight: 显示调用者 / 显示被调用者`，也可用 VS Code 原生调用层次界面逐层展开 |
 | **调用关系图** | 命令 `Code Insight: 调用关系图` 打开 Source Insight 风格的关系面板：中间当前函数，**左调用者、右被调用者**，可逐层展开、点击名字跳转 |
 | **侧边栏符号窗口** | 左侧活动栏的「Code Insight」图标 → 目录 → 文件 → 符号（显示 `:line · 种类`；签名见悬停），按需加载；每个文件最多显示 `sourceInsight.treeSymbolLimit` 个符号（默认 2000，与搜索上限独立），超出时显示提示并建议调大该值 |
@@ -316,8 +318,10 @@ cursor --install-extension code-insight-0.9.0.vsix
 | `sourceInsight.autoReindexOnSave` | `true` | 保存/新建/删除文件时增量重解析 |
 | `sourceInsight.enableCallHierarchy` | `true` | 注册原生调用层次 Provider |
 | `sourceInsight.followSymlinks` | `false` | 是否跟随符号链接 |
+| `sourceInsight.highlightDefinitionColor` | `""` | F8 高亮中「定义」出现的 CSS 颜色（如 `#2ea04366` / `rgba(46,160,67,0.25)`），同时作用于背景、边框与概览标尺；空 = 跟随主题 `editor.findMatchBackground` / `editor.findMatchBorder` |
+| `sourceInsight.highlightReferenceColor` | `""` | F8 高亮中「引用」出现的 CSS 颜色（如 `#ffc40066` / `rgba(255,196,0,0.25)`）；空 = 跟随主题 `editor.findMatchHighlightBackground` / `editor.findMatchHighlightBorder` |
 
-修改 `indexRoots` / `exclude` / `maxFileSizeKB` 后建议执行一次 **重建索引**。
+修改 `indexRoots` / `exclude` / `maxFileSizeKB` 后建议执行一次 **重建索引**。两个高亮颜色不影响索引：只重建装饰类型并立即重新应用当前高亮。
 
 `6000000` 符号硬上限只是**告警阈值**（状态栏报错 + 一次性提示，不会拒绝建索引），刻意保留：v5 每符号约 27 B（另加共享字符串表），它用于提示内存压力而不是硬性限制。
 

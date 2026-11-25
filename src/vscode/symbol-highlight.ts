@@ -14,6 +14,8 @@
 import * as vscode from 'vscode'
 
 import { findWordOccurrences, type WordOccurrence } from '../core/word-occurrences'
+import { onDidChangeConfig, readConfig } from './config'
+import { resolveHighlightColorSpec, type DecorationColorSpec } from './highlight-colors'
 import { sourceFileOf } from './providers/definition'
 import type { SymbolService } from './service'
 import {
@@ -32,12 +34,6 @@ const STATUS_PRIORITY = 100
 /** 命令可订阅的上下文键：F3/Shift+F3 只在有高亮时接管。 */
 export const HIGHLIGHT_CONTEXT_KEY = 'si.highlightActive'
 
-/** 定义：半透明绿；引用：半透明黄。半透明色在明/暗主题下都与背景融合。 */
-const DEFINITION_BACKGROUND = 'rgba(46,160,67,0.25)'
-const DEFINITION_OVERVIEW = 'rgba(46,160,67,0.65)'
-const REFERENCE_BACKGROUND = 'rgba(255,196,0,0.25)'
-const REFERENCE_OVERVIEW = 'rgba(255,196,0,0.65)'
-
 export interface SymbolHighlighter extends vscode.Disposable {
   /** F8：高亮光标处整词；同一词再次调用则清除。 */
   toggle(): void
@@ -54,8 +50,9 @@ function occurrenceKey(line: number, column: number): string {
 }
 
 class SymbolHighlighterController implements SymbolHighlighter {
-  private readonly definitionDecoration: vscode.TextEditorDecorationType | undefined
-  private readonly referenceDecoration: vscode.TextEditorDecorationType | undefined
+  // 颜色配置变化时重建，故不是 readonly。
+  private definitionDecoration: vscode.TextEditorDecorationType | undefined
+  private referenceDecoration: vscode.TextEditorDecorationType | undefined
   private readonly statusItem: vscode.StatusBarItem | undefined
   private readonly disposables: vscode.Disposable[] = []
 
@@ -74,8 +71,8 @@ class SymbolHighlighterController implements SymbolHighlighter {
   private disposed = false
 
   constructor(private readonly service: SymbolService) {
-    this.definitionDecoration = createDecorationType(DEFINITION_BACKGROUND, DEFINITION_OVERVIEW)
-    this.referenceDecoration = createDecorationType(REFERENCE_BACKGROUND, REFERENCE_OVERVIEW)
+    // 默认跟随主题（ThemeColor），配置了颜色覆盖时用固定 CSS 颜色。
+    this.recreateDecorations()
     this.statusItem = createStatusItem()
     this.subscribeEvents()
   }
@@ -151,6 +148,40 @@ class SymbolHighlighterController implements SymbolHighlighter {
       }
     }
     this.disposables.length = 0
+    this.disposeDecorationTypes()
+    try {
+      this.statusItem?.dispose()
+    } catch {
+      // ignore
+    }
+  }
+
+  // ---- 颜色 / 装饰类型 ----
+
+  /**
+   * 按当前配置重建定义/引用两个装饰类型。
+   * `ThemeColor` 由宿主按明/暗主题解析，所以主题切换无需监听；只有颜色配置变化时才重建。
+   */
+  private recreateDecorations(): void {
+    this.disposeDecorationTypes()
+    let definitionColor = ''
+    let referenceColor = ''
+    try {
+      const config = readConfig()
+      definitionColor = config.highlightDefinitionColor
+      referenceColor = config.highlightReferenceColor
+    } catch (error) {
+      console.error('[code-insight] cannot read highlight colors', error)
+    }
+    this.definitionDecoration = createDecorationType(
+      resolveHighlightColorSpec({ definitionColor, referenceColor, kind: 'definition' }),
+    )
+    this.referenceDecoration = createDecorationType(
+      resolveHighlightColorSpec({ definitionColor, referenceColor, kind: 'reference' }),
+    )
+  }
+
+  private disposeDecorationTypes(): void {
     try {
       this.definitionDecoration?.dispose()
     } catch {
@@ -161,11 +192,8 @@ class SymbolHighlighterController implements SymbolHighlighter {
     } catch {
       // ignore
     }
-    try {
-      this.statusItem?.dispose()
-    } catch {
-      // ignore
-    }
+    this.definitionDecoration = undefined
+    this.referenceDecoration = undefined
   }
 
   // ---- 激活 / 应用装饰 ----
@@ -417,6 +445,22 @@ class SymbolHighlighterController implements SymbolHighlighter {
   // ---- 事件 / 生命周期 ----
 
   private subscribeEvents(): void {
+    // 两个高亮颜色配置变化：重建装饰类型并重新应用当前高亮（不重新查询索引引用数）。
+    try {
+      this.disposables.push(
+        onDidChangeConfig((change) => {
+          if (this.disposed || !change.affectsHighlight) {
+            return
+          }
+          this.recreateDecorations()
+          if (this.activeWordValue !== undefined) {
+            this.refreshDecorations()
+          }
+        }),
+      )
+    } catch (error) {
+      console.error('[code-insight] cannot subscribe highlight color changes', error)
+    }
     try {
       if (typeof vscode.window.onDidChangeActiveTextEditor === 'function') {
         this.disposables.push(
@@ -549,19 +593,54 @@ export function createSymbolHighlighter(service: SymbolService): SymbolHighlight
 
 // ---- vscode 容错辅助 ----
 
+/**
+ * 主题色 ID -> `ThemeColor`；宿主缺少 ThemeColor（极简 mock/旧版本）时退化为普通字符串，
+ * 仍能高亮，只是不再随主题变化。
+ */
+function themeColorOrId(id: string | undefined): vscode.ThemeColor | string | undefined {
+  if (id === undefined) {
+    return undefined
+  }
+  try {
+    const ctor = (vscode as unknown as { ThemeColor?: new (id: string) => vscode.ThemeColor })
+      .ThemeColor
+    if (typeof ctor === 'function') {
+      return new ctor(id)
+    }
+  } catch (error) {
+    console.error('[code-insight] cannot create ThemeColor for highlight', error)
+  }
+  return id
+}
+
+/** 把纯颜色规格转成装饰类型选项：字符串覆盖优先，否则用主题色。 */
+function decorationOptions(spec: DecorationColorSpec): vscode.DecorationRenderOptions {
+  const background = spec.backgroundColor ?? themeColorOrId(spec.themeBackground)
+  const border = spec.borderColor ?? themeColorOrId(spec.themeBorder)
+  const overview = spec.overviewRulerColor ?? themeColorOrId(spec.themeBorder)
+  const options: vscode.DecorationRenderOptions = { borderRadius: '2px' }
+  if (background !== undefined) {
+    options.backgroundColor = background
+  }
+  if (border !== undefined) {
+    options.borderColor = border
+    options.borderWidth = '1px'
+    options.borderStyle = 'solid'
+  }
+  if (overview !== undefined) {
+    options.overviewRulerColor = overview
+  }
+  return options
+}
+
 function createDecorationType(
-  backgroundColor: string,
-  overviewRulerColor: string,
+  spec: DecorationColorSpec,
 ): vscode.TextEditorDecorationType | undefined {
   try {
     if (typeof vscode.window.createTextEditorDecorationType !== 'function') {
       return undefined
     }
-    return vscode.window.createTextEditorDecorationType({
-      backgroundColor,
-      overviewRulerColor,
-      borderRadius: '2px',
-    })
+    return vscode.window.createTextEditorDecorationType(decorationOptions(spec))
   } catch (error) {
     console.error('[code-insight] cannot create highlight decoration type', error)
     return undefined
